@@ -1243,14 +1243,21 @@ test('output react/ CŨ vẫn attribution đúng stage + vẫn syncExcluded dù 
 // "Bản đồ màn" (lab-map) đứng NGAY SAU lab-docs, TRƯỚC lab-kit-plan — 4-stage
 // trở thành 5-stage. lab-kit-plan/lab-compose's dependsOn KHÔNG đổi (bản đồ
 // là ưu tiên khi có, không phải điều kiện cứng — cùng tinh thần lab-kit).
+// WP-lab-reorder (.tmp/pipeline/wp-lab-reorder.yaml, 2026-08-23): ĐẢO thứ tự
+// thành lab-docs → lab-map → lab-compose → lab-kit-plan → lab-kit — "Sáng
+// tác màn" chạy NGAY sau "Bản đồ màn" (màn = bằng chứng thật); "Đề xuất kit"
+// (lab-kit-plan) đổi vai QUÉT MÀN ĐÃ DUYỆT, `dependsOn` THÊM `lab-compose`,
+// `outputs` THÊM `kit-candidates.json`/`kit-candidates/`; "Nâng bộ comp" đổi
+// tên hiển thị thành "Đóng gói comp" (id/skillId/dependsOn/outputs KHÔNG
+// đổi).
 
-test('ds-lab: 5-stage workflow in order (lab-docs → lab-map → lab-kit-plan → lab-kit → lab-compose)', () => {
+test('ds-lab: 5-stage workflow in order (lab-docs → lab-map → lab-compose → lab-kit-plan → lab-kit)', () => {
   const wf = getWorkflow('ds-lab');
   assert.ok(wf, 'ds-lab workflow should exist');
-  assert.deepEqual(wf!.pipelineIds, ['lab-docs', 'lab-map', 'lab-kit-plan', 'lab-kit', 'lab-compose']);
+  assert.deepEqual(wf!.pipelineIds, ['lab-docs', 'lab-map', 'lab-compose', 'lab-kit-plan', 'lab-kit']);
   assert.deepEqual(
     wf!.stages.map((s) => s.id),
-    ['lab-docs', 'lab-map', 'lab-kit-plan', 'lab-kit', 'lab-compose'],
+    ['lab-docs', 'lab-map', 'lab-compose', 'lab-kit-plan', 'lab-kit'],
   );
 
   assert.equal(getPipelineDef('lab-map')?.skillId, 'lab-map');
@@ -1259,19 +1266,24 @@ test('ds-lab: 5-stage workflow in order (lab-docs → lab-map → lab-kit-plan �
   assert.deepEqual(getPipelineDef('lab-map')?.outputs, ['screen-map.json', 'screen-map.md']);
   assert.equal(getPipelineDef('lab-map')?.inputPlaceholder, 'Luồng/màn cần ưu tiên (tuỳ chọn)');
 
+  assert.deepEqual(getPipelineDef('lab-compose')?.dependsOn, ['lab-docs']);
+
   assert.equal(getPipelineDef('lab-kit-plan')?.skillId, 'lab-kit-plan');
   assert.equal(getPipelineDef('lab-kit-plan')?.name, 'Đề xuất kit');
-  assert.deepEqual(getPipelineDef('lab-kit-plan')?.dependsOn, ['lab-docs']);
-  assert.deepEqual(getPipelineDef('lab-kit-plan')?.outputs, ['kit-plan.json', 'kit-plan.md']);
+  assert.deepEqual(getPipelineDef('lab-kit-plan')?.dependsOn, ['lab-docs', 'lab-compose']);
+  assert.deepEqual(getPipelineDef('lab-kit-plan')?.outputs, [
+    'kit-plan.json',
+    'kit-plan.md',
+    'kit-candidates.json',
+    'kit-candidates/',
+  ]);
   assert.equal(getPipelineDef('lab-kit-plan')?.inputPlaceholder, 'Định hướng đề xuất (tuỳ chọn)');
 
   assert.equal(getPipelineDef('lab-kit')?.skillId, 'lab-kit-compose');
-  assert.equal(getPipelineDef('lab-kit')?.name, 'Nâng bộ comp');
+  assert.equal(getPipelineDef('lab-kit')?.name, 'Đóng gói comp');
   assert.deepEqual(getPipelineDef('lab-kit')?.dependsOn, ['lab-docs', 'lab-kit-plan']);
   assert.deepEqual(getPipelineDef('lab-kit')?.outputs, ['kit-shots/', 'kit-result.json', 'kit/kit.json']);
   assert.equal(getPipelineDef('lab-kit')?.inputPlaceholder, 'Định hướng thẩm mỹ (tuỳ chọn)');
-
-  assert.deepEqual(getPipelineDef('lab-compose')?.dependsOn, ['lab-docs']);
 });
 
 test('ds-lab: screen-map.json/screen-map.md attribute to lab-map; re-run lab-kit-plan alone does NOT clear them', () => {
@@ -1301,6 +1313,27 @@ test('ds-lab: kit-plan.json/kit-plan.md attribute to lab-kit-plan; re-run lab-ki
   assert.equal(relClearedByRegen('ds-lab/kit-plan.json', new Set(['lab-kit']), 'ds-lab'), false);
   // Re-running lab-kit-plan itself DOES clear its own declared outputs.
   assert.equal(relClearedByRegen('ds-lab/kit-plan.json', new Set(['lab-kit-plan']), 'ds-lab'), true);
+});
+
+test('ds-lab: kit-candidates.json/kit-candidates/ attribute to lab-kit-plan (WP-lab-reorder daemon tiền-quét)', () => {
+  assert.deepEqual(stagesForOutput('ds-lab/kit-candidates.json').map((d) => d.id), ['lab-kit-plan']);
+  assert.deepEqual(stagesForOutput('ds-lab/kit-candidates/KC-01.png').map((d) => d.id), ['lab-kit-plan']);
+  // Re-running lab-kit-plan itself DOES clear its own tiền-quét output too.
+  assert.equal(relClearedByRegen('ds-lab/kit-candidates.json', new Set(['lab-kit-plan']), 'ds-lab'), true);
+  // Re-running lab-kit alone must NOT sweep the daemon's own scan output.
+  assert.equal(relClearedByRegen('ds-lab/kit-candidates.json', new Set(['lab-kit']), 'ds-lab'), false);
+});
+
+test('ds-lab: lab-kit-plan dependsOn lab-compose (WP-lab-reorder) — downstream re-run of lab-compose cascades through lab-kit-plan to lab-kit', () => {
+  const cascade = new Set(stageRegenSet('lab-compose', true));
+  assert.ok(cascade.has('lab-compose'));
+  assert.ok(cascade.has('lab-kit-plan'), 'lab-kit-plan should be stale once lab-compose (the screens it scans) re-runs');
+  assert.ok(cascade.has('lab-kit'), 'lab-kit should cascade transitively through lab-kit-plan');
+  // Re-running lab-kit-plan alone must NOT sweep lab-compose's own outputs —
+  // dependsOn only flows one way (lab-kit-plan depends ON lab-compose, not
+  // the other way around).
+  assert.equal(relClearedByRegen('ds-lab/screens/SCR-01.png', new Set(['lab-kit-plan']), 'ds-lab'), false);
+  assert.equal(relClearedByRegen('ds-lab/lab-result.json', new Set(['lab-kit-plan']), 'ds-lab'), false);
 });
 
 test('ds-lab: lab-kit output attribution — kit/kit.json is now a declared output, cleared on re-run', () => {

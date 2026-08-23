@@ -87,6 +87,16 @@ export interface KitResultComponent {
   /** Tên (hoặc key) các comp base đã ghép để tạo ra bản phái sinh này. */
   baseComponents?: string[];
   notes?: string;
+  /** WP-lab-reorder (.tmp/pipeline/wp-lab-reorder.yaml): bằng chứng trên màn
+   *  agent đã dùng để đóng gói component này (echo lại từ kit-plan.json's
+   *  `sourceNodes`, hoặc agent tự bổ sung) — đọc fail-soft, KHÔNG được validate
+   *  chặt như `componentNodeId` (thiếu/hỏng không làm bỏ cả entry). */
+  sourceNodes?: { screenKey: string; nodeId: string }[];
+  /** Các occurrence trên màn ĐÃ ĐƯỢC swap ngược sang instance comp mới —
+   *  agent tự ghi lại sau bước SWAP (xem buildKitBrief's taskLines). Đọc
+   *  fail-soft, thuần thông tin (không phải hợp đồng cứng như
+   *  `componentNodeId`). */
+  swapped?: { screenKey: string; nodeId: string }[];
 }
 
 export interface ParsedKitResult {
@@ -147,6 +157,21 @@ export function parseKitResult(raw: string): ParsedKitResult | null {
       component.baseComponents = (e.baseComponents as string[]).map((b) => b.trim()).filter(Boolean);
     }
     if (typeof e.notes === 'string' && e.notes.trim()) component.notes = e.notes.trim();
+    // WP-lab-reorder: sourceNodes/swapped — đọc fail-soft (không validate
+    // chặt như componentNodeId; phần tử hỏng bị lọc lặng lẽ, KHÔNG cảnh báo,
+    // KHÔNG làm bỏ cả entry — đây là thông tin thêm, không phải hợp đồng cứng).
+    const readNodeRefs = (value: unknown): { screenKey: string; nodeId: string }[] | undefined => {
+      if (!Array.isArray(value)) return undefined;
+      const refs = value
+        .map((v) => (v && typeof v === 'object' ? (v as Record<string, unknown>) : {}))
+        .filter((v) => typeof v.screenKey === 'string' && v.screenKey.trim() && typeof v.nodeId === 'string' && v.nodeId.trim())
+        .map((v) => ({ screenKey: (v.screenKey as string).trim(), nodeId: (v.nodeId as string).trim() }));
+      return refs.length > 0 ? refs : undefined;
+    };
+    const sourceNodes = readNodeRefs(e.sourceNodes);
+    if (sourceNodes) component.sourceNodes = sourceNodes;
+    const swapped = readNodeRefs(e.swapped);
+    if (swapped) component.swapped = swapped;
     components.push(component);
   }
   return { components, warnings };
@@ -183,6 +208,20 @@ export interface KitPlanCandidate {
   /** `true` = ngoại lệ App Bar bắt buộc (hoặc tương đương) — lab-kit PHẢI
    *  dựng mục này dù người dùng có bớt các mục khác. */
   mustHave?: boolean;
+  /** WP-lab-reorder (.tmp/pipeline/wp-lab-reorder.yaml): bằng chứng trên MÀN
+   *  ĐÃ DỰNG mà mục derive này bắt nguồn từ đó — hoặc lấy từ `occurrences`
+   *  của một ứng viên trong `kit-candidates.json` (daemon tự quét), hoặc do
+   *  agent tự chỉ đích danh nodeId trên màn. `decision==='derive'` mà mảng
+   *  này rỗng/absent VÀ không `mustHave` → `parseKitPlan` DROP kèm warning
+   *  (hợp đồng cứng mới: derive phải trỏ bằng chứng thật, không còn đoán từ
+   *  docs — chỉ vai trò khung `mustHave` mới được miễn). */
+  sourceNodes?: { screenKey: string; nodeId: string }[];
+  /** `true` = sau khi đóng gói xong, SWAP ngược từng occurrence trong
+   *  `sourceNodes` (và node cùng chữ ký trong màn nếu thấy) bằng instance
+   *  comp mới — mặc định `true` khi `decision==='derive'` và có
+   *  `sourceNodes` (xem `parseKitPlan`); `false` = giữ nguyên màn, chỉ đóng
+   *  gói comp (ví dụ khi người duyệt muốn tự swap tay). */
+  swapBack?: boolean;
 }
 
 export interface ParsedKitPlan {
@@ -197,11 +236,15 @@ export interface ParsedKitPlan {
  *  hoặc thiếu field `candidates` (mảng) — server.ts (runLabKitPlan) coi đây
  *  là "agent không ghi đề xuất hợp lệ" và fail cả stage. Một entry bị DROP
  *  (kèm warning, không fail cả file) khi: thiếu `key`/`name`; `decision`
- *  không thuộc {'derive','use-base'}; hoặc `decision==='derive'` mà THIẾU
- *  `gap` (chuỗi rỗng/absent) — `gap` là hợp đồng CỨNG của phép thử hai tầng,
- *  một mục derive không nêu đích danh base thiếu gì không được coi là hợp
- *  lệ. `candidates` rỗng sau khi lọc vẫn trả object (KHÔNG null) — "rỗng có
- *  phải fail không" là quyết định của caller. */
+ *  không thuộc {'derive','use-base'}; `decision==='derive'` mà THIẾU `gap`
+ *  (chuỗi rỗng/absent) — `gap` là hợp đồng CỨNG của phép thử hai tầng; hoặc
+ *  (WP-lab-reorder, .tmp/pipeline/wp-lab-reorder.yaml) `decision==='derive'`
+ *  mà THIẾU `sourceNodes` (mảng rỗng/absent, hoặc mọi phần tử đều thiếu
+ *  `screenKey`/`nodeId` string) VÀ không `mustHave` — từ WP này derive PHẢI
+ *  trỏ bằng chứng thật trên màn đã dựng, chỉ vai trò khung `mustHave` (App
+ *  Bar/Tabbar DS chưa có) mới được miễn. `candidates` rỗng sau khi lọc vẫn
+ *  trả object (KHÔNG null) — "rỗng có phải fail không" là quyết định của
+ *  caller. */
 export function parseKitPlan(raw: string): ParsedKitPlan | null {
   let parsed: unknown;
   try {
@@ -239,13 +282,45 @@ export function parseKitPlan(raw: string): ParsedKitPlan | null {
       );
       continue;
     }
+
+    const mustHave = e.mustHave === true;
+
+    // WP-lab-reorder: sourceNodes — validate từng phần tử có screenKey+nodeId
+    // là string không rỗng; phần tử hỏng bị lọc lặng lẽ (không phải lỗi của
+    // cả mục), mảng rỗng sau khi lọc coi như absent.
+    let sourceNodes: { screenKey: string; nodeId: string }[] | undefined;
+    if (Array.isArray(e.sourceNodes)) {
+      const valid: { screenKey: string; nodeId: string }[] = [];
+      for (const s of e.sourceNodes) {
+        if (!s || typeof s !== 'object') continue;
+        const sr = s as Record<string, unknown>;
+        const screenKey = typeof sr.screenKey === 'string' ? sr.screenKey.trim() : '';
+        const nodeId = typeof sr.nodeId === 'string' ? sr.nodeId.trim() : '';
+        if (screenKey && nodeId) valid.push({ screenKey, nodeId });
+      }
+      if (valid.length > 0) sourceNodes = valid;
+    }
+
+    if (rawDecision === 'derive' && (!sourceNodes || sourceNodes.length === 0) && !mustHave) {
+      warnings.push(
+        `Mục "${key}": decision "derive" nhưng thiếu "sourceNodes" (bằng chứng trên màn) — chỉ vai trò khung mustHave mới được derive không nguồn — bỏ qua.`,
+      );
+      continue;
+    }
+
     const candidate: KitPlanCandidate = { key, name, decision: rawDecision };
     if (gap) candidate.gap = gap;
     if (Array.isArray(e.baseComponents) && e.baseComponents.every((b) => typeof b === 'string')) {
       candidate.baseComponents = (e.baseComponents as string[]).map((b) => b.trim()).filter(Boolean);
     }
     if (typeof e.reason === 'string' && e.reason.trim()) candidate.reason = e.reason.trim();
-    if (e.mustHave === true) candidate.mustHave = true;
+    if (mustHave) candidate.mustHave = true;
+    if (sourceNodes) candidate.sourceNodes = sourceNodes;
+    if (typeof e.swapBack === 'boolean') {
+      candidate.swapBack = e.swapBack;
+    } else if (rawDecision === 'derive' && sourceNodes) {
+      candidate.swapBack = true;
+    }
     candidates.push(candidate);
   }
   return { candidates, warnings };
@@ -256,12 +331,19 @@ export function parseKitPlan(raw: string): ParsedKitPlan | null {
  *  để cả stage fail chỉ vì thiếu file trình bày (`kit-plan.json` là hợp đồng
  *  máy đọc, đã đủ để `lab-kit` dùng). */
 export function renderKitPlanMd(candidates: readonly KitPlanCandidate[]): string {
-  const header = '| Comp | Quyết định | Base thiếu gì | Lý do |\n| --- | --- | --- | --- |';
+  const header =
+    '| Comp | Quyết định | Base thiếu gì | Nguồn trên màn | Lý do |\n| --- | --- | --- | --- | --- |';
   const rows = candidates.map((c) => {
     const decision = c.decision === 'derive' ? `derive${c.mustHave ? ' (bắt buộc)' : ''}` : 'use-base';
     const gap = c.gap ?? '';
     const reason = c.reason ?? '';
-    return `| ${c.name} | ${decision} | ${gap} | ${reason} |`;
+    // WP-lab-reorder: "Nguồn trên màn" = số node · các màn liên quan — trống
+    // khi không có sourceNodes (use-base, hoặc derive mustHave không nguồn).
+    const source =
+      c.sourceNodes && c.sourceNodes.length > 0
+        ? `${c.sourceNodes.length} node · màn ${Array.from(new Set(c.sourceNodes.map((s) => s.screenKey))).join(', ')}`
+        : '';
+    return `| ${c.name} | ${decision} | ${gap} | ${source} | ${reason} |`;
   });
   return ['# Đề xuất kit', '', header, ...rows, ''].join('\n');
 }
@@ -297,6 +379,11 @@ export interface BuildKitBriefOptions {
    *  đây. Đây là NGUỒN DUY NHẤT quyết định lab-kit dựng comp nào; lab-kit
    *  không còn tự phân tích chọn lọc. */
   plan: readonly KitPlanCandidate[];
+  /** WP-lab-reorder (.tmp/pipeline/wp-lab-reorder.yaml): màn đã dựng
+   *  (`lab-result.json`, luôn có sẵn từ WP này vì "Sáng tác màn" đứng TRƯỚC
+   *  "Đóng gói comp" trong thứ tự mới) — cần cho bước SWAP ngược. Absent →
+   *  brief giữ Y CŨ (hành vi trước WP này, để test cũ sống). */
+  screens?: { key: string; frameNodeId: string }[];
 }
 
 export interface BuildKitPlanBriefOptions {
@@ -309,6 +396,30 @@ export interface BuildKitPlanBriefOptions {
   hasTokens: boolean;
   hasGuide: boolean;
   hasSlots: boolean;
+  /** WP-lab-shell (2026-08-23 — .tmp/pipeline/wp-lab-shell.yaml): vai trò
+   *  khung (app-bar/tabbar/…) mà bản đồ màn (`screen-map.json`) yêu cầu PHẢI
+   *  có ở ≥1 màn — server.ts đã đếm số màn cần mỗi role + dò `bound` (tên
+   *  comp DS/kit đáp ứng, `null` khi DS/kit chưa có) qua `detectShellBindings`
+   *  trước khi gọi. Rỗng/absent (chưa chạy "Bản đồ màn", hoặc không role nào
+   *  must) → brief KHÔNG in dòng này (hành vi CŨ). */
+  shellNeeds?: { role: string; screens: number; bound: string | null }[];
+  /** WP-lab-reorder (.tmp/pipeline/wp-lab-reorder.yaml): màn đã dựng
+   *  (`lab-result.json`, "Sáng tác màn" nay đứng TRƯỚC "Đề xuất kit") — kích
+   *  hoạt vai trò MỚI "quét màn đã duyệt" (brief đổi hẳn phần input/task/
+   *  reminder). Absent → brief giữ Y CŨ (hành vi trước WP này, để test cũ
+   *  sống). */
+  screens?: { key: string; name: string }[];
+  /** Ứng viên daemon TỰ QUÉT được từ subtree REST của các màn (server.ts's
+   *  `runLabKitPlan` gọi `scanKitCandidates`, lab-kit-scan.ts) — tóm tắt đủ
+   *  để agent trỏ `sourceNodes` mà không cần đọc lại toàn bộ
+   *  `kit-candidates.json`. Rỗng/absent (kèm `candidatesUnavailableReason`)
+   *  → brief nói rõ lý do không quét được, agent dựa vào PNG màn. */
+  candidates?: { id: string; suggestedName: string; occurrences: number; screens: string[]; hasInstance: boolean }[];
+  /** Lý do tiền-quét KHÔNG chạy được (thiếu token Figma/preview, hoặc lỗi
+   *  quét) — chỉ có ý nghĩa khi `candidates` rỗng/absent; `null`/absent khi
+   *  tiền-quét chạy bình thường (có thể vẫn ra 0 candidate — trường hợp đó
+   *  không cần lý do). */
+  candidatesUnavailableReason?: string | null;
 }
 
 /** Message kickoff cho phiên agent duy nhất của stage `lab-kit`. Thuần —
@@ -326,11 +437,21 @@ export function buildKitBrief(opts: BuildKitBriefOptions): string {
       ? `- Tài liệu: \`docs/\` (đáng chú ý: ${opts.docsIndex.map((p) => `"${p}"`).join(', ')}; đọc cả thư mục)`
       : '- Tài liệu: `docs/` (đọc cả thư mục)';
   const materialsLine = `- Nguyên liệu: \`criteria/components.md\` (có dòng Key để import) · components-guide ${checkMark(opts.hasGuide)} · tokens.md ${checkMark(opts.hasTokens)} · slots.md ${checkMark(opts.hasSlots)} (grep đúng mục)`;
+  // WP-lab-reorder: khi có `screens`, mỗi mục plan in thêm "← nguồn: …" nếu
+  // đã có sourceNodes (từ kit-plan.json) — agent biết NGAY node nào trên màn
+  // để clone/componentize, không phải tự đi tìm lại.
   const planLines: string[] =
     opts.plan.length > 0
       ? [
           '- Danh sách đã duyệt (`kit-plan.json`):',
-          ...opts.plan.map((c) => `  - "${c.name}" — ${c.gap ?? '(không nêu)'}${c.mustHave ? ' [bắt buộc]' : ''}`),
+          ...opts.plan.map((c) => {
+            const base = `  - "${c.name}" — ${c.gap ?? '(không nêu)'}${c.mustHave ? ' [bắt buộc]' : ''}`;
+            if (opts.screens && c.sourceNodes && c.sourceNodes.length > 0) {
+              const src = c.sourceNodes.map((s) => `${s.screenKey}:${s.nodeId}`).join(', ');
+              return `${base} ← nguồn: ${src}`;
+            }
+            return base;
+          }),
         ]
       : ['- Danh sách đã duyệt (`kit-plan.json`): (rỗng — không có mục nào để dựng)'];
   const figmaLine = `- Figma: file preview \`${opts.previewFileKey}\`, trang "${pageName}"`;
@@ -339,6 +460,36 @@ export function buildKitBrief(opts: BuildKitBriefOptions): string {
     opts.scopeHint && opts.scopeHint.trim()
       ? `- Định hướng thẩm mỹ: "${opts.scopeHint.trim()}"`
       : '- Định hướng thẩm mỹ: (chưa có — tự rút 3 nguyên tắc từ moodboard Pinterest nếu có, hoặc từ DS màu chủ đạo/radius/elevation, ghi vào notes).';
+
+  if (opts.screens) {
+    // WP-lab-reorder (.tmp/pipeline/wp-lab-reorder.yaml): "Đóng gói comp" —
+    // đóng gói phái sinh từ NODE NGUỒN trong màn (componentize-in-place) rồi
+    // SWAP ngược, thay vì dựng từ base rồi để lab-compose dùng sau.
+    const swapScreensLine = `- Màn để swap ngược (\`lab-result.json\`): ${opts.screens
+      .map((s) => `${s.key} (frame ${s.frameNodeId})`)
+      .join(', ')}`;
+
+    return renderLabBrief({
+      title: `# Đóng gói comp · ${opts.appFeature}`,
+      skillId: 'lab-kit-compose',
+      inputLines: [docsLine, materialsLine, ...planLines, swapScreensLine, figmaLine, toolLine, aestheticLine],
+      taskLines: [
+        '- Với mỗi mục: tạo COMPONENT từ bản sao node nguồn (componentize-in-place) vào trang kit, đặt tên chuẩn.',
+        '- Chuẩn hoá: auto-layout, slot text, bind biến DS, resize-test 358.',
+        '- SWAP: thay từng occurrence trong màn bằng instance comp mới, giữ nội dung gốc.',
+        '- get_screenshot kit + màn đã swap rồi ghi kết quả.',
+      ],
+      reminderLines: [
+        '- Mỗi comp phải chứa ≥1 instance base HIỂN THỊ (không phải tham chiếu ẩn) — cấm vẽ lại bằng frame/text (luật #9).',
+        '- Màu/chữ bind biến DS qua figma.variables, cấm hex trần (luật #10).',
+        '- Trước khi dọn trang kit cũ: detach instance màn đang trỏ vào comp cũ (luật #7, tránh mồ côi).',
+      ],
+      endingLines: [
+        `- \`${KIT_RESULT_FILE_REL}\` — \`{"components":[{"key","name","componentNodeId","reason?","baseComponents?","notes?","sourceNodes?","swapped?"}]}\``,
+        `- \`${KIT_REGISTRY_FILE_REL}\` — ghi mới toàn bộ, không merge với bản cũ`,
+      ],
+    });
+  }
 
   return renderLabBrief({
     title: `# Nâng bộ comp · ${opts.appFeature}`,
@@ -379,6 +530,57 @@ export function buildKitPlanBrief(opts: BuildKitPlanBriefOptions): string {
     opts.scopeHint && opts.scopeHint.trim()
       ? `- Định hướng người dùng: "${opts.scopeHint.trim()}"`
       : '- Định hướng người dùng: (không có)';
+  // WP-lab-shell (2026-08-23): vai trò khung must mà bản đồ màn yêu cầu —
+  // rỗng/absent (chưa chạy "Bản đồ màn", hoặc không role nào must) → KHÔNG
+  // in dòng này (hành vi CŨ, brief y hệt trước WP này).
+  const shellNeedsLine =
+    opts.shellNeeds && opts.shellNeeds.length > 0
+      ? `- Khung màn cần (bản đồ): ${opts.shellNeeds
+          .map((n) => `${n.role} ×${n.screens} màn (DS: ${n.bound ? `"${n.bound}"` : 'chưa có → đề xuất derive mustHave'})`)
+          .join(' · ')}`
+      : null;
+
+  if (opts.screens) {
+    // WP-lab-reorder (.tmp/pipeline/wp-lab-reorder.yaml): "Đề xuất kit" nay
+    // đứng SAU "Sáng tác màn" — QUÉT MÀN ĐÃ DUYỆT thay vì đoán từ docs. Cap 6
+    // màn rồi "+N" (tránh brief phình theo số màn của dự án lớn).
+    const screensShown = opts.screens.slice(0, 6).map((s) => `${s.key} — ${s.name}`).join(', ');
+    const screensExtra = opts.screens.length > 6 ? ` +${opts.screens.length - 6}` : '';
+    const screensLine = `- Màn đã dựng (\`lab-result.json\`, PNG \`screens/\`): ${screensShown}${screensExtra}`;
+    const candidatesLine =
+      opts.candidates && opts.candidates.length > 0
+        ? `- Ứng viên daemon quét (\`kit-candidates.json\`, crop \`kit-candidates/\`): ${opts.candidates
+            .map((c) => `${c.id} "${c.suggestedName}" ×${c.occurrences} (${c.screens.join(', ')})`)
+            .join(' · ')}`
+        : `- Ứng viên daemon quét: (không quét được — ${opts.candidatesUnavailableReason ?? 'không rõ lý do'}; dựa vào PNG màn)`;
+
+    return renderLabBrief({
+      title: `# Đề xuất kit · ${opts.appFeature}`,
+      skillId: 'lab-kit-plan',
+      inputLines: [
+        screensLine,
+        candidatesLine,
+        docsLine,
+        materialsLine,
+        ...(shellNeedsLine ? [shellNeedsLine] : []),
+        scopeLine,
+      ],
+      taskLines: [
+        '- Xem PNG từng màn + crop ứng viên; chỉ đề xuất cái CÓ trên màn.',
+        '- Phép thử hai tầng; derive PHẢI trỏ sourceNodes + gap đích danh.',
+        '- Ghi kit-plan.json + kit-plan.md.',
+      ],
+      reminderLines: [
+        '- Mặc định không sinh — derive phải nêu gap đích danh (phép thử hai tầng, skill).',
+        '- Không có nguồn trên màn thì không derive (trừ vai trò khung mustHave).',
+        '- Phiên này không có tool Figma nào — đừng chờ nó xuất hiện.',
+      ],
+      endingLines: [
+        `- \`${KIT_PLAN_FILE_REL}\` — \`{"candidates":[{"key","name","decision","baseComponents?","gap?","reason?","mustHave?","sourceNodes?","swapBack?"}]}\``,
+        `- \`${KIT_PLAN_MD_REL}\` — bảng cho người duyệt`,
+      ],
+    });
+  }
 
   return renderLabBrief({
     title: `# Đề xuất kit · ${opts.appFeature}`,
@@ -386,6 +588,7 @@ export function buildKitPlanBrief(opts: BuildKitPlanBriefOptions): string {
     inputLines: [
       docsLine,
       materialsLine,
+      ...(shellNeedsLine ? [shellNeedsLine] : []),
       '- Figma: không có trong phiên này — chủ đích, đây là cổng duyệt chỉ đọc.',
       scopeLine,
     ],
@@ -396,7 +599,7 @@ export function buildKitPlanBrief(opts: BuildKitPlanBriefOptions): string {
     ],
     reminderLines: [
       '- Mặc định không sinh — derive phải nêu gap đích danh (phép thử hai tầng, skill).',
-      '- App Bar bắt buộc khi criteria/components.md chưa có — đánh dấu mustHave: true.',
+      '- Vai trò khung must mà DS chưa có (App Bar, Tabbar…) → derive + mustHave: true.',
       '- Phiên này không có tool Figma nào — đừng chờ nó xuất hiện.',
     ],
     endingLines: [

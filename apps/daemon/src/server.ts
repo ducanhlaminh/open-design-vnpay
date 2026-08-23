@@ -483,13 +483,17 @@ import {
   LAB_PATTERNS_DIR_REL,
   LAB_RESULT_FILE_REL,
 } from './lab-compose.js';
-// ds-lab (WP-kit, 2026-08-22) — stage MỚI "Nâng bộ comp" glue, chen giữa
-// lab-docs và lab-compose. Cùng bất biến: pure builder/parser sống ở
-// lab-kit.ts, server.ts (runLabKit bên dưới, cạnh runLabCompose) sở hữu mọi
-// fs/DB/agent-spawn thật.
+// ds-lab (WP-kit, 2026-08-22) — stage "Đóng gói comp" (tên cũ "Nâng bộ
+// comp") glue. Cùng bất biến: pure builder/parser sống ở lab-kit.ts,
+// server.ts (runLabKit bên dưới, cạnh runLabCompose) sở hữu mọi fs/DB/agent-
+// spawn thật.
 // WP-kit-plan (2026-08-22 — .tmp/pipeline/wp-kit-plan.yaml): + stage CỔNG
 // DUYỆT "Đề xuất kit" (lab-kit-plan) — buildKitPlanBrief/parseKitPlan/
 // KIT_PLAN_*/renderKitPlanMd, và buildKitBrief giờ nhận thêm `plan`.
+// WP-lab-reorder (2026-08-23 — .tmp/pipeline/wp-lab-reorder.yaml): lab-kit-
+// plan đứng SAU lab-compose, đổi vai QUÉT MÀN ĐÃ DUYỆT — buildKitBrief/
+// buildKitPlanBrief nhận thêm `screens` (kích hoạt vai trò mới, absent → y
+// cũ).
 import {
   buildKitBrief,
   buildKitPlanBrief,
@@ -503,12 +507,26 @@ import {
   KIT_RESULT_FILE_REL,
   KIT_REGISTRY_FILE_REL,
 } from './lab-kit.js';
+// ds-lab (WP-lab-reorder, 2026-08-23 — .tmp/pipeline/wp-lab-reorder.yaml) —
+// tiền-quét TẤT ĐỊNH của "Đề xuất kit": daemon tự duyệt subtree REST của các
+// màn đã dựng (lab-result.json) TRƯỚC khi agent lab-kit-plan vào phiên, tìm
+// khối lặp/điểm neo — ghi kit-candidates.json + crop kit-candidates/<id>.png
+// (xem runLabKitPlan). Module THUẦN — server.ts sở hữu mọi fs/network thật.
+import {
+  kitCandidatePngRel,
+  renderKitCandidatesMd,
+  scanKitCandidates,
+  KIT_CANDIDATES_DIR_REL,
+  KIT_CANDIDATES_FILE_REL,
+  type KitCandidate,
+} from './lab-kit-scan.js';
 // ds-lab (WP-lab-map, 2026-08-23 — .tmp/pipeline/wp-lab-map.yaml) — stage
 // MỚI "Bản đồ màn" glue, chen giữa lab-docs và lab-kit-plan. Cùng bất biến:
 // pure builder/parser/pick/summarize sống ở lab-map.ts, server.ts (runLabMap
 // bên dưới) sở hữu mọi fs/DB/agent-spawn thật + staging map-src/.
 import {
   buildMapBrief,
+  fillShellDefaults,
   parseScreenMap,
   pickDocsReviewMapSources,
   renderScreenMapMd,
@@ -517,6 +535,11 @@ import {
   SCREEN_MAP_FILE_REL,
   SCREEN_MAP_MD_REL,
 } from './lab-map.js';
+// ds-lab / lab-shell (WP-lab-shell, 2026-08-23 — .tmp/pipeline/wp-lab-shell.yaml)
+// — "Khung màn": module thuần dò comp DS/kit đáp ứng từng vai trò khung
+// (`detectShellBindings`) — server.ts (runLabCompose + runLabKitPlan) là
+// caller duy nhất bên ngoài lab-map.ts/lab-audit.ts (đã tự import module này).
+import { detectShellBindings, SHELL_ROLES } from './lab-shell.js';
 // ds-lab quality (WP-lab-quality, 2026-08-22) — module THUẦN audit
 // placeholder-lộ + tràn-biên từ subtree REST (xem docblock lab-audit.ts).
 // server.ts (runLabCompose + runLabKit) là caller duy nhất: gọi
@@ -20002,11 +20025,21 @@ export async function startServer({
     // cho runLabCompose, "lab-kit: " cho runLabKit) để KHÔNG đổi văn bản log
     // hiện có; "lab-kit-plan: " là caller MỚI (runLabKitPlan).
     logPrefix: string,
-  ): Promise<{ hasGuide: boolean; hasTokens: boolean; hasSlots: boolean }> => {
+  ): Promise<{
+    hasGuide: boolean;
+    hasTokens: boolean;
+    hasSlots: boolean;
+    catalog: FigmaComponentCatalogSnapshot | null;
+  }> => {
     const criteriaDir = path.join(labCwd, 'criteria');
     let hasGuide = false;
     let hasTokens = false;
     let hasSlots = false;
+    // WP-lab-shell (2026-08-23): trả thêm catalog đã đọc (additive — 3 caller
+    // cũ destructure {hasGuide, hasTokens, hasSlots} không cần đổi gì) để
+    // runLabCompose/runLabKitPlan dò `detectShellBindings` mà không phải đọc
+    // lại DS source lần hai.
+    let catalog: FigmaComponentCatalogSnapshot | null = null;
     try {
       const studioCfg = (project.metadata as Record<string, unknown> | undefined)?.studioConfig as
         | Record<string, unknown>
@@ -20015,16 +20048,17 @@ export async function startServer({
       const figmaSourceId = appId ? getPipelineApp(db, appId)?.figmaDesignSystemSourceId ?? null : null;
       if (figmaSourceId) {
         const source = getFigmaDesignSystemSource(db, figmaSourceId);
-        const catalog = source?.catalog as FigmaComponentCatalogSnapshot | null | undefined;
-        if (catalog) {
+        const sourceCatalog = source?.catalog as FigmaComponentCatalogSnapshot | null | undefined;
+        if (sourceCatalog) {
+          catalog = sourceCatalog;
           await fs.promises.mkdir(criteriaDir, { recursive: true });
           await fs.promises.writeFile(
             path.join(criteriaDir, 'components.md'),
-            renderFigmaComponentsMarkdown(catalog),
+            renderFigmaComponentsMarkdown(sourceCatalog),
             'utf8',
           );
           const guideMd = await readFigmaDesignSystemGuide(RUNTIME_DATA_DIR, figmaSourceId);
-          const guideResult = await writeFilteredComponentsGuideToCriteria(criteriaDir, catalog, guideMd);
+          const guideResult = await writeFilteredComponentsGuideToCriteria(criteriaDir, sourceCatalog, guideMd);
           hasGuide = guideResult.entryCount > 0;
           const tokens = await readFigmaDesignSystemTokens(RUNTIME_DATA_DIR, figmaSourceId);
           const tokensResult = await writeTokensMarkdownToCriteria(criteriaDir, tokens?.markdown ?? null);
@@ -20037,7 +20071,7 @@ export async function startServer({
     } catch (error) {
       console.warn(`[ds-lab] ${logPrefix}staging criteria/ từ App/DS source thất bại (continuing):`, error);
     }
-    return { hasGuide, hasTokens, hasSlots };
+    return { hasGuide, hasTokens, hasSlots, catalog };
   };
 
   // ── ds-lab: "Sáng tác màn" (lab-compose) — DAEMON-ORCHESTRATED stage ───────
@@ -20135,7 +20169,7 @@ export async function startServer({
         // khối inline cũ — hành vi giữ nguyên 100%, xem docblock helper ở
         // trên). Thiếu App/DS source, hoặc thiếu guide/tokens → bỏ qua PHẦN
         // ĐÓ, KHÔNG fail — brief nêu rõ phần nào vắng mặt cho agent tự biết.
-        const { hasGuide, hasTokens, hasSlots } = await stageLabCriteriaFromAppDsSource(labCwd, project, '');
+        const { hasGuide, hasTokens, hasSlots, catalog } = await stageLabCriteriaFromAppDsSource(labCwd, project, '');
 
         // Brief nguyên liệu còn lại: docs (shallow readdir, chỉ để nêu ví dụ —
         // agent tự duyệt cả thư mục), pattern có sẵn.
@@ -20149,17 +20183,35 @@ export async function startServer({
           .then((entries) => entries.filter((e) => e.toLowerCase().endsWith('.json')).map((e) => e.replace(/\.json$/i, '')))
           .catch(() => [] as string[]);
         // WP-kit (2026-08-22): kit/kit.json là registry BỀN ghi bởi stage
-        // "Nâng bộ comp" (lab-kit) — đọc fail-soft (chưa chạy lab-kit, hoặc
-        // file hỏng → []); server.ts's runLabKit đọc/ghi CÙNG file này.
-        const kitNames = await fs.promises
+        // "Đóng gói comp" (lab-kit, tên hiển thị cũ "Nâng bộ comp") — đọc
+        // fail-soft (chưa chạy lab-kit, hoặc file hỏng → []); server.ts's
+        // runLabKit đọc/ghi CÙNG file này.
+        // WP-lab-shell (2026-08-23): giữ NGUYÊN component đầy đủ (name +
+        // componentNodeId), không chỉ tên — `detectShellBindings` cần cả hai.
+        // WP-lab-reorder (2026-08-23 — .tmp/pipeline/wp-lab-reorder.yaml):
+        // `lab-kit` nay chạy SAU `lab-compose` trong thứ tự workflow — lần
+        // chạy ĐẦU của "Sáng tác màn" luôn thấy `kitComponents` RỖNG (kit
+        // chưa tồn tại) là BÌNH THƯỜNG, không phải lỗi; agent dựng thẳng từ
+        // comp base. "Chạy lại" Sáng tác màn SAU khi "Đóng gói comp" đã chạy
+        // → đọc được kit/kit.json → ưu tiên kit (hành vi `hasKit`/`kitNames`
+        // bên dưới KHÔNG đổi code, chỉ đổi Ý NGHĨA thời điểm "trước/sau").
+        const kitComponents = await fs.promises
           .readFile(path.join(labCwd, KIT_REGISTRY_FILE_REL), 'utf8')
           .then((raw) => {
-            const parsedKit = JSON.parse(raw) as { components?: Array<{ name?: unknown }> };
+            const parsedKit = JSON.parse(raw) as {
+              components?: Array<{ name?: unknown; componentNodeId?: unknown }>;
+            };
             return Array.isArray(parsedKit.components)
-              ? parsedKit.components.map((c) => (typeof c?.name === 'string' ? c.name.trim() : '')).filter((n) => n.length > 0)
+              ? parsedKit.components
+                  .map((c) => ({
+                    name: typeof c?.name === 'string' ? c.name.trim() : '',
+                    componentNodeId: typeof c?.componentNodeId === 'string' ? c.componentNodeId.trim() : undefined,
+                  }))
+                  .filter((c) => c.name.length > 0)
               : [];
           })
-          .catch(() => [] as string[]);
+          .catch(() => [] as { name: string; componentNodeId?: string }[]);
+        const kitNames = kitComponents.map((c) => c.name);
 
         // WP-lab-map (2026-08-23): `screen-map.json` — bản đồ màn của stage
         // "Bản đồ màn" (lab-map, ĐỨNG TRƯỚC lab-kit-plan) — đọc fail-soft
@@ -20174,6 +20226,11 @@ export async function startServer({
             return summarizeScreenMapForCompose(parsedMap.map, scopeHint ?? null);
           })
           .catch(() => null);
+        // WP-lab-shell: comp DS/kit đã dò được cho từng vai trò khung — kit
+        // thắng DS (xem `detectShellBindings`, lab-shell.ts). Tính TOÀN BỘ
+        // (không lọc theo scoped) — brief tự lọc đúng role xuất hiện trong
+        // `mapSummary.shells`.
+        const shellBindings = detectShellBindings(catalog, kitComponents);
 
         const appFeature = (project.name && String(project.name).trim()) || projectId;
         const brief = buildComposeBrief({
@@ -20188,7 +20245,7 @@ export async function startServer({
           hasKit: kitNames.length > 0,
           kitNames,
           hasPinterest: !!pinterest,
-          map: mapSummary,
+          map: mapSummary ? { ...mapSummary, bindings: shellBindings } : null,
         });
 
         // (2) Spawn MỘT run thường — Symbol allow-list NGUYÊN KHUÔN
@@ -20311,8 +20368,22 @@ export async function startServer({
               previewConfig.fileKey,
               parsed.screens.map((s) => s.frameNodeId),
             );
+            // WP-lab-shell (2026-08-23): `shell` cho màn có key khớp CHÍNH
+            // XÁC một key trong `mapSummary.shells` — không khớp (bản đồ
+            // chưa chạy, hoặc key không nằm trong `scoped` được tóm tắt) →
+            // không truyền `shell`, `auditLabSubtrees` bỏ qua kiểm tra đó
+            // cho input này (hành vi CŨ).
+            const shellRuleByKey = new Map((mapSummary?.shells ?? []).map((s) => [s.key, s]));
             const auditInputs = parsed.screens
-              .map((s) => ({ key: s.key, name: s.name, node: subtrees.get(s.frameNodeId) }))
+              .map((s) => {
+                const shellRule = shellRuleByKey.get(s.key);
+                return {
+                  key: s.key,
+                  name: s.name,
+                  node: subtrees.get(s.frameNodeId),
+                  ...(shellRule ? { shell: { must: shellRule.must, avoid: shellRule.avoid } } : {}),
+                };
+              })
               .filter((i) => i.node != null);
             const violations = auditLabSubtrees(auditInputs);
             const auditMd = renderLabAuditMd(violations, { generatedAt: new Date().toISOString(), subject: 'màn' });
@@ -20346,18 +20417,24 @@ export async function startServer({
     return { projectId, completion };
   };
 
-  // ── ds-lab: "Nâng bộ comp" (lab-kit) — DAEMON-ORCHESTRATED stage (WP-kit,
-  // 2026-08-22, .tmp/pipeline/wp-kit.yaml) ───────────────────────────────────
+  // ── ds-lab: "Đóng gói comp" (lab-kit, tên hiển thị cũ "Nâng bộ comp") —
+  // DAEMON-ORCHESTRATED stage (WP-kit, 2026-08-22, .tmp/pipeline/wp-kit.yaml;
+  // WP-lab-reorder, 2026-08-23, .tmp/pipeline/wp-lab-reorder.yaml đổi vai +
+  // tên) ───────────────────────────────────────────────────────────────────
   // NGUYÊN khuôn `runLabCompose` ngay TRÊN đây (đọc docblock của hàm đó
-  // trước) — chen giữa lab-kit-plan và lab-compose trong pipelines.ts's
-  // WORKFLOW_DEFS.ds-lab: đọc kit-plan.json (cổng duyệt, xem block ngay dưới
-  // re-run clear — WP-kit-plan, .tmp/pipeline/wp-kit-plan.yaml, fail-fast nếu
-  // thiếu/hỏng/rỗng) → preflight (file preview + MCP Figma + App/DS source) →
-  // staging criteria/ → spawn MỘT run THƯỜNG mang Figma MCP (+ Pinterest MCP
-  // nếu user đã tự khai, xem `pickPinterestMcpServer`) qua Symbol allow-list
-  // → chờ run xong → đọc kit-result.json → capture PNG từng comp phái sinh
-  // (fetchNodeImages) → kit-shots/. Mọi logic THUẦN (brief/parse/paths) sống
-  // ở lab-kit.ts — hàm này chỉ orchestration (fs/DB/agent spawn).
+  // trước) — STAGE CUỐI CÙNG trong pipelines.ts's WORKFLOW_DEFS.ds-lab (thứ
+  // tự mới: lab-docs → lab-map → lab-compose → lab-kit-plan → lab-kit): đọc
+  // kit-plan.json (cổng duyệt, xem block ngay dưới re-run clear — WP-kit-
+  // plan, .tmp/pipeline/wp-kit-plan.yaml, fail-fast nếu thiếu/hỏng/rỗng) →
+  // preflight (file preview + MCP Figma + App/DS source) → staging criteria/
+  // → đọc `lab-result.json` fail-soft (đóng gói TỪ NODE NGUỒN trong màn +
+  // SWAP ngược, xem `buildKitBrief`'s `screens`) → spawn MỘT run THƯỜNG mang
+  // Figma MCP (+ Pinterest MCP nếu user đã tự khai, xem
+  // `pickPinterestMcpServer`) qua Symbol allow-list → chờ run xong → đọc
+  // kit-result.json → capture PNG từng comp phái sinh (fetchNodeImages) →
+  // kit-shots/. Mọi logic THUẦN (brief/parse/paths) sống ở lab-kit.ts — hàm
+  // này chỉ orchestration (fs/DB/agent spawn). Preflight/fail-fast plan (kit-
+  // plan.json) KHÔNG đổi hành vi (must_not).
   const runLabKit = (
     pipelineId: string,
     projectId: string,
@@ -20487,6 +20564,19 @@ export async function startServer({
           .then((entries) => entries.filter((e) => e.toLowerCase().endsWith('.md')).sort().slice(0, 20))
           .catch(() => [] as string[]);
 
+        // WP-lab-reorder (.tmp/pipeline/wp-lab-reorder.yaml): "Đóng gói comp"
+        // (tên cũ "Nâng bộ comp") nay đóng gói TỪ NODE NGUỒN trong màn đã
+        // dựng rồi SWAP ngược — đọc `lab-result.json` fail-soft (luôn có sẵn
+        // từ WP này, vì "Sáng tác màn" đứng TRƯỚC trong thứ tự mới) để truyền
+        // `screens` cho buildKitBrief (kích hoạt vai trò mới; absent → y cũ).
+        const screensForKitBrief = await fs.promises
+          .readFile(path.join(labCwd, LAB_RESULT_FILE_REL), 'utf8')
+          .then((raw) => {
+            const parsedForScreens = parseLabResult(raw);
+            return parsedForScreens ? parsedForScreens.screens.map((s) => ({ key: s.key, frameNodeId: s.frameNodeId })) : [];
+          })
+          .catch(() => [] as { key: string; frameNodeId: string }[]);
+
         const appFeature = (project.name && String(project.name).trim()) || projectId;
         const brief = buildKitBrief({
           docsIndex,
@@ -20501,6 +20591,7 @@ export async function startServer({
           // fail-fast ở trên nếu rỗng/thiếu) — buildKitBrief KHÔNG còn tự
           // phân tích chọn lọc, chỉ dựng ĐÚNG danh sách này.
           plan: derivePlan,
+          ...(screensForKitBrief.length > 0 ? { screens: screensForKitBrief } : {}),
         });
 
         // (2) Spawn MỘT run thường — Symbol allow-list NGUYÊN KHUÔN
@@ -20834,9 +20925,33 @@ export async function startServer({
           console.warn(`[ds-lab] lab-map: screen-map.json warnings: ${parsedMap.warnings.join(' | ')}`);
         }
 
-        // screen-map.md thiếu → tự render bản tối giản từ map — đừng để cả
-        // stage fail chỉ vì thiếu file trình bày (screen-map.json là hợp đồng
-        // máy đọc, đã đủ để lab-kit-plan/lab-compose dùng).
+        // WP-lab-shell (2026-08-23): agent bỏ trống `shell` cho một số màn →
+        // daemon TỰ SUY (fillShellDefaults, lab-map.ts) và GHI LẠI
+        // screen-map.json với bản đã điền — để compose/audit/người đọc
+        // screen-map.md đều thấy CÙNG một bản khung màn, không phải suy lại
+        // mỗi nơi một kiểu. Fail-soft TUYỆT ĐỐI: ghi lỗi chỉ console.warn,
+        // KHÔNG đổi status stage (must_not: không fail vì shell).
+        const { map: filledMap, filled } = fillShellDefaults(parsedMap.map);
+        if (filled.length > 0) {
+          console.warn(
+            `[ds-lab] lab-map: agent không ghi shell cho ${filled.length} màn — daemon đã điền mặc định (${filled.join(', ')}).`,
+          );
+          try {
+            await fs.promises.writeFile(
+              path.join(labCwd, SCREEN_MAP_FILE_REL),
+              JSON.stringify(filledMap, null, 2),
+              'utf8',
+            );
+          } catch (error) {
+            console.warn('[ds-lab] lab-map: ghi lại screen-map.json (đã điền shell mặc định) thất bại (continuing):', error);
+          }
+        }
+
+        // screen-map.md thiếu → tự render bản tối giản từ map (bản ĐÃ ĐIỀN
+        // shell, để md fallback cũng có cột Khung đúng) — đừng để cả stage
+        // fail chỉ vì thiếu file trình bày (screen-map.json là hợp đồng máy
+        // đọc, đã đủ để lab-kit-plan/lab-compose dùng). Agent ĐÃ tự ghi md →
+        // KHÔNG đụng vào (không rewrite file do agent ghi).
         const mdPath = path.join(labCwd, SCREEN_MAP_MD_REL);
         const mdExists = await fs.promises
           .access(mdPath)
@@ -20844,7 +20959,7 @@ export async function startServer({
           .catch(() => false);
         if (!mdExists) {
           console.warn('[ds-lab] lab-map: agent không ghi screen-map.md — daemon tự render bản tối giản.');
-          await fs.promises.writeFile(mdPath, renderScreenMapMd(parsedMap.map), 'utf8').catch(() => null);
+          await fs.promises.writeFile(mdPath, renderScreenMapMd(filledMap), 'utf8').catch(() => null);
         }
 
         // Outputs/attribution: screen-map.json + screen-map.md thuộc lab-map
@@ -20911,6 +21026,20 @@ export async function startServer({
           if (id !== pipelineId) setProjectPipelineStatus(db, projectId, id, { status: 'idle' });
         }
 
+        // WP-lab-reorder (.tmp/pipeline/wp-lab-reorder.yaml): "Đề xuất kit"
+        // nay đứng SAU "Sáng tác màn" (dependsOn THÊM lab-compose) — vai trò
+        // đổi thành QUÉT MÀN ĐÃ DUYỆT thay vì đoán từ docs. Thiếu/hỏng/rỗng
+        // `lab-result.json` → fail-fast NGAY, trước khi tốn thời gian dựng
+        // brief/agent (cùng tinh thần fail-fast của runLabKit's kit-plan.json
+        // check bên trên).
+        const labResultRaw = await fs.promises.readFile(path.join(labCwd, LAB_RESULT_FILE_REL), 'utf8').catch(() => null);
+        const parsedLabResultForKitPlan = labResultRaw != null ? parseLabResult(labResultRaw) : null;
+        if (!parsedLabResultForKitPlan || parsedLabResultForKitPlan.screens.length === 0) {
+          const message = 'Chưa có màn đã dựng — chạy bước "Sáng tác màn" trước (kit-plan nay quét màn đã dựng).';
+          setProjectPipelineStatus(db, projectId, pipelineId, { status: 'failed', error: message });
+          return 'failed' as const;
+        }
+
         // Agent mặc định của máy — phiên này KHÔNG cần MCP (không tool
         // Figma), nên bất kỳ agent khả dụng nào cũng chạy được (không đòi
         // externalMcpInjection như resolveFigmaBuildAgent).
@@ -20925,7 +21054,7 @@ export async function startServer({
 
         // Staging criteria/ — Y HỆT runLabCompose/runLabKit (helper dùng
         // chung, xem docblock ở trên).
-        const { hasGuide, hasTokens, hasSlots } = await stageLabCriteriaFromAppDsSource(
+        const { hasGuide, hasTokens, hasSlots, catalog } = await stageLabCriteriaFromAppDsSource(
           labCwd,
           project,
           'lab-kit-plan: ',
@@ -20936,7 +21065,117 @@ export async function startServer({
           .then((entries) => entries.filter((e) => e.toLowerCase().endsWith('.md')).sort().slice(0, 20))
           .catch(() => [] as string[]);
 
+        // WP-lab-reorder: tiền-quét TẤT ĐỊNH (fail-soft TUYỆT ĐỐI — lỗi ở
+        // đây KHÔNG BAO GIỜ fail cả stage, chỉ khiến brief nói "không quét
+        // được"). Phiên lab-kit-plan vẫn KHÔNG MCP nào — REST token + crop
+        // PNG là đủ để agent đọc mà không cần mở Figma. daemon TỰ duyệt
+        // subtree của từng frame màn (đã fail-fast ở trên có ≥1 màn) tìm
+        // khối lặp ≥2 lần / điểm neo (scanKitCandidates, lab-kit-scan.ts),
+        // ghi kit-candidates.json + crop kit-candidates/<id>.png (occurrence
+        // ĐẦU của mỗi candidate) — một trong các output khai báo của
+        // lab-kit-plan (pipelines.ts).
+        const docsReviewCwdForKitPlan = path.join(projectRoot, workflowDirForPipeline('dr-docs') ?? 'docs-review');
+        let scannedCandidates: KitCandidate[] = [];
+        let candidatesUnavailableReason: string | null = null;
+        try {
+          const previewConfigForScan = await resolveLabPreviewConfig(labCwd, docsReviewCwdForKitPlan);
+          const figmaCfgForScan = await readFigmaConfig(RUNTIME_DATA_DIR);
+          if (!previewConfigForScan) {
+            candidatesUnavailableReason = 'chưa cấu hình file preview';
+          } else if (!figmaCfgForScan?.token) {
+            candidatesUnavailableReason = 'chưa có token Figma';
+          } else {
+            const subtreesForScan = await fetchNodeSubtrees(
+              figmaCfgForScan.token,
+              previewConfigForScan.fileKey,
+              parsedLabResultForKitPlan.screens.map((s) => s.frameNodeId),
+            );
+            const scanInputs = parsedLabResultForKitPlan.screens
+              .map((s) => ({ screenKey: s.key, node: subtreesForScan.get(s.frameNodeId) }))
+              .filter((i): i is { screenKey: string; node: unknown } => i.node != null);
+            // Gọi hai lần (không giới hạn rồi giới hạn mặc định) chỉ để LOG
+            // số bị cắt — scanKitCandidates là hàm thuần, tất định, chi phí
+            // không đáng kể ở quy mô một dự án.
+            const allScanned = scanKitCandidates(scanInputs, { maxCandidates: Number.POSITIVE_INFINITY });
+            scannedCandidates = scanKitCandidates(scanInputs);
+            const cutCount = allScanned.length - scannedCandidates.length;
+            console.log(
+              `[ds-lab] lab-kit-plan ${projectId}: tiền-quét tìm ${scannedCandidates.length} ứng viên${cutCount > 0 ? ` (cắt ${cutCount} vượt giới hạn)` : ''}.`,
+            );
+
+            await fs.promises.writeFile(
+              path.join(labCwd, KIT_CANDIDATES_FILE_REL),
+              JSON.stringify(
+                { schema_version: 1, generatedAt: new Date().toISOString(), candidates: scannedCandidates },
+                null,
+                2,
+              ),
+              'utf8',
+            );
+
+            if (scannedCandidates.length === 0) {
+              candidatesUnavailableReason = 'không tìm thấy khối lặp lại hoặc điểm neo nào trên các màn';
+            } else {
+              const firstNodeIds = scannedCandidates.map((c) => c.occurrences[0]!.nodeId);
+              const cropImages = await fetchNodeImages(figmaCfgForScan.token, previewConfigForScan.fileKey, firstNodeIds).catch(
+                () => new Map<string, string>(),
+              );
+              await fs.promises.mkdir(path.join(labCwd, KIT_CANDIDATES_DIR_REL), { recursive: true });
+              for (const candidate of scannedCandidates) {
+                const nodeId = candidate.occurrences[0]!.nodeId;
+                const url = cropImages.get(nodeId);
+                if (!url) {
+                  console.warn(`[ds-lab] lab-kit-plan: ứng viên "${candidate.id}": không lấy được ảnh render — bỏ qua crop.`);
+                  continue;
+                }
+                const ok = await downloadFigmaImage(url, path.join(labCwd, kitCandidatePngRel(candidate.id)));
+                if (!ok) console.warn(`[ds-lab] lab-kit-plan: ứng viên "${candidate.id}": tải crop thất bại — bỏ qua.`);
+              }
+            }
+          }
+        } catch (error) {
+          candidatesUnavailableReason = `lỗi quét: ${error instanceof Error ? error.message : String(error)}`;
+          console.warn('[ds-lab] lab-kit-plan: tiền-quét thất bại (fail-soft, không ảnh hưởng kết quả stage):', error);
+        }
+
+        // WP-lab-shell (2026-08-23): `screen-map.json` (stage "Bản đồ màn",
+        // lab-map — ĐỨNG TRƯỚC lab-kit-plan) đọc fail-soft, điền shell mặc
+        // định cho màn agent bỏ trống (fillShellDefaults, KHÔNG ghi lại file
+        // — chỉ runLabMap mới ghi lại), rồi gộp vai trò `must` xuất hiện ở
+        // ≥1 màn thành `shellNeeds` cho buildKitPlanBrief. Chưa chạy lab-map
+        // (hoặc file hỏng/rỗng) → không truyền `shellNeeds`, brief y hệt
+        // trước WP này.
+        const mapRawForShell = await fs.promises.readFile(path.join(labCwd, SCREEN_MAP_FILE_REL), 'utf8').catch(() => null);
+        const parsedMapForShell = mapRawForShell != null ? parseScreenMap(mapRawForShell) : null;
+        let shellNeeds: { role: string; screens: number; bound: string | null }[] | undefined;
+        if (parsedMapForShell && parsedMapForShell.map.screens.length > 0) {
+          const { map: filledMapForShell } = fillShellDefaults(parsedMapForShell.map);
+          const screensByRole = new Map<string, number>();
+          for (const screen of filledMapForShell.screens) {
+            for (const role of screen.shell?.must ?? []) {
+              screensByRole.set(role, (screensByRole.get(role) ?? 0) + 1);
+            }
+          }
+          if (screensByRole.size > 0) {
+            // Kit chưa dựng ở stage này (kit-plan ĐỨNG TRƯỚC "Nâng bộ comp")
+            // — chỉ dò DS, truyền mảng kit rỗng.
+            const dsBindings = detectShellBindings(catalog, []);
+            shellNeeds = SHELL_ROLES.filter((role) => screensByRole.has(role)).map((role) => {
+              const binding = dsBindings.find((b) => b.role === role);
+              return { role, screens: screensByRole.get(role)!, bound: binding ? binding.name : null };
+            });
+          }
+        }
+
         const appFeature = (project.name && String(project.name).trim()) || projectId;
+        const screensForKitPlanBrief = parsedLabResultForKitPlan.screens.map((s) => ({ key: s.key, name: s.name }));
+        const candidatesForBrief = scannedCandidates.map((c) => ({
+          id: c.id,
+          suggestedName: c.suggestedName,
+          occurrences: c.occurrences.length,
+          screens: Array.from(new Set(c.occurrences.map((o) => o.screenKey))),
+          hasInstance: c.hasInstance,
+        }));
         const brief = buildKitPlanBrief({
           docsIndex,
           scopeHint: scopeHint ?? null,
@@ -20944,6 +21183,10 @@ export async function startServer({
           hasTokens,
           hasGuide,
           hasSlots,
+          ...(shellNeeds ? { shellNeeds } : {}),
+          screens: screensForKitPlanBrief,
+          ...(candidatesForBrief.length > 0 ? { candidates: candidatesForBrief } : {}),
+          candidatesUnavailableReason,
         });
 
         // Spawn MỘT run thường — Symbol allow-list RỖNG (KHÔNG MCP nào, phiên
@@ -21028,7 +21271,11 @@ export async function startServer({
           .catch(() => false);
         if (!mdExists) {
           console.warn('[ds-lab] lab-kit-plan: agent không ghi kit-plan.md — daemon tự render bản tối giản.');
-          await fs.promises.writeFile(mdPath, renderKitPlanMd(parsedPlan.candidates), 'utf8').catch(() => null);
+          // WP-lab-reorder: nối thêm phụ lục "Ứng viên daemon quét được" khi
+          // tiền-quét có kết quả — renderKitCandidatesMd trả '' khi rỗng nên
+          // nối vô hại (không thêm gì) khi không có candidate nào.
+          const md = renderKitPlanMd(parsedPlan.candidates) + renderKitCandidatesMd(scannedCandidates);
+          await fs.promises.writeFile(mdPath, md, 'utf8').catch(() => null);
         }
 
         // Outputs/attribution: kit-plan.json + kit-plan.md thuộc lab-kit-plan

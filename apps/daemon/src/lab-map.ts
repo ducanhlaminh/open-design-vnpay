@@ -27,6 +27,22 @@
 // fs/DB/agent-spawn thật (staging map-src/, spawn run, đọc kết quả).
 
 import { checkMark, renderLabBrief } from './lab-brief.js';
+// WP-lab-shell (2026-08-23 — .tmp/pipeline/wp-lab-shell.yaml): "Khung màn"
+// (shell) — bảng luật cố định (loại màn → vai trò must/should/avoid) +
+// pattern suy kind từ tên sống ở lab-shell.ts (module thuần, không import
+// ngược lại module này). ScreenMapScreen.shell re-export type ở đây để
+// caller cũ (lab-compose.ts, server.ts) chỉ cần import một chỗ.
+import {
+  SHELL_KINDS,
+  SHELL_ROLES,
+  SHELL_RULES,
+  SHELL_KIND_NAME_PATTERNS,
+  type ScreenMapShell,
+  type ShellKind,
+  type ShellRole,
+} from './lab-shell.js';
+
+export type { ScreenMapShell };
 
 /** File kết quả agent PHẢI ghi trước khi kết thúc phiên — output khai báo của
  *  `lab-map` trong pipelines.ts. */
@@ -77,6 +93,10 @@ export interface ScreenMapScreen {
   nav?: ScreenMapNav[];
   source?: { doc?: string; line?: number };
   dsHints?: string[];
+  /** WP-lab-shell: khung màn (loại + vai trò must/should/avoid) — agent
+   *  lab-map GHI trực tiếp (`source: 'agent'` sau parse) hoặc bỏ trống để
+   *  daemon tự suy (`deriveShellDefaults`/`fillShellDefaults`). */
+  shell?: ScreenMapShell;
 }
 
 /** Một luồng — `mainPath` là đường đi CHÍNH (không phải mọi nhánh) từ điểm
@@ -192,6 +212,45 @@ export function parseScreenMap(raw: string): { map: ScreenMap; warnings: string[
       const dsHints = (e.dsHints as string[]).map((h) => h.trim()).filter(Boolean);
       if (dsHints.length > 0) screen.dsHints = dsHints;
     }
+    // WP-lab-shell: `shell.kind` phải thuộc SHELL_KINDS — kind lạ (hoặc
+    // thiếu) BỎ CẢ shell (kèm warning; daemon tự suy qua deriveShellDefaults
+    // ở chỗ khác), không giữ lại một shell với kind rác. must/should/avoid:
+    // trim+lowercase, giữ đúng giá trị thuộc SHELL_ROLES — giá trị lạ bị lọc
+    // (kèm một warning cho cả màn, không phải một warning/giá-trị).
+    if (e.shell && typeof e.shell === 'object' && !Array.isArray(e.shell)) {
+      const sh = e.shell as Record<string, unknown>;
+      const kindRaw = typeof sh.kind === 'string' ? sh.kind.trim() : '';
+      if ((SHELL_KINDS as readonly string[]).includes(kindRaw)) {
+        const parseRoles = (raw: unknown, field: string): ShellRole[] => {
+          if (!Array.isArray(raw)) return [];
+          const roles: ShellRole[] = [];
+          let droppedAny = false;
+          for (const r of raw) {
+            const v = typeof r === 'string' ? r.trim().toLowerCase() : '';
+            if (v && (SHELL_ROLES as readonly string[]).includes(v)) {
+              roles.push(v as ShellRole);
+            } else {
+              droppedAny = true;
+            }
+          }
+          if (droppedAny) {
+            warnings.push(`Màn "${key}": shell.${field} có vai trò không hợp lệ — đã bỏ giá trị đó.`);
+          }
+          return roles;
+        };
+        const shell: ScreenMapShell = {
+          kind: kindRaw as ShellKind,
+          must: parseRoles(sh.must, 'must'),
+          should: parseRoles(sh.should, 'should'),
+          avoid: parseRoles(sh.avoid, 'avoid'),
+          source: 'agent',
+        };
+        if (typeof sh.note === 'string' && sh.note.trim()) shell.note = sh.note.trim();
+        screen.shell = shell;
+      } else {
+        warnings.push(`Màn "${key}": shell.kind không hợp lệ — daemon sẽ tự suy.`);
+      }
+    }
     screens.push(screen);
   }
 
@@ -242,6 +301,92 @@ export function parseScreenMap(raw: string): { map: ScreenMap; warnings: string[
   return { map: { schema_version: 1, generatedFrom, flows, screens }, warnings };
 }
 
+/** Suy khung màn MẶC ĐỊNH cho MỌI màn của bản đồ (kể cả màn đã có `shell` —
+ *  caller quyết dùng hay không, xem `resolveScreenShell`/`fillShellDefaults`
+ *  bên dưới): `kind` khớp `SHELL_KIND_NAME_PATTERNS` trên `name` trước, rồi
+ *  `purpose` nếu `name` không khớp gì (mỗi lượt thử ĐÚNG thứ tự ưu tiên của
+ *  mảng patterns) — không khớp gì cả (nghĩa là không phải sheet/modal/
+ *  result/fullscreen) thì xét màn đó có đang được một màn KHÁC trỏ tới không
+ *  (`nav[].to`, `mainPath[i>0]` của bất kỳ luồng nào, hoặc `branches[].to`):
+ *  KHÔNG ai trỏ tới → `'root'` (điểm bắt đầu); CÓ ai trỏ tới → `'child'`.
+ *  `must`/`should`/`avoid` copy nguyên bảng `SHELL_RULES[kind]` (mảng mới,
+ *  không chia sẻ tham chiếu với hằng số), `source: 'derived'`. */
+export function deriveShellDefaults(map: ScreenMap): Map<string, ScreenMapShell> {
+  const referenced = new Set<string>();
+  for (const screen of map.screens) {
+    for (const nav of screen.nav ?? []) referenced.add(nav.to);
+  }
+  for (const flow of map.flows) {
+    for (const key of flow.mainPath.slice(1)) referenced.add(key);
+    for (const branch of flow.branches ?? []) referenced.add(branch.to);
+  }
+
+  const result = new Map<string, ScreenMapShell>();
+  for (const screen of map.screens) {
+    let kind: ShellKind | null = null;
+    for (const pattern of SHELL_KIND_NAME_PATTERNS) {
+      if (pattern.re.test(screen.name)) {
+        kind = pattern.kind;
+        break;
+      }
+    }
+    if (!kind && screen.purpose) {
+      for (const pattern of SHELL_KIND_NAME_PATTERNS) {
+        if (pattern.re.test(screen.purpose)) {
+          kind = pattern.kind;
+          break;
+        }
+      }
+    }
+    if (!kind) kind = referenced.has(screen.key) ? 'child' : 'root';
+
+    const rules = SHELL_RULES[kind];
+    result.set(screen.key, {
+      kind,
+      must: [...rules.must],
+      should: [...rules.should],
+      avoid: [...rules.avoid],
+      source: 'derived',
+    });
+  }
+  return result;
+}
+
+/** Khung HIỆU LỰC của một màn: `screen.shell` (agent tự ghi) thắng, không có
+ *  thì tra `derived` (kết quả `deriveShellDefaults`), cả hai đều vắng (màn
+ *  không có trong `derived` — không nên xảy ra khi `derived` được tính từ
+ *  CHÍNH map chứa `screen`, nhưng caller có thể truyền map khác) → khung
+ *  `child` mặc định (kind cẩn trọng nhất — PHẢI App Bar + back). */
+export function resolveScreenShell(screen: ScreenMapScreen, derived: Map<string, ScreenMapShell>): ScreenMapShell {
+  return (
+    screen.shell ??
+    derived.get(screen.key) ?? {
+      kind: 'child',
+      must: [...SHELL_RULES.child.must],
+      should: [...SHELL_RULES.child.should],
+      avoid: [...SHELL_RULES.child.avoid],
+      source: 'derived',
+    }
+  );
+}
+
+/** Trả một BẢN SAO `map` mà MỌI màn thiếu `shell` được điền theo
+ *  `deriveShellDefaults` — màn ĐÃ có `shell` (agent tự ghi) giữ NGUYÊN,
+ *  không bị derive ghi đè. `filled`: key các màn VỪA được điền (để server.ts
+ *  quyết định có cần ghi lại `screen-map.json` hay không, và log số màn đã
+ *  điền). Thuần — không fs; server.ts (`runLabMap`) gọi hàm này rồi tự ghi
+ *  file nếu `filled.length > 0`. */
+export function fillShellDefaults(map: ScreenMap): { map: ScreenMap; filled: string[] } {
+  const derived = deriveShellDefaults(map);
+  const filled: string[] = [];
+  const screens = map.screens.map((screen) => {
+    if (screen.shell) return screen;
+    filled.push(screen.key);
+    return { ...screen, shell: resolveScreenShell(screen, derived) };
+  });
+  return { map: { ...map, screens }, filled };
+}
+
 /** Render `screen-map.md` — bảng cho NGƯỜI duyệt. Dùng làm fallback khi agent
  *  không tự ghi file này (server.ts's `runLabMap`), NÊN đơn giản/tất định:
  *  "# Bản đồ màn" → mỗi luồng một khối (tiêu đề + basis + mainPath "a → b →
@@ -263,8 +408,13 @@ export function renderScreenMapMd(map: ScreenMap): string {
     lines.push('');
   }
 
-  lines.push('| Key | Tên | Mục đích | Phải có | Trạng thái | Đi tới |');
-  lines.push('| --- | --- | --- | --- | --- | --- |');
+  // WP-lab-shell: cột "Khung" — dùng derive nội bộ (không phải server.ts's
+  // đã-điền) để một map CHƯA từng qua `fillShellDefaults` vẫn hiện cột này
+  // (renderScreenMapMd cũng được gọi làm fallback ngay sau parse, trước khi
+  // server.ts quyết định ghi lại file).
+  const derivedShells = deriveShellDefaults(map);
+  lines.push('| Key | Tên | Mục đích | Phải có | Khung | Trạng thái | Đi tới |');
+  lines.push('| --- | --- | --- | --- | --- | --- | --- |');
   for (const screen of map.screens) {
     const mustHaveParts = screen.mustHave
       .slice(0, 8)
@@ -273,7 +423,13 @@ export function renderScreenMapMd(map: ScreenMap): string {
     const mustHaveCell = `${mustHaveParts.join(', ')}${extra}`;
     const statesCell = screen.states && screen.states.length > 0 ? screen.states.join(', ') : '';
     const navCell = screen.nav && screen.nav.length > 0 ? screen.nav.map((n) => n.to).join(', ') : '';
-    lines.push(`| ${screen.key} | ${screen.name} | ${screen.purpose ?? ''} | ${mustHaveCell} | ${statesCell} | ${navCell} |`);
+    const shell = resolveScreenShell(screen, derivedShells);
+    const shellParts = [shell.kind as string];
+    if (shell.must.length > 0) shellParts.push(`phải: ${shell.must.join(', ')}`);
+    if (shell.should.length > 0) shellParts.push(`nên: ${shell.should.join(', ')}`);
+    if (shell.avoid.length > 0) shellParts.push(`tránh: ${shell.avoid.join(', ')}`);
+    const shellCell = shellParts.join(' · ');
+    lines.push(`| ${screen.key} | ${screen.name} | ${screen.purpose ?? ''} | ${mustHaveCell} | ${shellCell} | ${statesCell} | ${navCell} |`);
   }
   lines.push('');
   lines.push(`Nguồn: ${map.generatedFrom}`);
@@ -332,11 +488,21 @@ export function pickDocsReviewMapSources(relPaths: readonly string[]): string[] 
  *  đó, theo thứ tự chúng XUẤT HIỆN trong `map.screens`. Không khớp gì (kể cả
  *  `scopeHint` rỗng/absent) → 3 key đầu của `mainPath` luồng ĐẦU TIÊN; luồng
  *  đầu tiên không có `mainPath` (hoặc không có luồng nào) → 3 màn đầu của
- *  `map.screens`. */
+ *  `map.screens`.
+ *
+ *  WP-lab-shell: `shells` — khung màn HIỆU LỰC (agent tự ghi thắng, derive
+ *  khi bỏ trống — xem `resolveScreenShell`) cho ĐÚNG các màn trong `scoped`,
+ *  theo CÙNG thứ tự — đủ để `buildComposeBrief` in dòng "Khung <key>" mà
+ *  không cần lộ toàn bộ `ScreenMap`. */
 export function summarizeScreenMapForCompose(
   map: ScreenMap,
   scopeHint?: string | null,
-): { screens: { key: string; name: string; mustHaveCount: number }[]; mainPath: string[]; scoped: string[] } {
+): {
+  screens: { key: string; name: string; mustHaveCount: number }[];
+  mainPath: string[];
+  scoped: string[];
+  shells: { key: string; kind: string; must: string[]; should: string[]; avoid: string[] }[];
+} {
   const screens = map.screens.map((s) => ({ key: s.key, name: s.name, mustHaveCount: s.mustHave.length }));
   const mainPath = map.flows[0]?.mainPath ?? [];
 
@@ -354,7 +520,17 @@ export function summarizeScreenMapForCompose(
     scoped = mainPath.length > 0 ? mainPath.slice(0, 3) : map.screens.slice(0, 3).map((s) => s.key);
   }
 
-  return { screens, mainPath, scoped };
+  const screenByKey = new Map(map.screens.map((s) => [s.key, s]));
+  const derivedShells = deriveShellDefaults(map);
+  const shells = scoped
+    .map((key) => screenByKey.get(key))
+    .filter((s): s is ScreenMapScreen => s != null)
+    .map((s) => {
+      const shell = resolveScreenShell(s, derivedShells);
+      return { key: s.key, kind: shell.kind as string, must: shell.must, should: shell.should, avoid: shell.avoid };
+    });
+
+  return { screens, mainPath, scoped, shells };
 }
 
 export interface BuildMapBriefOptions {
@@ -408,6 +584,7 @@ export function buildMapBrief(opts: BuildMapBriefOptions): string {
       '- Đọc `map-src/` trước, `docs/` sau để đối chiếu.',
       '- Liệt kê từng luồng kèm mainPath (đường đi chính, không phải mọi nhánh).',
       '- Với mỗi màn: purpose, mustHave (role + content), states, nav.',
+      '- Với mỗi màn: shell (kind + must/should/avoid) theo bảng luật skill; bỏ trống thì daemon tự suy.',
       '- Ghi đúng hai file kết quả trước khi kết thúc phiên.',
     ],
     reminderLines: [
@@ -416,7 +593,7 @@ export function buildMapBrief(opts: BuildMapBriefOptions): string {
       '- Có ux-review → ưu tiên luồng proposed, ghi rõ basis.',
     ],
     endingLines: [
-      `- \`${SCREEN_MAP_FILE_REL}\` — \`{"schema_version":1,"generatedFrom","flows":[{"id","mainPath"}],"screens":[{"key","name","mustHave"}]}\``,
+      `- \`${SCREEN_MAP_FILE_REL}\` — \`{"schema_version":1,"generatedFrom","flows":[{"id","mainPath"}],"screens":[{"key","name","mustHave","shell"}]}\``,
       `- \`${SCREEN_MAP_MD_REL}\` — bảng cho người duyệt`,
     ],
   });

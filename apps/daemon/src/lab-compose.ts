@@ -26,6 +26,9 @@ import { checkMark, renderLabBrief } from './lab-brief.js';
 // lab-map.ts là module thuần (không fs/network), import ở đây không phá bất
 // biến "lab-compose.ts thuần".
 import { SCREEN_MAP_FILE_REL } from './lab-map.js';
+// WP-lab-shell (2026-08-23 — .tmp/pipeline/wp-lab-shell.yaml): "Khung màn" —
+// SHELL_ROLES cho thứ tự liệt kê ổn định ở dòng "Comp khung" bên dưới.
+import { SHELL_ROLES, type ShellRole } from './lab-shell.js';
 
 /** Thư mục chứa PNG capture của từng màn — output khai báo của `lab-compose`
  *  trong pipelines.ts (`outputs: ['screens/', 'lab-result.json']`). */
@@ -157,7 +160,22 @@ export interface BuildComposeBriefOptions {
    *  brief rơi về hành vi CŨ (tự chọn ≤3 màn đầu luồng chính, không nhắc bản
    *  đồ). Bản đồ là ƯU TIÊN khi có, KHÔNG phải điều kiện cứng — cùng tinh
    *  thần `hasKit` ở trên. */
-  map?: { screens: { key: string; name: string; mustHaveCount: number }[]; mainPath: string[]; scoped: string[] } | null;
+  map?: {
+    screens: { key: string; name: string; mustHaveCount: number }[];
+    mainPath: string[];
+    scoped: string[];
+    /** WP-lab-shell: khung màn HIỆU LỰC (agent ghi thắng, derive khi bỏ
+     *  trống) cho ĐÚNG các màn trong `scoped`, theo CÙNG thứ tự — xem
+     *  `summarizeScreenMapForCompose` (lab-map.ts). Rỗng/absent → không in
+     *  dòng "Khung <key>" nào (hành vi CŨ, trước WP này). */
+    shells?: { key: string; kind: string; must: string[]; should: string[]; avoid: string[] }[];
+    /** WP-lab-shell: comp DS/kit ĐÃ dò được cho từng vai trò khung
+     *  (`detectShellBindings`, lab-shell.ts) — server.ts truyền TOÀN BỘ
+     *  danh sách (không lọc theo scoped, vì một vai trò có thể cần cho
+     *  nhiều màn khác nhau); dòng "Comp khung" tự lọc đúng role xuất hiện
+     *  trong `shells` của scoped. */
+    bindings?: { role: string; name: string; key?: string; from: 'kit' | 'ds' }[];
+  } | null;
 }
 
 /** Tên trang Figma cho workflow "ds-lab" — TÁCH khỏi `[OD] …` của docs-review
@@ -205,6 +223,37 @@ export function buildComposeBrief(opts: BuildComposeBriefOptions): string {
   const mapLine = map
     ? `- Bản đồ màn: \`${SCREEN_MAP_FILE_REL}\` — ${map.screens.length} màn; luồng chính: ${map.mainPath.length > 0 ? map.mainPath.join(' → ') : '(không có)'}; lần này dựng: ${map.scoped.length > 0 ? map.scoped.join(', ') : '(không có)'} (mustHave = checklist phải có mặt, không phải bố cục).`
     : '- Bản đồ màn: (chưa có — chạy bước Bản đồ màn để có key ổn định; tạm tự suy từ docs).';
+  // WP-lab-shell (2026-08-23): một dòng "Khung <key>" cho MỖI màn scoped
+  // (bỏ cụm rỗng) + một dòng "Comp khung" gộp các vai trò must/should xuất
+  // hiện trong các màn đó — không có `shells` (map chưa chạy, hoặc chưa qua
+  // WP này) → không dòng nào (giữ nguyên hành vi CŨ).
+  const shells = map?.shells ?? [];
+  const shellLines = shells.map((s) => {
+    const clusters = [
+      s.kind,
+      s.must.length > 0 ? `phải: ${s.must.join(', ')}` : '',
+      s.should.length > 0 ? `nên: ${s.should.join(', ')}` : '',
+      s.avoid.length > 0 ? `tránh: ${s.avoid.join(', ')}` : '',
+    ].filter(Boolean);
+    return `- Khung ${s.key}: ${clusters.join(' · ')}`;
+  });
+  const shellRolesNeeded = new Set<ShellRole>();
+  for (const s of shells) {
+    for (const r of s.must) shellRolesNeeded.add(r as ShellRole);
+    for (const r of s.should) shellRolesNeeded.add(r as ShellRole);
+  }
+  const bindings = map?.bindings ?? [];
+  const compKhungLine =
+    shellRolesNeeded.size > 0
+      ? `- Comp khung: ${SHELL_ROLES.filter((r) => shellRolesNeeded.has(r))
+          .map((role) => {
+            const binding = bindings.find((b) => b.role === role);
+            if (!binding) return `${role} → (DS/kit chưa có — tự dựng tối giản, ghi notes)`;
+            const source = binding.from === 'kit' ? 'kit' : `key ${binding.key ?? '—'}`;
+            return `${role} → "${binding.name}" (${source})`;
+          })
+          .join(' · ')}`
+      : null;
   // Một ô nhập duy nhất của stage (pipelines.ts inputPlaceholder) gánh CẢ phạm
   // vi màn lẫn định hướng thị giác — agent tự tách; không thêm field mới.
   const scopeLine =
@@ -217,13 +266,25 @@ export function buildComposeBrief(opts: BuildComposeBriefOptions): string {
     ? '- Dựng các màn đã chọn theo bản đồ, frame tên `<key> — <tên>` (kit ưu tiên, base fallback) — không chép bố cục từ mockup.'
     : '- Dựng tối đa 3 màn từ instance (kit ưu tiên, base fallback) — không chép bố cục từ mockup.';
   const structureRuleLine = map
-    ? '- Frame tên theo key bản đồ, mọi mustHave có mặt (luật #2/#9); khung màn chuẩn 390, App Bar/Tabbar, một điểm nhấn (luật #6/#7/#8).'
+    ? '- Frame tên theo key bản đồ, mọi mustHave có mặt; khung đúng shell (phải có/tránh), một điểm nhấn, ba lớp (luật #2/#6/#7/#8).'
     : '- Khung màn chuẩn 390, App Bar/Tabbar, một điểm nhấn; ba lớp nhìn thấy được, listing nổi khỏi sheet, nền không che chữ (luật #6/#7/#8).';
 
   return renderLabBrief({
     title: `# Sáng tác màn · ${opts.appFeature}`,
     skillId: 'lab-screen-compose',
-    inputLines: [docsLine, materialsLine, kitLine, patternLine, styleLine, mapLine, figmaLine, toolLine, scopeLine],
+    inputLines: [
+      docsLine,
+      materialsLine,
+      kitLine,
+      patternLine,
+      styleLine,
+      mapLine,
+      ...shellLines,
+      ...(compKhungLine ? [compKhungLine] : []),
+      figmaLine,
+      toolLine,
+      scopeLine,
+    ],
     taskLines: [
       '- Đọc docs để biết từng màn cần làm gì (chức năng + nội dung thật).',
       buildLine,

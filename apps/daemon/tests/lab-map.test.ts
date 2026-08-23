@@ -4,14 +4,22 @@
 // Registry assertions (5-stage workflow, def shape) live in
 // pipelines.test.ts / lab-compose.test.ts to keep this file focused on
 // lab-map.ts's own pure behavior.
+//
+// WP-lab-shell (2026-08-23 — .tmp/pipeline/wp-lab-shell.yaml): + shell
+// parsing (screen-map.json's `shell` field), deriveShellDefaults/
+// resolveScreenShell/fillShellDefaults, and the "Khung" column in
+// renderScreenMapMd/summarizeScreenMapForCompose's `shells`.
 
 import { describe, expect, it } from 'vitest';
 
 import {
   buildMapBrief,
+  deriveShellDefaults,
+  fillShellDefaults,
   parseScreenMap,
   pickDocsReviewMapSources,
   renderScreenMapMd,
+  resolveScreenShell,
   summarizeScreenMapForCompose,
   MAP_SRC_DIR_REL,
   SCREEN_MAP_FILE_REL,
@@ -175,27 +183,94 @@ describe('parseScreenMap', () => {
     expect(parseScreenMap(JSON.stringify({ screens: [], generatedFrom: 'bogus' }))!.map.generatedFrom).toBe('docs');
     expect(parseScreenMap(JSON.stringify({ screens: [], generatedFrom: 'mixed' }))!.map.generatedFrom).toBe('mixed');
   });
+
+  // ── WP-lab-shell: shell parsing ──────────────────────────────────────────
+
+  it('parses a valid "shell" (kind + must/should/avoid + note) and marks source "agent"', () => {
+    const parsed = parseScreenMap(
+      JSON.stringify({
+        screens: [
+          {
+            key: 'S1',
+            name: 'Màn 1',
+            shell: { kind: 'child', must: ['app-bar', 'back'], should: [], avoid: ['tabbar'], note: 'ghi chú' },
+          },
+        ],
+      }),
+    );
+    expect(parsed).not.toBeNull();
+    expect(parsed!.warnings).toEqual([]);
+    expect(parsed!.map.screens[0]!.shell).toEqual({
+      kind: 'child',
+      must: ['app-bar', 'back'],
+      should: [],
+      avoid: ['tabbar'],
+      note: 'ghi chú',
+      source: 'agent',
+    });
+  });
+
+  it('an invalid "shell.kind" drops the whole shell, with a warning', () => {
+    const parsed = parseScreenMap(
+      JSON.stringify({ screens: [{ key: 'S1', name: 'A', shell: { kind: 'bogus', must: ['app-bar'] } }] }),
+    );
+    expect(parsed).not.toBeNull();
+    expect(parsed!.map.screens[0]!.shell).toBeUndefined();
+    expect(parsed!.warnings.some((w) => w.includes('shell.kind'))).toBe(true);
+  });
+
+  it('an invalid role value inside must/should/avoid is filtered out, with a warning — valid roles are kept', () => {
+    const parsed = parseScreenMap(
+      JSON.stringify({
+        screens: [
+          { key: 'S1', name: 'A', shell: { kind: 'root', must: ['tabbar', 'bogus-role'], should: ['  SEARCH  '] } },
+        ],
+      }),
+    );
+    expect(parsed).not.toBeNull();
+    expect(parsed!.map.screens[0]!.shell).toMatchObject({ kind: 'root', must: ['tabbar'], should: ['search'] });
+    expect(parsed!.warnings.some((w) => w.includes('shell.must'))).toBe(true);
+  });
 });
 
 // ── renderScreenMapMd ─────────────────────────────────────────────────────────
 
 describe('renderScreenMapMd', () => {
-  it('renders the "# Bản đồ màn" heading, one flow block (title + basis + mainPath), and a screen table', () => {
+  it('renders the "# Bản đồ màn" heading, one flow block (title + basis + mainPath), and a screen table (with the "Khung" column)', () => {
     const md = renderScreenMapMd({
       schema_version: 1,
       generatedFrom: 'docs-review',
       flows: [{ id: 'F1', title: 'Luồng A', basis: 'proposed', mainPath: ['S1', 'S2'] }],
       screens: [
-        { key: 'S1', name: 'Màn 1', purpose: 'Mục đích', mustHave: [{ role: 'app-bar', label: 'Tiêu đề' }], states: ['rỗng'], nav: [{ to: 'S2' }] },
+        {
+          key: 'S1',
+          name: 'Màn 1',
+          purpose: 'Mục đích',
+          mustHave: [{ role: 'app-bar', label: 'Tiêu đề' }],
+          states: ['rỗng'],
+          nav: [{ to: 'S2' }],
+          shell: { kind: 'child', must: ['app-bar', 'back'], should: [], avoid: ['tabbar'], source: 'agent' },
+        },
         { key: 'S2', name: 'Màn 2', mustHave: [] },
       ],
     });
     expect(md).toMatch(/^# Bản đồ màn/);
     expect(md).toContain('F1 — Luồng A (proposed)');
     expect(md).toContain('Luồng chính: S1 → S2');
-    expect(md).toContain('| Key | Tên | Mục đích | Phải có | Trạng thái | Đi tới |');
-    expect(md).toContain('| S1 | Màn 1 | Mục đích | app-bar: Tiêu đề | rỗng | S2 |');
+    expect(md).toContain('| Key | Tên | Mục đích | Phải có | Khung | Trạng thái | Đi tới |');
+    expect(md).toContain('| S1 | Màn 1 | Mục đích | app-bar: Tiêu đề | child · phải: app-bar, back · tránh: tabbar | rỗng | S2 |');
     expect(md).toContain('Nguồn: docs-review');
+  });
+
+  it('a screen without an explicit "shell" still gets a "Khung" cell, resolved via derive', () => {
+    const md = renderScreenMapMd({
+      schema_version: 1,
+      generatedFrom: 'docs',
+      flows: [{ id: 'F1', mainPath: ['S1'] }],
+      screens: [{ key: 'S1', name: 'Trang chủ', mustHave: [] }],
+    });
+    const row = md.split('\n').find((l) => l.startsWith('| S1 '));
+    expect(row).toContain('root · phải: tabbar · nên: search · tránh: back');
   });
 
   it('caps mustHave display at 8 entries, then appends "+N"', () => {
@@ -327,6 +402,145 @@ describe('summarizeScreenMapForCompose', () => {
     expect(summarizeScreenMapForCompose(noFlows, null).scoped).toEqual(['doc__6.1.1', 'doc__6.2.1', 'doc__6.2.3']);
     expect(summarizeScreenMapForCompose(noFlows, null).mainPath).toEqual([]);
   });
+
+  // ── WP-lab-shell: `shells` for the scoped keys ────────────────────────────
+
+  it('resolves `shells` (derived, since no screen has an explicit shell) for exactly the scoped keys, in scoped order', () => {
+    const s = summarizeScreenMapForCompose(map, null);
+    expect(s.scoped).toEqual(['doc__6.1.1', 'doc__6.2.1', 'doc__6.2.3']);
+    expect(s.shells.map((sh) => sh.key)).toEqual(['doc__6.1.1', 'doc__6.2.1', 'doc__6.2.3']);
+    // doc__6.1.1 is mainPath[0] and referenced by nothing else → root.
+    expect(s.shells[0]).toEqual({ key: 'doc__6.1.1', kind: 'root', must: ['tabbar'], should: ['search'], avoid: ['back'] });
+    // doc__6.2.1/doc__6.2.3 are referenced later in mainPath → child.
+    expect(s.shells[1]).toEqual({ key: 'doc__6.2.1', kind: 'child', must: ['app-bar', 'back'], should: [], avoid: ['tabbar'] });
+  });
+
+  it('an explicit screen.shell wins over the derived default in `shells`', () => {
+    const withShell = {
+      ...map,
+      screens: map.screens.map((s) =>
+        s.key === 'doc__6.1.1'
+          ? { ...s, shell: { kind: 'fullscreen' as const, must: ['close' as const], should: [], avoid: ['tabbar' as const], source: 'agent' as const } }
+          : s,
+      ),
+    };
+    const s = summarizeScreenMapForCompose(withShell, null);
+    expect(s.shells[0]).toMatchObject({ key: 'doc__6.1.1', kind: 'fullscreen', must: ['close'] });
+  });
+});
+
+// ── deriveShellDefaults / resolveScreenShell / fillShellDefaults ────────────
+
+describe('deriveShellDefaults', () => {
+  it('mainPath[0] (not referenced elsewhere) derives to "root"', () => {
+    const map = {
+      schema_version: 1 as const,
+      generatedFrom: 'docs' as const,
+      flows: [{ id: 'F1', mainPath: ['S1', 'S2'] }],
+      screens: [
+        { key: 'S1', name: 'Trang chủ', mustHave: [] },
+        { key: 'S2', name: 'Chi tiết', mustHave: [] },
+      ],
+    };
+    const derived = deriveShellDefaults(map);
+    expect(derived.get('S1')).toMatchObject({ kind: 'root' });
+  });
+
+  it('a screen referenced by nav[].to, mainPath[i>0], or branches[].to derives to "child"', () => {
+    const byNav = deriveShellDefaults({
+      schema_version: 1,
+      generatedFrom: 'docs',
+      flows: [],
+      screens: [
+        { key: 'S1', name: 'A', mustHave: [], nav: [{ to: 'S2' }] },
+        { key: 'S2', name: 'B', mustHave: [] },
+      ],
+    });
+    expect(byNav.get('S2')).toMatchObject({ kind: 'child' });
+
+    const byBranch = deriveShellDefaults({
+      schema_version: 1,
+      generatedFrom: 'docs',
+      flows: [{ id: 'F1', mainPath: ['S1'], branches: [{ from: 'S1', to: 'S-err' }] }],
+      screens: [
+        { key: 'S1', name: 'A', mustHave: [] },
+        { key: 'S-err', name: 'Lỗi', mustHave: [] },
+      ],
+    });
+    expect(byBranch.get('S-err')).toMatchObject({ kind: 'child' });
+  });
+
+  it('a screen name matching "Bottom sheet ..." derives to "sheet" regardless of graph position', () => {
+    const map = {
+      schema_version: 1 as const,
+      generatedFrom: 'docs' as const,
+      flows: [],
+      screens: [{ key: 'S1', name: 'Bottom sheet chọn gói', mustHave: [] }],
+    };
+    expect(deriveShellDefaults(map).get('S1')).toMatchObject({ kind: 'sheet' });
+  });
+
+  it('a screen name matching "Kết quả ..." derives to "result"', () => {
+    const map = {
+      schema_version: 1 as const,
+      generatedFrom: 'docs' as const,
+      flows: [],
+      screens: [{ key: 'S1', name: 'Kết quả thanh toán', mustHave: [] }],
+    };
+    expect(deriveShellDefaults(map).get('S1')).toMatchObject({ kind: 'result' });
+  });
+
+  it('the derived shell copies SHELL_RULES arrays (mutating one does not affect the rule table)', () => {
+    const map = {
+      schema_version: 1 as const,
+      generatedFrom: 'docs' as const,
+      flows: [],
+      screens: [{ key: 'S1', name: 'Trang chủ', mustHave: [] }],
+    };
+    const shell = deriveShellDefaults(map).get('S1')!;
+    shell.must.push('close');
+    expect(deriveShellDefaults(map).get('S1')!.must).toEqual(['tabbar']);
+  });
+});
+
+describe('resolveScreenShell', () => {
+  it('prefers screen.shell over the derived map', () => {
+    const derived = new Map([['S1', { kind: 'root' as const, must: ['tabbar' as const], should: [], avoid: [], source: 'derived' as const }]]);
+    const screen = { key: 'S1', name: 'A', mustHave: [], shell: { kind: 'modal' as const, must: ['close' as const], should: [], avoid: [], source: 'agent' as const } };
+    expect(resolveScreenShell(screen, derived)).toEqual(screen.shell);
+  });
+
+  it('falls back to the derived map, then to a "child" default when neither is present', () => {
+    const derived = new Map([['S1', { kind: 'sheet' as const, must: [], should: ['close' as const], avoid: [], source: 'derived' as const }]]);
+    expect(resolveScreenShell({ key: 'S1', name: 'A', mustHave: [] }, derived)).toMatchObject({ kind: 'sheet' });
+    expect(resolveScreenShell({ key: 'S-missing', name: 'B', mustHave: [] }, derived)).toMatchObject({
+      kind: 'child',
+      must: ['app-bar', 'back'],
+    });
+  });
+});
+
+describe('fillShellDefaults', () => {
+  it('fills only screens missing a shell, and reports exactly those keys in `filled`', () => {
+    const map = {
+      schema_version: 1 as const,
+      generatedFrom: 'docs' as const,
+      flows: [],
+      screens: [
+        { key: 'S1', name: 'Trang chủ', mustHave: [] },
+        {
+          key: 'S2',
+          name: 'Chi tiết',
+          mustHave: [],
+          shell: { kind: 'modal' as const, must: ['close' as const], should: [], avoid: [], source: 'agent' as const },
+        },
+      ],
+    };
+    const { map: filledMap, filled } = fillShellDefaults(map);
+    expect(filled).toEqual(['S1']);
+    expect(filledMap.screens[0]!.shell).toMatchObject({ kind: 'root', source: 'derived' });
+    expect(filledMap.screens[1]!.shell).toEqual(map.screens[1]!.shell);
+  });
 });
 
 // ── buildMapBrief ────────────────────────────────────────────────────────────
@@ -376,6 +590,12 @@ describe('buildMapBrief', () => {
   it('no map-src data at all → says "không có docs-review — tự phân tích từ docs"', () => {
     const brief = buildMapBrief(minOpts);
     expect(brief).toContain('không có docs-review — tự phân tích từ docs');
+  });
+
+  it('reminds the agent to fill "shell" per screen, and that daemon derives a default when left blank', () => {
+    const brief = buildMapBrief(minOpts);
+    expect(brief).toContain('shell (kind + must/should/avoid)');
+    expect(brief).toContain('bỏ trống thì daemon tự suy');
   });
 
   it('map-src present → states the exact flowchart/ux-review/screen.json counts + _screens.json checkmark', () => {

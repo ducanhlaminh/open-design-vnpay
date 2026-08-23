@@ -83,14 +83,23 @@ không phải tái tạo pixel của ảnh tham khảo.
   DỰNG** (xem luật #5 bên dưới và "Recipe thao tác SLOT"). File này có thể
   DÀI (nhiều component) — **GREP/tìm đúng mục component bạn đang dùng, đừng
   đọc tuần tự cả file**.
-- `kit/kit.json` + trang **"[OD Lab Kit] <tên dự án>"** (nếu stage "Nâng
-  bộ comp" — `lab-kit-compose` — đã chạy trước đó): registry các comp PHÁI
-  SINH thẩm mỹ cao hơn comp base, sống trong CÙNG file preview. **ƯU TIÊN**
-  import/dùng instance từ page Lab Kit cho những điểm neo thị giác của màn
-  (card, list-item, hero-header, dock, promo…); comp base ("criteria/components.md")
-  chỉ là FALLBACK khi kit không có bản tương ứng cho comp bạn cần. Chưa từng
-  chạy lab-kit (không có `kit/kit.json`, hoặc rỗng) → dùng thẳng comp base như
-  trước, không có gì thay đổi.
+- `kit/kit.json` + trang **"[OD Lab Kit] <tên dự án>"** (nếu stage "Đóng
+  gói comp" — `lab-kit-compose`, tên hiển thị cũ "Nâng bộ comp" — đã chạy
+  trước đó): registry các comp PHÁI SINH thẩm mỹ cao hơn comp base, sống
+  trong CÙNG file preview. **ƯU TIÊN** import/dùng instance từ page Lab Kit
+  cho những điểm neo thị giác của màn (card, list-item, hero-header, dock,
+  promo…); comp base ("criteria/components.md") chỉ là FALLBACK khi kit
+  không có bản tương ứng cho comp bạn cần. **Thứ tự workflow (WP-lab-reorder,
+  `.tmp/pipeline/wp-lab-reorder.yaml`)**: bạn (lab-compose) nay chạy TRƯỚC
+  "Đề xuất kit"/"Đóng gói comp" trong lần chạy ĐẦU TIÊN của workflow — nên
+  LẦN ĐẦU chưa từng có `kit/kit.json` là BÌNH THƯỜNG (không phải lỗi cấu
+  hình): dùng thẳng comp base như trước, không có gì thay đổi. `kit/kit.json`
+  chỉ xuất hiện SAU KHI "Đóng gói comp" chạy ít nhất một lần — lúc đó nó đã
+  tự SWAP các comp mà nó đóng gói NGƯỢC vào chính màn bạn vừa dựng (màn của
+  bạn đã đổi, không cần bạn làm gì thêm). Nếu sau đó NGƯỜI **Chạy lại** stage
+  "Sáng tác màn" của CHÍNH màn này (ví dụ để chỉnh nội dung/bố cục), lúc này
+  `kit/kit.json` đã có sẵn từ trước → áp dụng ĐÚNG quy tắc ưu tiên ở trên
+  (dùng kit trước, base là fallback) như mọi lần dựng khác.
 
 ## Bản đồ màn (`screen-map.json`)
 
@@ -118,6 +127,8 @@ màn, thay cho việc tự bịa kho màn từ `docs/` mỗi lần chạy:
    {doc, line}` trỏ tới đúng đoạn tài liệu gốc — dùng nó để mở nhanh phần
    cần thiết khi bạn cần nội dung/ngữ cảnh chi tiết hơn, thay vì đọc lại tuần
    tự cả thư mục `docs/`.
+6. **`shell` = must/should/avoid** — xem luật #7 bên dưới cho cách áp dụng
+   đầy đủ (khung màn PHẢI/NÊN/CẤM có vai trò nào).
 
 Không có `screen-map.json` (chưa chạy "Bản đồ màn", hoặc file hỏng/rỗng) →
 hành vi CŨ không đổi: tự chọn ≤3 màn đầu luồng chính từ `docs/`, tự đặt key
@@ -226,18 +237,26 @@ ngắn gọn.
    full-width (358) — không phải một nút nhỏ giữa màn. Bằng chứng thật đã
    gặp: SCR-01 dựng thành frame 398 (lệch chuẩn 390); cả 2 card cùng đeo badge
    "PHỔ BIẾN" (điểm nhấn loãng); CTA ở màn checkout chỉ rộng 116px.
-7. **KHUNG MÀN CHUẨN MOBILE — App Bar/Tabbar bắt buộc**: mọi màn CON phải có
-   App Bar (nút back + tiêu đề màn) đặt TRÊN CÙNG; màn GỐC (home/tab chính)
-   dùng Tabbar dưới đáy. Thứ tự ưu tiên nguồn App Bar: (a) comp "App Bar"
-   trong page kit `[OD Lab Kit]` (nếu stage Nâng bộ comp đã dựng); (b) comp
-   base trong `criteria/components.md`; (c) cả hai đều không có → tự dựng
-   nhóm App Bar tối giản bằng auto-layout + tokens và ghi rõ vào `notes` của
-   màn. TUYỆT ĐỐI không để màn trần không có thanh điều hướng — bằng chứng
-   thật đã gặp: DS "[SDK] Web Lib" (thư viện web, không có App Bar) làm cả 3
-   màn dựng ra không có thanh điều hướng nào.
-   App Bar nằm trên nền tối/ảnh/gradient → dùng biến thể **on-color** (icon +
-   chữ sáng) và có scrim phía dưới; màn GỐC bỏ nút back, Tabbar nổi trên cùng
-   mọi lớp và không che nội dung/CTA.
+7. **KHUNG MÀN THEO `shell`** (WP-lab-shell, .tmp/pipeline/wp-lab-shell.yaml —
+   thay cho luật cũ "màn CON → App Bar, màn GỐC → Tabbar" bắt bạn tự đoán mỗi
+   lần chạy): có `screen-map.json` (bước "Bản đồ màn") → brief in một dòng
+   `Khung <key>: <kind> · phải: … · nên: … · tránh: …` cho TỪNG màn scoped.
+   Vai trò trong `phải` **BẮT BUỘC** có mặt trên màn; vai trò trong `nên` nên
+   có, thiếu vì lý do chính đáng (ví dụ DS chưa có comp phù hợp) thì ghi lý
+   do vào `notes`, đừng lặng lẽ bỏ qua; vai trò trong `tránh` **CẤM** xuất
+   hiện trên màn đó (bằng chứng thật đã gặp: Tabbar bị gắn cả lên màn Detail
+   — `child` PHẢI tránh tabbar). Component đáp ứng từng vai trò lấy theo dòng
+   `Comp khung` trong brief (kit thắng DS theo đúng nguồn đã dò) — vai trò đó
+   ghi "chưa có" → tự dựng nhóm tối giản bằng auto-layout + tokens và ghi rõ
+   vào `notes` của màn (TUYỆT ĐỐI không để màn trần không có khung khi `phải`
+   yêu cầu — bằng chứng thật đã gặp: DS "[SDK] Web Lib" không có App Bar làm
+   cả 3 màn dựng ra không có thanh điều hướng nào). App Bar nằm trên nền
+   tối/ảnh/gradient → dùng biến thể **on-color** (icon + chữ sáng) và có
+   scrim phía dưới; Tabbar luôn nổi trên cùng mọi lớp và không che nội
+   dung/CTA. **Không có `screen-map.json`** (chưa chạy "Bản đồ màn", hoặc
+   file hỏng/rỗng) → hành vi CŨ: heuristic màn CON → App Bar, màn GỐC →
+   Tabbar (tự đoán theo cùng nguồn App Bar (a) kit → (b) base →
+   (c) tự dựng tối giản như trước WP này).
 8. **CHIỀU SÂU 3 LỚP — không phẳng, nhưng biết điều** (áp cho MỌI style; bottom-
    sheet hay full-canvas, nền ảnh hay gradient brand là lựa chọn của "Định
    hướng thị giác"/style pattern, còn các điều dưới đây là bất biến):
@@ -309,8 +328,7 @@ chưa đạt mục nào thì sửa trước khi coi là xong:
 2. Đúng MỘT điểm nhấn thị giác cho màn này (luật #6).
 3. Khoảng cách (spacing) theo scale token — không có khoảng cách "ước lượng".
 4. Màu chủ đạo của Design System xuất hiện CÓ CHỦ ĐÍCH.
-5. Khung màn chuẩn: App Bar/Tabbar đúng vị trí (luật #7), không có placeholder
-   nào còn lộ (luật #5).
+5. Khung đúng shell (phải có/tránh, luật #7), không placeholder lộ (luật #5).
 6. Ba câu chiều sâu (luật #8) — xem ảnh ở KÍCH THƯỚC THẬT, không phải thumbnail:
    "Nhìn thấy mấy lớp?" (phải là 3), "Listing có nổi khỏi sheet không?" (surface
    khác màu + shadow), "Nền/ảnh có cạnh tranh CTA hay che chữ không?" (không).

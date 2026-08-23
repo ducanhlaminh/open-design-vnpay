@@ -3,26 +3,32 @@
 // `.tmp/pipeline/wp-lab-quality.yaml`.
 //
 // WP-lab-clean (2026-08-23 — .tmp/pipeline/wp-lab-clean.yaml): + 'no-instance'
-// / 'no-bound-variable' — xem describe riêng ở cuối file. `frameWithBox` (dùng
-// bởi các test placeholder/overflow có TỪ TRƯỚC) nay tự chèn thêm một decoy
-// INSTANCE có `boundVariables` KHÔNG hiển thị — để những test đó tiếp tục chỉ
-// đo đúng đối tượng chúng khai báo (placeholder/overflow), không bị 2 kind
-// mới làm lệch số violation đếm được.
+// / 'no-bound-variable' — xem describe riêng ở cuối file.
+//
+// WP-lab-reorder (2026-08-23 — .tmp/pipeline/wp-lab-reorder.yaml): 'no-instance'
+// SIẾT lại thành CHỈ đếm instance HIỂN THỊ (bằng chứng: agent import base rồi
+// ẨN làm "tham chiếu" rồi vẽ lại ruột bằng frame — Order Summary Card 153:11,
+// Plan Card 151:7 — audit cũ vẫn coi instance ẩn là "đã có", không bắt được
+// chiêu lách này). `frameWithBox` (dùng bởi các test placeholder/overflow có
+// TỪ TRƯỚC) nay chèn thêm một decoy INSTANCE HIỂN THỊ có `boundVariables` —
+// để những test đó tiếp tục chỉ đo đúng đối tượng chúng khai báo (placeholder/
+// overflow), không bị 'no-instance'/'no-bound-variable' làm lệch số violation
+// đếm được (decoy không có `absoluteBoundingBox` nên không tham gia audit
+// tràn biên, và không phải TEXT nên không tham gia audit placeholder).
 
 import { describe, expect, it } from 'vitest';
 
 import { auditLabSubtrees, renderLabAuditMd, type AuditSubtreeInput } from '../src/lab-audit.js';
 
-// Decoy KHÔNG hiển thị (không tham gia audit placeholder/overflow, vốn chỉ
-// duyệt nhánh hiển thị) nhưng VẪN được 'no-instance'/'no-bound-variable' đếm
-// (2 kind đó cố ý duyệt CẢ nhánh ẩn) — giữ các test placeholder/overflow có
-// từ trước không bị 2 kind mới này làm lệch số violation.
+// Decoy HIỂN THỊ (WP-lab-reorder: 'no-instance' nay chỉ đếm nhánh hiển thị,
+// nên decoy PHẢI hiển thị để tiếp tục thoả cả 'no-instance' lẫn
+// 'no-bound-variable' cho các test placeholder/overflow không liên quan).
 function decoySatisfiesInstanceAndBind(): unknown {
   return {
     id: '9:99',
     type: 'INSTANCE',
     name: '__decoy_instance_with_bind',
-    visible: false,
+    visible: true,
     boundVariables: { fills: [{ type: 'VARIABLE_ALIAS', id: 'VariableID:1:1' }] },
   };
 }
@@ -193,8 +199,10 @@ describe('auditLabSubtrees: overflow', () => {
 // ── auditLabSubtrees: no-instance / no-bound-variable (WP-lab-clean) ────────
 // Bằng chứng thật: comp kit "Order Summary Card" = 0 INSTANCE (datarow/Badge/
 // Currency là frame+text đặt tên giống base), get_variable_defs trả {} (hex
-// trần). Cả hai kind duyệt TOÀN BỘ subtree (kể cả nhánh ẩn) — khác placeholder/
-// overflow ở trên.
+// trần). 'no-bound-variable' duyệt TOÀN BỘ subtree (kể cả nhánh ẩn) — khác
+// placeholder/overflow ở trên. 'no-instance' (WP-lab-reorder,
+// .tmp/pipeline/wp-lab-reorder.yaml) NAY CHỈ đếm nhánh HIỂN THỊ — xem describe
+// riêng ngay dưới.
 
 describe('auditLabSubtrees: no-instance', () => {
   it('subtree KHÔNG có node INSTANCE nào → báo "no-instance"', () => {
@@ -214,7 +222,23 @@ describe('auditLabSubtrees: no-instance', () => {
     expect(violations.filter((v) => v.kind === 'no-instance')).toHaveLength(1);
   });
 
-  it('có INSTANCE dù nằm trong nhánh ẨN → KHÔNG báo "no-instance"', () => {
+  it('có INSTANCE HIỂN THỊ → KHÔNG báo "no-instance"', () => {
+    const node = {
+      id: '1:1',
+      type: 'COMPONENT',
+      name: 'x',
+      visible: true,
+      children: [{ id: '1:3', type: 'INSTANCE', name: 'Base thật', visible: true }],
+    };
+    const violations = auditLabSubtrees([{ key: 'card-x', name: 'x', node }]);
+    expect(violations.map((v) => v.kind)).not.toContain('no-instance');
+  });
+
+  // WP-lab-reorder: SIẾT lại — bằng chứng thật là agent import base rồi ẨN
+  // làm "tham chiếu" (Order Summary Card 153:11, Plan Card 151:7) rồi vẽ lại
+  // ruột bằng frame/text. Instance chỉ tồn tại trong nhánh ẨN KHÔNG còn được
+  // tính — audit PHẢI vẫn báo "no-instance" (khác hành vi CŨ trước WP này).
+  it('có INSTANCE CHỈ trong nhánh ẨN → VẪN báo "no-instance" (chặn chiêu "tham chiếu ẩn")', () => {
     const node = {
       id: '1:1',
       type: 'COMPONENT',
@@ -231,7 +255,20 @@ describe('auditLabSubtrees: no-instance', () => {
       ],
     };
     const violations = auditLabSubtrees([{ key: 'card-x', name: 'x', node }]);
-    expect(violations.map((v) => v.kind)).not.toContain('no-instance');
+    expect(violations.map((v) => v.kind)).toContain('no-instance');
+    expect(violations.filter((v) => v.kind === 'no-instance')).toHaveLength(1);
+  });
+
+  it('node INSTANCE tự nó ẩn (self visible:false) dù tổ tiên hiển thị → VẪN báo "no-instance"', () => {
+    const node = {
+      id: '1:1',
+      type: 'COMPONENT',
+      name: 'x',
+      visible: true,
+      children: [{ id: '1:2', type: 'INSTANCE', name: 'Base ẩn', visible: false }],
+    };
+    const violations = auditLabSubtrees([{ key: 'card-x', name: 'x', node }]);
+    expect(violations.map((v) => v.kind)).toContain('no-instance');
   });
 });
 
@@ -313,6 +350,71 @@ describe('auditLabSubtrees: no-instance + no-bound-variable cùng thoả → kh�
   });
 });
 
+// ── auditLabSubtrees: shell-mismatch (WP-lab-shell, .tmp/pipeline/wp-lab-shell.yaml) ─
+// Mỗi node gốc dưới đây có sẵn MỘT instance bind biến DS (baseline satisfied)
+// để không lẫn no-instance/no-bound-variable vào violation đếm được — test
+// này chỉ đo đúng đối tượng khai báo (shell-mismatch).
+
+function baselineInstance(): unknown {
+  return {
+    id: '9:9',
+    type: 'INSTANCE',
+    name: 'Card',
+    visible: true,
+    boundVariables: { fills: [{ type: 'VARIABLE_ALIAS', id: 'VariableID:1:1' }] },
+  };
+}
+
+describe('auditLabSubtrees: shell-mismatch', () => {
+  it('shell.must chứa "app-bar" nhưng subtree không có node tên App Bar → violation "thiếu"', () => {
+    const node = { id: '1:1', type: 'FRAME', name: 'SCR-01', visible: true, children: [baselineInstance()] };
+    const violations = auditLabSubtrees([
+      { key: 'SCR-01', name: 'Chi tiết', node, shell: { must: ['app-bar'], avoid: [] } },
+    ]);
+    const shellViolations = violations.filter((v) => v.kind === 'shell-mismatch');
+    expect(shellViolations).toHaveLength(1);
+    expect(shellViolations[0]!.detail).toContain('thiếu');
+    expect(shellViolations[0]!.detail).toContain('App Bar');
+  });
+
+  it('shell.avoid chứa "tabbar" và có INSTANCE "Tab Bar" HIỂN THỊ → violation "có ... dù ... tránh"', () => {
+    const node = {
+      id: '1:1',
+      type: 'FRAME',
+      name: 'SCR-01',
+      visible: true,
+      children: [baselineInstance(), { id: '1:3', type: 'INSTANCE', name: 'Tab Bar', visible: true }],
+    };
+    const violations = auditLabSubtrees([
+      { key: 'SCR-01', name: 'Chi tiết', node, shell: { must: [], avoid: ['tabbar'] } },
+    ]);
+    const shellViolations = violations.filter((v) => v.kind === 'shell-mismatch');
+    expect(shellViolations).toHaveLength(1);
+    expect(shellViolations[0]!.detail).toContain('Tabbar');
+    expect(shellViolations[0]!.detail).toContain('tránh');
+  });
+
+  it('"Tab Bar" node ẨN → KHÔNG vi phạm shell.avoid', () => {
+    const node = {
+      id: '1:1',
+      type: 'FRAME',
+      name: 'SCR-01',
+      visible: true,
+      children: [baselineInstance(), { id: '1:3', type: 'INSTANCE', name: 'Tab Bar', visible: false }],
+    };
+    const violations = auditLabSubtrees([
+      { key: 'SCR-01', name: 'Chi tiết', node, shell: { must: [], avoid: ['tabbar'] } },
+    ]);
+    expect(violations.filter((v) => v.kind === 'shell-mismatch')).toHaveLength(0);
+  });
+
+  it('input không truyền "shell" → không có violation kind "shell-mismatch" nào (hành vi CŨ)', () => {
+    const node = { id: '1:1', type: 'FRAME', name: 'SCR-01', visible: true, children: [baselineInstance()] };
+    const violations = auditLabSubtrees([{ key: 'SCR-01', name: 'Chi tiết', node }]);
+    expect(violations.filter((v) => v.kind === 'shell-mismatch')).toHaveLength(0);
+  });
+});
+
 describe('renderLabAuditMd', () => {
   it('violations rỗng → trả chuỗi rỗng', () => {
     expect(renderLabAuditMd([], { generatedAt: '2026-08-22T00:00:00.000Z', subject: 'màn' })).toBe('');
@@ -357,5 +459,13 @@ describe('renderLabAuditMd', () => {
     );
     expect(md).toContain('[Không instance]');
     expect(md).toContain('[Không bind biến]');
+  });
+
+  it('nhãn "[Khung màn]" cho kind "shell-mismatch" (WP-lab-shell)', () => {
+    const md = renderLabAuditMd(
+      [{ key: 'SCR-01', kind: 'shell-mismatch', detail: '"Chi tiết" thiếu App Bar (khung màn yêu cầu phải có).' }],
+      { generatedAt: '2026-08-23T00:00:00.000Z', subject: 'màn' },
+    );
+    expect(md).toContain('[Khung màn]');
   });
 });

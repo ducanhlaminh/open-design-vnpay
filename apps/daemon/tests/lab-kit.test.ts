@@ -282,6 +282,49 @@ describe('buildKitBrief', () => {
     expect(headingLines.length).toBeGreaterThanOrEqual(5);
     for (const banned of BANNED_PHRASES) expect(brief).not.toContain(banned);
   });
+
+  // ── WP-lab-reorder (.tmp/pipeline/wp-lab-reorder.yaml): screens ────────────
+  // "Nâng bộ comp" đổi vai thành "Đóng gói comp" — đóng gói từ node nguồn
+  // trong màn + swap ngược.
+
+  it('screens absent → giữ Y CŨ (title "Nâng bộ comp", cap ≤1400 khi rỗng)', () => {
+    const brief = buildKitBrief(minOpts);
+    expect(brief).toContain('# Nâng bộ comp');
+    expect(brief).not.toContain('Màn để swap ngược');
+    assertBriefShape(brief, 1400);
+  });
+
+  it('screens có (tối thiểu) → title "Đóng gói comp", dòng "Màn để swap ngược", cap ≤1700', () => {
+    const brief = buildKitBrief({ ...minOpts, screens: [{ key: 'SCR-01', frameNodeId: '1:2' }] });
+    expect(brief).toContain('# Đóng gói comp');
+    expect(brief).toContain('Màn để swap ngược');
+    expect(brief).toContain('SCR-01 (frame 1:2)');
+    expect(brief.length).toBeLessThanOrEqual(1700);
+  });
+
+  it('plan item có sourceNodes + screens có → in "← nguồn: screenKey:nodeId"', () => {
+    const brief = buildKitBrief({
+      ...baseOpts,
+      screens: [{ key: 'SCR-01', frameNodeId: '1:2' }],
+      plan: [
+        {
+          key: 'card-choose-number',
+          name: 'Card - Chọn số',
+          decision: 'derive' as const,
+          gap: 'thiếu price-tag',
+          sourceNodes: [{ screenKey: 'SCR-01', nodeId: '1:5' }],
+        },
+      ],
+    });
+    expect(brief).toContain('← nguồn: SCR-01:1:5');
+  });
+
+  it('taskLines đổi vai "đóng gói + swap" khi screens có', () => {
+    const brief = buildKitBrief({ ...baseOpts, screens: [{ key: 'SCR-01', frameNodeId: '1:2' }] });
+    expect(brief).toContain('componentize-in-place');
+    expect(brief).toContain('SWAP');
+    expect(brief).toContain('kit-result.json');
+  });
 });
 
 // ── parseKitPlan ─────────────────────────────────────────────────────────────
@@ -298,6 +341,7 @@ describe('parseKitPlan', () => {
             baseComponents: ['datarow', 'ProviderMini'],
             gap: 'base Card không có chỗ cho media + badge chồng góc + price-tag',
             reason: 'điểm neo thị giác chính của màn danh sách gói',
+            sourceNodes: [{ screenKey: 'SCR-01', nodeId: '1:2' }],
           },
           { key: 'radio', name: 'Radio', decision: 'use-base' },
         ],
@@ -312,6 +356,8 @@ describe('parseKitPlan', () => {
         baseComponents: ['datarow', 'ProviderMini'],
         gap: 'base Card không có chỗ cho media + badge chồng góc + price-tag',
         reason: 'điểm neo thị giác chính của màn danh sách gói',
+        sourceNodes: [{ screenKey: 'SCR-01', nodeId: '1:2' }],
+        swapBack: true,
       },
       { key: 'radio', name: 'Radio', decision: 'use-base' },
     ]);
@@ -333,6 +379,94 @@ describe('parseKitPlan', () => {
     expect(parsed!.warnings.length).toBe(2);
     expect(parsed!.warnings.join(' ')).toMatch(/"a"/);
     expect(parsed!.warnings.join(' ')).toMatch(/gap/);
+  });
+
+  // ── WP-lab-reorder (.tmp/pipeline/wp-lab-reorder.yaml): sourceNodes/swapBack ─
+
+  it('drops a "derive" entry with a gap but WITHOUT sourceNodes and without mustHave, with a warning', () => {
+    const parsed = parseKitPlan(
+      JSON.stringify({
+        candidates: [
+          { key: 'a', name: 'A', decision: 'derive', gap: 'thiếu media' },
+          { key: 'b', name: 'B', decision: 'use-base' },
+        ],
+      }),
+    );
+    expect(parsed).not.toBeNull();
+    expect(parsed!.candidates.map((c) => c.key)).toEqual(['b']);
+    expect(parsed!.warnings.length).toBe(1);
+    expect(parsed!.warnings[0]).toMatch(/"a"/);
+    expect(parsed!.warnings[0]).toMatch(/sourceNodes/);
+  });
+
+  it('keeps a "derive" entry WITHOUT sourceNodes when mustHave: true (khung role exception)', () => {
+    const parsed = parseKitPlan(
+      JSON.stringify({
+        candidates: [
+          { key: 'app-bar', name: 'App Bar', decision: 'derive', gap: 'DS chưa có App Bar', mustHave: true },
+        ],
+      }),
+    );
+    expect(parsed).not.toBeNull();
+    expect(parsed!.candidates).toEqual([
+      { key: 'app-bar', name: 'App Bar', decision: 'derive', gap: 'DS chưa có App Bar', mustHave: true },
+    ]);
+    expect(parsed!.warnings).toEqual([]);
+  });
+
+  it('drops an entry with an empty sourceNodes array (no mustHave) the same as absent', () => {
+    const parsed = parseKitPlan(
+      JSON.stringify({
+        candidates: [{ key: 'a', name: 'A', decision: 'derive', gap: 'x', sourceNodes: [] }],
+      }),
+    );
+    expect(parsed!.candidates).toEqual([]);
+    expect(parsed!.warnings.length).toBe(1);
+  });
+
+  it('filters out an invalid sourceNodes entry (missing screenKey/nodeId) but keeps valid ones', () => {
+    const parsed = parseKitPlan(
+      JSON.stringify({
+        candidates: [
+          {
+            key: 'a',
+            name: 'A',
+            decision: 'derive',
+            gap: 'x',
+            sourceNodes: [{ screenKey: 'SCR-01' }, { screenKey: 'SCR-02', nodeId: '2:2' }],
+          },
+        ],
+      }),
+    );
+    expect(parsed!.candidates[0]?.sourceNodes).toEqual([{ screenKey: 'SCR-02', nodeId: '2:2' }]);
+  });
+
+  it('swapBack defaults to true when derive has sourceNodes, respects an explicit false', () => {
+    const withDefault = parseKitPlan(
+      JSON.stringify({
+        candidates: [{ key: 'a', name: 'A', decision: 'derive', gap: 'x', sourceNodes: [{ screenKey: 'S', nodeId: '1:1' }] }],
+      }),
+    );
+    expect(withDefault!.candidates[0]?.swapBack).toBe(true);
+
+    const explicitFalse = parseKitPlan(
+      JSON.stringify({
+        candidates: [
+          {
+            key: 'a',
+            name: 'A',
+            decision: 'derive',
+            gap: 'x',
+            sourceNodes: [{ screenKey: 'S', nodeId: '1:1' }],
+            swapBack: false,
+          },
+        ],
+      }),
+    );
+    expect(explicitFalse!.candidates[0]?.swapBack).toBe(false);
+
+    const useBaseNoDefault = parseKitPlan(JSON.stringify({ candidates: [{ key: 'b', name: 'B', decision: 'use-base' }] }));
+    expect(useBaseNoDefault!.candidates[0]?.swapBack).toBeUndefined();
   });
 
   it('drops an entry with an invalid "decision" value', () => {
@@ -442,6 +576,82 @@ describe('buildKitPlanBrief', () => {
     expect(allFalse).toContain('tokens.md ✗');
     expect(allFalse).toContain('slots.md ✗');
   });
+
+  // ── WP-lab-shell (.tmp/pipeline/wp-lab-shell.yaml): shellNeeds ─────────────
+
+  it('shellNeeds present → "Khung màn cần" line, with "đề xuất derive mustHave" for a role with bound=null', () => {
+    const brief = buildKitPlanBrief({
+      ...baseOpts,
+      shellNeeds: [
+        { role: 'app-bar', screens: 4, bound: 'App Bar' },
+        { role: 'tabbar', screens: 1, bound: null },
+      ],
+    });
+    expect(brief).toContain('Khung màn cần');
+    expect(brief).toContain('app-bar ×4 màn');
+    expect(brief).toContain('"App Bar"');
+    expect(brief).toContain('tabbar ×1 màn');
+    expect(brief).toContain('đề xuất derive mustHave');
+  });
+
+  it('shellNeeds absent/empty → no "Khung màn cần" line, brief keeps the ≤1400 static cap', () => {
+    const withoutField = buildKitPlanBrief(minOpts);
+    expect(withoutField).not.toContain('Khung màn cần');
+    expect(withoutField.length).toBeLessThanOrEqual(1400);
+
+    const withEmptyArray = buildKitPlanBrief({ ...minOpts, shellNeeds: [] });
+    expect(withEmptyArray).not.toContain('Khung màn cần');
+  });
+
+  // ── WP-lab-reorder (.tmp/pipeline/wp-lab-reorder.yaml): screens/candidates ──
+  // "Đề xuất kit" nay quét màn đã duyệt thay vì đoán từ docs.
+
+  it('screens absent → giữ Y CŨ (không có dòng "Màn đã dựng"/"Ứng viên daemon quét")', () => {
+    const brief = buildKitPlanBrief(baseOpts);
+    expect(brief).not.toContain('Màn đã dựng');
+    expect(brief).not.toContain('Ứng viên daemon quét');
+  });
+
+  it('screens có (tối thiểu, không candidates) → dòng "Màn đã dựng" + lý do không quét được, cap ≤1700', () => {
+    const brief = buildKitPlanBrief({
+      ...minOpts,
+      screens: [{ key: 'SCR-01', name: 'Danh sách gói' }],
+      candidatesUnavailableReason: 'chưa có token Figma',
+    });
+    expect(brief).toContain('Màn đã dựng');
+    expect(brief).toContain('SCR-01 — Danh sách gói');
+    expect(brief).toContain('Ứng viên daemon quét');
+    expect(brief).toContain('chưa có token Figma');
+    expect(brief).toContain('dựa vào PNG màn');
+    expect(brief.length).toBeLessThanOrEqual(1700);
+  });
+
+  it('screens > 6 → cắt 6 rồi "+N"', () => {
+    const screens = Array.from({ length: 9 }, (_, i) => ({ key: `SCR-0${i}`, name: `Màn ${i}` }));
+    const brief = buildKitPlanBrief({ ...baseOpts, screens });
+    expect(brief).toContain('+3');
+  });
+
+  it('candidates có → liệt kê id/tên/lặp/màn trong dòng "Ứng viên daemon quét"', () => {
+    const brief = buildKitPlanBrief({
+      ...baseOpts,
+      screens: [{ key: 'SCR-01', name: 'Danh sách gói' }],
+      candidates: [
+        { id: 'KC-01', suggestedName: 'Card gói', occurrences: 3, screens: ['SCR-01'], hasInstance: false },
+      ],
+    });
+    expect(brief).toContain('KC-01');
+    expect(brief).toContain('Card gói');
+    expect(brief).toContain('×3');
+    expect(brief).toContain('SCR-01');
+  });
+
+  it('taskLines/reminderLines đổi vai "quét màn đã duyệt" khi screens có', () => {
+    const brief = buildKitPlanBrief({ ...baseOpts, screens: [{ key: 'SCR-01', name: 'x' }] });
+    expect(brief).toContain('chỉ đề xuất cái CÓ trên màn');
+    expect(brief).toContain('sourceNodes');
+    expect(brief).toContain('Không có nguồn trên màn thì không derive');
+  });
 });
 
 // ── renderKitPlanMd ──────────────────────────────────────────────────────────
@@ -456,6 +666,24 @@ describe('renderKitPlanMd', () => {
     expect(md).toContain('thiếu price-tag');
     expect(md).toContain('Radio');
     expect(md).toContain('use-base');
+  });
+
+  it('renders the "Nguồn trên màn" column (n node · màn a, b) when sourceNodes present', () => {
+    const md = renderKitPlanMd([
+      {
+        key: 'card',
+        name: 'Card - Chọn số',
+        decision: 'derive',
+        gap: 'thiếu price-tag',
+        sourceNodes: [
+          { screenKey: 'SCR-01', nodeId: '1:2' },
+          { screenKey: 'SCR-02', nodeId: '2:2' },
+        ],
+      },
+      { key: 'radio', name: 'Radio', decision: 'use-base' },
+    ]);
+    expect(md).toContain('Nguồn trên màn');
+    expect(md).toContain('2 node · màn SCR-01, SCR-02');
   });
 });
 

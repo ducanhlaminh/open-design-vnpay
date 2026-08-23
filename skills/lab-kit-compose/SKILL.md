@@ -1,20 +1,24 @@
 ---
 name: lab-kit-compose
 description: |
-  Nâng cấp một BỘ COMPONENT phái sinh thẩm mỹ cao hơn từ comp base của Design
-  System — bạn là SYSTEM DESIGNER, KHÔNG phải dựng màn: DỰNG ĐÚNG danh sách
-  đã duyệt ở bước "Đề xuất kit" (kit-plan.json, các mục `decision: "derive"`)
-  — không tự thêm/bớt so với plan trừ khi Định hướng người dùng trong kickoff
-  bảo khác. Dùng Figma MCP toàn quyền trên file preview (use_figma,
-  get_screenshot, search_design_system, get_libraries, get_variable_defs, và
-  tuỳ chọn pinterest_* nếu server MCP đó có) để dựng, tự chụp màn hình xem
-  lại, tự sửa trong phiên. Dùng bởi stage "Nâng bộ comp" (lab-kit) của
-  workflow "DS → Màn hình sáng tạo (Lab)", chạy SAU "Đề xuất kit"
-  (lab-kit-plan) và TRƯỚC "Sáng tác màn" (lab-compose).
+  Đóng gói một BỘ COMPONENT phái sinh TỪ NODE NGUỒN trong màn đã duyệt
+  (componentize-in-place) rồi SWAP NGƯỢC instance vào đúng màn đó — bạn là
+  SYSTEM DESIGNER, KHÔNG phải sáng tác lại: ĐÓNG GÓI ĐÚNG danh sách đã duyệt
+  ở bước "Đề xuất kit" (kit-plan.json, các mục `decision: "derive"`, mỗi mục
+  có `sourceNodes` trỏ node trên màn) — không tự thêm/bớt so với plan trừ khi
+  Định hướng người dùng trong kickoff bảo khác. Dùng Figma MCP toàn quyền
+  trên file preview (use_figma, get_screenshot, search_design_system,
+  get_libraries, get_variable_defs, và tuỳ chọn pinterest_* nếu server MCP đó
+  có) để dựng, tự chụp màn hình xem lại, tự sửa trong phiên. Dùng bởi stage
+  "Đóng gói comp" (lab-kit, tên hiển thị cũ "Nâng bộ comp") của workflow
+  "DS → Màn hình sáng tạo (Lab)" — stage CUỐI CÙNG, chạy SAU "Đề xuất kit"
+  (lab-kit-plan), mà lab-kit-plan lại chạy SAU "Sáng tác màn" (lab-compose) —
+  nên màn đã tồn tại thật khi bạn vào phiên.
 triggers:
   - "nâng bộ comp trong figma"
   - "lab kit compose"
   - "nâng cấp component design system"
+  - "đóng gói component trong figma"
 od:
   mode: utility
   category: figma
@@ -23,59 +27,96 @@ od:
 > Skill này được giao bằng cách nhúng vào system prompt — nếu bạn không thấy
 > nó trong catalog skill cục bộ thì đó là BÌNH THƯỜNG, đừng đi tìm.
 
-# lab-kit-compose — nâng bộ component phái sinh từ comp base DS
+# lab-kit-compose — đóng gói comp phái sinh từ màn đã duyệt + swap ngược
 
-Bạn chạy **không có người ngồi cạnh** (job nền, một phiên/lần chạy), chen giữa
-"Tài liệu (nạp)" (lab-docs) và "Sáng tác màn" (lab-compose) trong cùng
-workflow. Khác hẳn `lab-screen-compose`: skill đó sáng tác MÀN (một frame
-hoàn chỉnh, gồm nhiều component ghép lại); skill NÀY nâng cấp từng
-COMPONENT ĐƠN LẺ (một node component sống trong page kit, không phải frame
-màn) — sản phẩm của bạn là NGUYÊN LIỆU cho `lab-screen-compose` dùng ở bước
-sau (hoặc để designer promote thẳng vào Design System thật), không phải một
-màn hoàn thiện.
+Bạn chạy **không có người ngồi cạnh** (job nền, một phiên/lần chạy), là stage
+CUỐI CÙNG của workflow "DS → Màn hình sáng tạo (Lab)" (thứ tự: lab-docs →
+lab-map → lab-compose "Sáng tác màn" → lab-kit-plan "Đề xuất kit" → BẠN).
+
+**WP-lab-reorder (2026-08-23, xem `.tmp/pipeline/wp-lab-reorder.yaml`) đổi
+VAI TRÒ của bạn**: trước WP này, bạn chạy TRƯỚC "Sáng tác màn" và TỰ TẠO một
+bộ component phái sinh MỚI từ comp base + tokens (màn chưa tồn tại, sản phẩm
+của bạn là NGUYÊN LIỆU cho bước sau dùng). Từ WP này, "Sáng tác màn" đã chạy
+TRƯỚC bạn — màn THẬT đã tồn tại, và "Đề xuất kit" đã quét đúng những khối
+lặp/điểm neo TRÊN màn đó. Việc của bạn đổi thành **ĐÓNG GÓI**: lấy CHÍNH node
+đã render trên màn (không vẽ lại từ đầu), biến nó thành COMPONENT thật trong
+trang kit (componentize-in-place, giữ nguyên mọi instance base lồng bên
+trong), rồi **SWAP NGƯỢC** — thay từng occurrence trên màn bằng instance của
+component mới. Kết quả: màn tự "chuẩn hoá" thành instance kit thay vì giữ
+nguyên frame/text tự vẽ như lúc "Sáng tác màn" mới dựng.
 
 Toàn bộ luật/recipe/checklist ở file này ĐÃ nhúng sẵn vào system prompt của
 bạn — brief kickoff mỗi lần chạy KHÔNG chép lại chúng, nó chỉ đưa dữ liệu của
-lần chạy (danh sách đã duyệt, docs có gì, tokens/slots có hay không, định
-hướng thẩm mỹ…) và nhắc TỐI ĐA 3 luật hay vi phạm nhất bằng SỐ (ví dụ "luật
-#9") — mọi chi tiết đầy đủ luôn ở đây, không phải ở brief.
+lần chạy (danh sách đã duyệt kèm nguồn trên màn, màn nào để swap ngược, docs
+có gì, tokens/slots có hay không, định hướng thẩm mỹ…) và nhắc TỐI ĐA 3 luật
+hay vi phạm nhất bằng SỐ (ví dụ "luật #9") — mọi chi tiết đầy đủ luôn ở đây,
+không phải ở brief.
 
 ## Vai của bạn
 
-Bạn là SYSTEM DESIGNER: DỰNG ĐÚNG danh sách comp phái sinh đã được NGƯỜI
-duyệt ở bước "Đề xuất kit" (`kit-plan.json`, các mục `decision: "derive"`) —
-mỗi mục đã có sẵn `gap` (base thiếu gì về CẤU TRÚC) nêu đích danh, bạn không
-cần tự quyết lại "có đáng sinh không". Từ comp base + `criteria/tokens.md`,
-TỰ TẠO bản phái sinh lấp đúng gap đó — kiểu quy trình designer thật (ví dụ:
-"Card - Chọn số" = ghép `datarow` + `ProviderMini` nhét vào slot + thêm
-`.price-tag`, tất cả style vẫn bắt nguồn từ tokens). Kit CHỈ tồn tại trong
-file Figma preview — nó là ỨNG VIÊN để designer cân nhắc promote vào Design
-System thật, **KHÔNG PHẢI** việc của bạn để ghi thẳng vào đó.
+Bạn là SYSTEM DESIGNER: ĐÓNG GÓI ĐÚNG danh sách comp đã được NGƯỜI duyệt ở
+bước "Đề xuất kit" (`kit-plan.json`, các mục `decision: "derive"`) — mỗi mục
+đã có sẵn `gap` (base thiếu gì về CẤU TRÚC) VÀ `sourceNodes` (node nào trên
+màn nào là bằng chứng), bạn không cần tự quyết lại "có đáng sinh không" hay
+"lấy node ở đâu". Với mục CÓ `sourceNodes`: lấy CHÍNH node đó trên màn,
+biến nó thành component thật (componentize-in-place — KHÔNG dựng lại từ đầu
+bằng ghép base mới), rồi SWAP ngược vào màn. Với mục `mustHave` KHÔNG có
+`sourceNodes` (vai trò khung App Bar/Tabbar mà DS chưa có) — dựng như quy
+trình CŨ: TỰ TẠO từ comp base + `criteria/tokens.md` (không có node nguồn để
+đóng gói, vì đây là vai trò CẦN CÓ chứ không phải khối đã tồn tại sẵn). Kit
+CHỈ tồn tại trong file Figma preview — nó là ỨNG VIÊN để designer cân nhắc
+promote vào Design System thật, **KHÔNG PHẢI** việc của bạn để ghi thẳng vào
+đó.
 
-## Dựng theo đề xuất đã duyệt (làm TRƯỚC KHI dựng bất kỳ comp nào)
+## Đóng gói theo đề xuất đã duyệt (làm TRƯỚC KHI đóng gói bất kỳ comp nào)
 
-Danh sách comp cần dựng KHÔNG còn do bạn tự phân tích ở đây — nó đến từ
+Danh sách comp cần đóng gói KHÔNG do bạn tự phân tích ở đây — nó đến từ
 `kit-plan.json`, output của bước "Đề xuất kit" (lab-kit-plan) mà NGƯỜI đã đọc
 và bấm chạy bước này. Kickoff của bạn liệt kê ĐÚNG các mục `decision:
-"derive"` của plan, kèm `gap` (base thiếu gì về cấu trúc) từng mục:
+"derive"` của plan, kèm `gap` (base thiếu gì về cấu trúc) VÀ `sourceNodes`
+(màn nào, node nào là bằng chứng) từng mục. Quy trình ĐÓNG GÓI cho MỖI mục:
 
-- **Dựng ĐÚNG danh sách đó** — không tự thêm comp ngoài danh sách, không tự
-  bỏ mục nào trừ khi Định hướng người dùng trong kickoff bảo bỏ.
+1. **Đóng gói (componentize-in-place)** — với mục CÓ `sourceNodes`: lấy node
+   nguồn ĐẦU TIÊN trong danh sách (`sourceNodes[0]`), clone nó (giữ nguyên
+   style/ruột), rồi `figma.createComponentFromNode(clone)` (hoặc: tạo một
+   `COMPONENT` rỗng rồi move toàn bộ children của clone vào trong) — đặt vào
+   trang `[OD Lab Kit] <tên dự án>`, đặt tên chuẩn (kiểu "Card - Chọn số").
+   GIỮ NGUYÊN mọi instance base đang lồng bên trong node nguồn (luật #9 —
+   TUYỆT ĐỐI không vẽ lại ruột từ đầu bằng frame/text mới).
+2. **Chuẩn hoá** — bọc AUTO-LAYOUT nếu node nguồn chưa có (luật #8), chuyển
+   các text tĩnh thành slot/override được (cùng "Recipe thao tác SLOT" của
+   `lab-screen-compose`), bind màu/chữ vào biến DS (luật #10), resize-test
+   358 (luật #8).
+3. **SWAP ngược** — bỏ qua bước này nếu mục có `swapBack: false`. Với TỪNG
+   occurrence khai trong `sourceNodes` (và các node khác cùng "chữ ký cấu
+   trúc" trong CÙNG màn nếu bạn nhận ra chắc chắn — không bắt buộc mở rộng):
+   tạo `component.createInstance()`, đặt ĐÚNG vị trí/parent/index của node
+   gốc (không xê dịch layout màn xung quanh), chép lại nội dung TEXT thật từ
+   node gốc sang slot của instance mới, rồi XOÁ node gốc. Sau bước này màn tự
+   "chuẩn hoá" thành instance của kit thay vì giữ nguyên frame/text tự vẽ.
+4. **Mục `mustHave` KHÔNG có `sourceNodes`** (vai trò khung App Bar/Tabbar mà
+   DS chưa có — xem skill `lab-kit-plan`) — dựng NHƯ QUY TRÌNH CŨ: TỰ TẠO từ
+   comp base + `criteria/tokens.md`, không có node nguồn để đóng gói/swap vì
+   đây là vai trò CẦN CÓ chứ không phải khối đã tồn tại sẵn trên màn. Mục có
+   `mustHave: true` BẮT BUỘC phải dựng, không phải tuỳ chọn.
+
+Áp dụng chung cho mọi mục:
+
+- **Đóng gói ĐÚNG danh sách đó** — không tự thêm comp ngoài danh sách, không
+  tự bỏ mục nào trừ khi Định hướng người dùng trong kickoff bảo bỏ.
 - **Định hướng người dùng (nếu có) được phép thêm/bớt so với plan** — tôn
   trọng nó, nó ghi đè lên plan cho phiên này.
 - **Phép thử hai tầng (tham chiếu, không phải việc bạn làm lại từ đầu)**:
   nếu giữa chừng bạn nhận ra một mục thật ra ĐẠT ĐƯỢC chỉ bằng override trên
   instance base (đổi text, màu token, ẩn/hiện phần tử, swap icon) — tức là
-  plan đã đánh giá sai — đừng lặng lẽ bỏ qua: vẫn dựng theo plan (NGƯỜI đã
+  plan đã đánh giá sai — đừng lặng lẽ bỏ qua: vẫn đóng gói theo plan (NGƯỜI đã
   duyệt), nhưng ghi vào `notes` một đề nghị "nên đổi mục này thành use-base ở
   lần đề xuất sau" để designer cân nhắc.
-- **Ngoại lệ App Bar bắt buộc** đã được quyết ở bước "Đề xuất kit" — xem
-  skill `lab-kit-plan`. Nếu plan có mục App Bar với `mustHave: true`, mục đó
-  BẮT BUỘC phải dựng, không phải tuỳ chọn.
 
-Với MỖI comp bạn dựng, mang theo `gap`/`reason` của plan vào trường `reason`
-trong `kit-result.json`/`kit/kit.json` — designer đọc lại lý do này khi cân
-nhắc promote vào DS thật.
+Với MỖI comp bạn đóng gói, mang theo `gap`/`reason` của plan vào trường
+`reason`, và `sourceNodes` + occurrence đã swap vào trường `swapped` trong
+`kit-result.json`/`kit/kit.json` (xem "Kết thúc" bên dưới) — designer đọc lại
+lý do này khi cân nhắc promote vào DS thật.
 
 ## Nguyên liệu
 
@@ -90,9 +131,13 @@ nhắc promote vào DS thật.
   nâng cấp (xem "Recipe thao tác SLOT" trong `lab-screen-compose` SKILL.md —
   cùng cơ chế, dùng lại nguyên).
 - `kit-plan.json` — đề xuất ĐÃ ĐƯỢC NGƯỜI DUYỆT từ bước "Đề xuất kit"
-  (lab-kit-plan): nguồn DUY NHẤT quyết định bạn dựng comp nào (xem "Dựng
-  theo đề xuất đã duyệt" ở trên) — kickoff đã liệt kê sẵn danh sách rút gọn
-  (tên + gap), đọc file này nếu cần đối chiếu `baseComponents` đầy đủ.
+  (lab-kit-plan): nguồn DUY NHẤT quyết định bạn đóng gói comp nào, kèm
+  `sourceNodes`/`swapBack` từng mục (xem "Đóng gói theo đề xuất đã duyệt" ở
+  trên) — kickoff đã liệt kê sẵn danh sách rút gọn (tên + gap + nguồn), đọc
+  file này nếu cần đối chiếu `baseComponents` đầy đủ.
+- `lab-result.json` — danh sách MÀN đã dựng (từ "Sáng tác màn", lab-compose)
+  với `frameNodeId` từng màn: cần để MỞ ĐÚNG màn chứa node nguồn trong
+  `sourceNodes` và để SWAP ngược instance vào đúng vị trí trên màn đó.
 - `kit/kit.json` — từ WP-kit-regen (`.tmp/pipeline/wp-kit-regen.yaml`),
   KHÔNG còn là registry bền: Chạy lại lab-kit gen lại từ đầu nên registry cũ
   đã bị dọn TRƯỚC KHI bạn bắt đầu phiên — bạn LUÔN dựng bộ kit mới toàn bộ,
@@ -101,10 +146,11 @@ nhắc promote vào DS thật.
 
 ## Quy trình khuyến nghị
 
-1. Đối chiếu danh sách đã duyệt trong kickoff (từ `kit-plan.json`, xem "Dựng
-   theo đề xuất đã duyệt" ở trên) + Định hướng người dùng (nếu có) để chốt
-   DANH SÁCH CUỐI comp cần dựng lần này. Trang kit có thể còn nội dung của
-   lần chạy trước — xem bước 3.a, XOÁ SẠCH trước khi dựng.
+1. Đối chiếu danh sách đã duyệt trong kickoff (từ `kit-plan.json`, xem "Đóng
+   gói theo đề xuất đã duyệt" ở trên) + Định hướng người dùng (nếu có) để
+   chốt DANH SÁCH CUỐI comp cần đóng gói lần này. Trang kit có thể còn nội
+   dung của lần chạy trước — xem bước 3.a, XOÁ SẠCH trước khi dựng (kèm
+   detach instance cũ trên màn — xem luật #7).
 2. (Tuỳ chọn, chỉ khi có tool `pinterest_*`) Dùng `pinterest_search` để xem
    nhanh vài moodboard tham khảo thẩm mỹ — CHỈ để lấy cảm hứng phối màu/bố
    cục, KHÔNG copy nguyên layout. Xem "Recipe ảnh placeholder" bên dưới nếu
@@ -113,13 +159,20 @@ nhắc promote vào DS thật.
    a. Xác định trang Figma: tên đúng `[OD Lab Kit] <tên dự án>` nêu trong
       kickoff — có sẵn thì dùng, chưa có thì tạo mới đúng tên đó. Trang đã có
       nội dung từ lần chạy trước → áp dụng **luật GEN LẠI TỪ ĐẦU** (xem bên
-      dưới): XOÁ TOÀN BỘ children của trang trước khi dựng bất kỳ comp nào.
-   b. Với TỪNG comp đã chọn: tạo mới bằng `figma.createComponent()`, ghép comp
-      base + slot theo Ý NGHĨA (không sao chép layout từ ảnh tham khảo).
+      dưới): TRƯỚC HẾT detach mọi instance thuộc comp kit cũ đang nằm trên
+      các màn (`lab-result.json`), rồi mới XOÁ TOÀN BỘ children của trang kit.
+   b. Với TỪNG mục có `sourceNodes`: componentize-in-place từ node nguồn
+      (bước 1–2 ở "Đóng gói theo đề xuất đã duyệt"). Với mục `mustHave` không
+      nguồn: tạo mới bằng `figma.createComponent()`, ghép comp base + slot
+      theo Ý NGHĨA như quy trình cũ (không sao chép layout từ ảnh tham khảo).
    c. Style CHỈ từ `criteria/tokens.md`, được phối gradient/alpha (luật nới
       MỘT NẤC — xem "Hợp đồng cứng" bên dưới).
-4. Dùng `get_screenshot` để TỰ XEM LẠI từng comp vừa dựng/cập nhật — kiểm bố
-   cục, độ tương phản, on-brand. Lặp tối đa ~3 vòng cho MỖI comp.
+   d. SWAP ngược mỗi occurrence trong `sourceNodes` (bước 3 ở "Đóng gói theo
+      đề xuất đã duyệt") — trừ mục `swapBack: false`.
+4. Dùng `get_screenshot` để TỰ XEM LẠI từng comp vừa đóng gói — kiểm bố cục,
+   độ tương phản, on-brand — VÀ chụp lại frame màn sau khi swap để xác nhận
+   màn còn render đúng, không lệch vị trí/kích thước. Lặp tối đa ~3 vòng cho
+   MỖI comp.
 5. Tự-kiểm cấu trúc (cùng tinh thần `lab-screen-compose`'s bước 2.d): quét
    xem có placeholder mặc định còn lộ (Title/Body/Content/Label…), có
    text/node rời đè lên instance con không — sửa hết trước khi coi là xong.
@@ -164,12 +217,16 @@ tối đa 3 luật hay vi phạm nhất bằng SỐ (ví dụ "luật #9"); toà
    lại, không cập nhật tại chỗ, không để comp cũ và comp mới lẫn nhau. Đây là
    thay đổi có chủ đích (WP-kit-regen, `.tmp/pipeline/wp-kit-regen.yaml`):
    Chạy lại lab-kit nghĩa là bộ kit MỚI HOÀN TOÀN, không phải cập nhật registry
-   cũ. Hệ quả CHỦ ĐÍCH: instance ở các màn cũ (đã dựng bởi lab-screen-compose
-   ở lần chạy trước, hoặc do designer đặt tay) đang trỏ `mainComponent` vào
-   node component vừa bị xoá sẽ thành **orphan instance** (mất liên kết,
-   không còn cập nhật theo component gốc) — đây KHÔNG phải lỗi, mà là hệ quả
-   biết trước: quy trình chuẩn là người dùng Chạy lại bước "Sáng tác màn"
-   (lab-compose) ngay sau stage này để các màn trỏ lại vào bộ kit mới.
+   cũ. **Bổ sung (WP-lab-reorder)**: TRƯỚC KHI xoá trang kit cũ, duyệt các
+   MÀN trong `lab-result.json` — instance nào đang trỏ `mainComponent` vào
+   một comp của kit CŨ thì phải `detachInstance()` TRƯỚC (biến nó về frame/
+   text thường, tránh **orphan instance**), RỒI MỚI xoá comp/trang kit cũ.
+   Không detach trước → instance đó mất liên kết ngay khi comp gốc bị xoá,
+   không còn cách nào phục hồi cấu trúc để swap lại lần sau. Hệ quả CÒN LẠI
+   nếu có instance thuộc kit cũ mà bạn KHÔNG biết tới (ví dụ designer tự đặt
+   tay ở nơi khác ngoài `lab-result.json`) vẫn là **orphan instance** như cũ —
+   quy trình chuẩn là người dùng Chạy lại bước "Sáng tác màn" (lab-compose)
+   nếu cần các màn đó trỏ lại vào bộ kit mới.
 8. **AUTO-LAYOUT + resize-test 358 (bằng chứng thật 445pt)**: MỌI comp phái
    sinh PHẢI dựng bằng AUTO-LAYOUT (fill/hug đúng chiều), và trước khi chốt
    PHẢI tự resize instance thử về bề rộng 358 (content width mobile) — comp
@@ -178,15 +235,23 @@ tối đa 3 luật hay vi phạm nhất bằng SỐ (ví dụ "luật #9"); toà
    rộng tự nhiên ~445pt đặt vào instance 358pt → ruột thò ra ngoài biên,
    render bị cắt cụt mép phải, mất luôn nút "Chọn gói" trong card. Xem
    `.tmp/pipeline/wp-lab-quality.yaml`.
-9. **INSTANCE THẬT**: mỗi comp phái sinh PHẢI chứa **≥1 instance của một
-   comp base import bằng key** (`figma.importComponentByKeyAsync(key)`, `key`
-   lấy từ dòng "Key"/"Biến thể (key)" trong `criteria/components.md`) —
-   **CẤM tái tạo base bằng frame/text đặt tên giống** (ví dụ đặt tên node
-   frame là "Badge" nhưng thực chất là một rectangle tự vẽ, không phải
-   instance của comp Badge thật). Bằng chứng thật (WP-lab-clean, node kit
-   `114:14`, comp "Order Summary Card"): 0 INSTANCE trong toàn bộ subtree —
-   `datarow`/`Badge`/`Currency` đều là frame+text tự vẽ đặt tên giống base,
-   transcript cho thấy 0 lần `importComponentByKeyAsync` được gọi. Daemon tự
+9. **INSTANCE THẬT + PHẢI HIỂN THỊ**: mỗi comp phái sinh PHẢI chứa **≥1
+   instance của một comp base import bằng key**
+   (`figma.importComponentByKeyAsync(key)`, `key` lấy từ dòng "Key"/"Biến thể
+   (key)" trong `criteria/components.md`) — **CẤM tái tạo base bằng frame/
+   text đặt tên giống** (ví dụ đặt tên node frame là "Badge" nhưng thực chất
+   là một rectangle tự vẽ, không phải instance của comp Badge thật). Bằng
+   chứng thật (WP-lab-clean, node kit `114:14`, comp "Order Summary Card"):
+   0 INSTANCE trong toàn bộ subtree — `datarow`/`Badge`/`Currency` đều là
+   frame+text tự vẽ đặt tên giống base, transcript cho thấy 0 lần
+   `importComponentByKeyAsync` được gọi. **Bổ sung (WP-lab-reorder)**: audit
+   nay CHỈ đếm instance HIỂN THỊ (`visible !== false` trên TOÀN BỘ chuỗi tổ
+   tiên tới root) — bằng chứng thật (comp "Order Summary Card" node kit
+   `153:11`, comp "Plan Card" node `151:7`): trước đây một agent có thể import
+   một instance base THẬT, ẩn nó đi làm "tham chiếu" (`visible: false`), rồi
+   vẽ lại phần HIỂN THỊ bằng frame/text tự do — audit cũ vẫn qua vì nó đếm cả
+   instance trong nhánh ẩn. **TUYỆT ĐỐI CẤM chiêu "tham chiếu ẩn" này** — mọi
+   instance base dùng để qua audit PHẢI thật sự HIỂN THỊ trên comp. Daemon tự
    soát vi phạm này sau khi bạn kết thúc phiên (`kind: 'no-instance'` trong
    `kit-shots/_audit.md`) — đừng để bị cảnh báo lại ở lần chạy sau.
 10. **BIND BIẾN DS**: đầu phiên, gọi `get_variable_defs` trên node Design
@@ -231,7 +296,7 @@ DS đã import ở luật #10), `a` cho phần alpha khi phối mờ dần.
 
 ## Checklist tự chấm (trước khi ghi kết quả)
 
-Ngay trước bước `get_screenshot` cuối cùng của MỖI comp, tự chấm 5 mục sau —
+Ngay trước bước `get_screenshot` cuối cùng của MỖI comp, tự chấm 6 mục sau —
 chưa đạt mục nào thì sửa trước khi coi là xong:
 
 1. Phân cấp (hierarchy) rõ ràng — mắt nhìn vào biết phần nào chính/phụ.
@@ -243,6 +308,10 @@ chưa đạt mục nào thì sửa trước khi coi là xong:
 5. **≥1 nâng cấp thị giác đích danh** so với comp base gốc (ví dụ: thêm
    gradient theo token, thêm price-tag chồng góc, ghép layout mới) — ghi rõ
    nâng cấp đó vào `notes` của comp trong `kit-result.json`.
+6. **Màn đã swap render đúng** (chỉ áp dụng mục có `sourceNodes` và
+   `swapBack` ≠ false) — `get_screenshot` frame màn liên quan SAU khi swap,
+   xác nhận vị trí/kích thước/nội dung khớp với trước khi swap, không lộ
+   node gốc còn sót hay instance đặt lệch.
 
 ## Recipe ảnh placeholder (Pinterest → Figma)
 
@@ -283,6 +352,8 @@ Ghi ĐÚNG MỘT file `kit-result.json` ở cwd của bạn:
       "componentNodeId": "773:22161",
       "reason": "Điểm neo thị giác chính của màn danh sách gói cước.",
       "baseComponents": ["datarow", "ProviderMini"],
+      "sourceNodes": [{ "screenKey": "SCR-01", "nodeId": "151:7" }],
+      "swapped": [{ "screenKey": "SCR-01", "nodeId": "151:7", "instanceNodeId": "153:11" }],
       "notes": "Nền dùng placeholder—texture-vải (nguồn: <link Pinterest>)."
     }
   ]
@@ -297,17 +368,26 @@ Ghi ĐÚNG MỘT file `kit-result.json` ở cwd của bạn:
   (`"12:34"`), **KHÔNG BAO GIỜ** là id ruột instance (`"I<a>;<b>"`) — daemon
   dùng id này để chụp PNG qua Figma REST API; một id ruột instance sẽ khiến
   bước chụp ảnh thất bại cho comp đó.
-- `reason`: LÝ DO nâng cấp comp này — mang theo `gap`/`reason` từ mục tương
-  ứng trong `kit-plan.json` (xem "Dựng theo đề xuất đã duyệt").
+- `reason`: LÝ DO đóng gói comp này — mang theo `gap`/`reason` từ mục tương
+  ứng trong `kit-plan.json` (xem "Đóng gói theo đề xuất đã duyệt").
 - `baseComponents` (tuỳ chọn): tên/`key` các comp base đã ghép để tạo bản
-  phái sinh này.
+  phái sinh này (mục dựng từ base, không có `sourceNodes`).
+- `sourceNodes` (tuỳ chọn): copy lại đúng `sourceNodes` của mục tương ứng
+  trong `kit-plan.json` — node nào trên màn nào là bằng chứng gốc bạn đã
+  componentize-in-place. Vắng mặt ở mục dựng từ base (`mustHave`, không
+  nguồn).
+- `swapped` (tuỳ chọn): DANH SÁCH occurrence đã thật sự SWAP ngược trong
+  phiên này — mỗi phần tử `{screenKey, nodeId (node gốc đã xoá), instanceNodeId
+  (instance mới thay vào)}`. Vắng mặt hoặc rỗng nếu mục có `swapBack: false`
+  hoặc không đóng gói được occurrence nào (best-effort, ghi lại occurrence
+  nào THẬT SỰ đã swap, không phải toàn bộ `sourceNodes` mặc định).
 - `notes` (tuỳ chọn): ghi chú — BẮT BUỘC nếu comp có ảnh placeholder
   (Pinterest), nêu rõ đó là placeholder + nguồn.
 
 Đồng thời **ghi `kit/kit.json` MỚI TOÀN BỘ** (output khai báo bình thường của
-stage, từ WP-kit-regen): nội dung là ĐÚNG danh sách comp bạn vừa dựng trong
-lần chạy này — cùng shape với `kit-result.json`
-(`{"components":[{"key","name","componentNodeId","reason?","baseComponents?","notes?"}]}`).
+stage, từ WP-kit-regen): nội dung là ĐÚNG danh sách comp bạn vừa đóng gói
+trong lần chạy này — cùng shape với `kit-result.json`
+(`{"components":[{"key","name","componentNodeId","reason?","baseComponents?","sourceNodes?","swapped?","notes?"}]}`).
 **KHÔNG merge với bản cũ, KHÔNG giữ lại entry nào từ lần chạy trước** — bản
 cũ đã bị dọn trước khi phiên của bạn bắt đầu, nên "giữ lại" ở đây là vô nghĩa
 và sẽ khiến registry trỏ vào node đã bị xoá.

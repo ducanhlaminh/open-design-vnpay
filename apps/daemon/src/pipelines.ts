@@ -383,16 +383,17 @@ const PIPELINE_DEFS_BASE: readonly PipelineDef[] = [
   // đúng 1 workflow").
   { id: 'lab-docs',         name: 'Tài liệu (nạp)',            skillId: 'confluence-ingest',     dependsOn: [],                   outputs: ['docs/', 'docs-feature/'], inputPlaceholder: 'Confluence page URL/id', acceptsUpload: true },
   // `lab-map` (WP-lab-map, 2026-08-23 — .tmp/pipeline/wp-lab-map.yaml): stage
-  // MỚI, CHỈ ĐỌC, đứng NGAY SAU lab-docs và TRƯỚC lab-kit-plan — agent đọc
-  // artifact docs-review của cùng dự án (nếu có, staging fail-soft vào
-  // `map-src/`, xem runLabMap trong server.ts) ưu tiên hơn tự đọc docs, biên
-  // ra `screen-map.json`/`screen-map.md`: CÁI GÌ (màn nào, mục đích, mustHave
-  // role+content, trạng thái, nav, luồng chính) — KHÔNG nói LÀM THẾ NÀO (không
-  // toạ độ/thứ tự/bố cục). Mục đích: key màn ỔN ĐỊNH giữa các lần chạy (dùng
-  // NGUYÊN VĂN key docs-review khi có) để lab-compose bám đúng thay vì tự đặt
-  // key mới mỗi lần (SCR-01 ≠ 6.1.1). Cùng bất biến DAEMON-ORCHESTRATED như
-  // lab-kit-plan/lab-kit/lab-compose — server.ts nhận diện skillId này và tự
-  // chạy runLabMap (rút gọn từ runLabKitPlan, KHÔNG Figma MCP nào — Symbol
+  // MỚI, CHỈ ĐỌC, đứng NGAY SAU lab-docs và TRƯỚC lab-compose (WP-lab-reorder
+  // — xem ngay dưới — đổi thứ tự này) — agent đọc artifact docs-review của
+  // cùng dự án (nếu có, staging fail-soft vào `map-src/`, xem runLabMap trong
+  // server.ts) ưu tiên hơn tự đọc docs, biên ra `screen-map.json`/
+  // `screen-map.md`: CÁI GÌ (màn nào, mục đích, mustHave role+content, trạng
+  // thái, nav, luồng chính) — KHÔNG nói LÀM THẾ NÀO (không toạ độ/thứ tự/bố
+  // cục). Mục đích: key màn ỔN ĐỊNH giữa các lần chạy (dùng NGUYÊN VĂN key
+  // docs-review khi có) để lab-compose bám đúng thay vì tự đặt key mới mỗi
+  // lần (SCR-01 ≠ 6.1.1). Cùng bất biến DAEMON-ORCHESTRATED như lab-kit-plan/
+  // lab-kit/lab-compose — server.ts nhận diện skillId này và tự chạy
+  // runLabMap (rút gọn từ runLabKitPlan, KHÔNG Figma MCP nào — Symbol
   // INTERNAL_MCP_SERVER_IDS rỗng). Không có docs-review cho dự án này → agent
   // tự phân tích từ docs (fallback, ghi `generatedFrom: "docs"`), KHÔNG fail.
   {
@@ -403,42 +404,6 @@ const PIPELINE_DEFS_BASE: readonly PipelineDef[] = [
     outputs: ['screen-map.json', 'screen-map.md'],
     inputPlaceholder: 'Luồng/màn cần ưu tiên (tuỳ chọn)',
   },
-  // `lab-kit-plan` (WP-kit-plan, 2026-08-22 — .tmp/pipeline/wp-kit-plan.yaml):
-  // stage MỚI, CỔNG DUYỆT CỦA NGƯỜI trước "Nâng bộ comp" — agent CHỈ ĐỌC
-  // (docs + criteria), KHÔNG có tool Figma trong phiên, xuất kit-plan.json
-  // (máy đọc) + kit-plan.md (người đọc/duyệt) theo PHÉP THỬ HAI TẦNG (mặc
-  // định KHÔNG sinh — chỉ sinh khi override trên base không đạt, và gap phải
-  // nêu đích danh). Cổng duyệt = thao tác bấm-tay từng stage sẵn có (run-all
-  // KHÔNG dừng chờ — chấp nhận, không chế cơ chế approve mới). Cùng bất biến
-  // DAEMON-ORCHESTRATED như `lab-kit`/`lab-compose` bên dưới — server.ts
-  // nhận diện skillId này và tự chạy runLabKitPlan (rút gọn từ runLabKit,
-  // KHÔNG Figma MCP nào — Symbol INTERNAL_MCP_SERVER_IDS rỗng).
-  {
-    id: 'lab-kit-plan',
-    name: 'Đề xuất kit',
-    skillId: 'lab-kit-plan',
-    dependsOn: ['lab-docs'],
-    outputs: ['kit-plan.json', 'kit-plan.md'],
-    inputPlaceholder: 'Định hướng đề xuất (tuỳ chọn)',
-  },
-  // `lab-kit` (WP-kit, 2026-08-22 — .tmp/pipeline/wp-kit.yaml): stage giữa
-  // lab-kit-plan và lab-compose — agent TỰ TẠO bộ component phái sinh thẩm mỹ
-  // cao hơn (từ comp base + tokens.md) TRƯỚC khi dựng màn, để designer xem
-  // được kit trước, re-run độc lập, phiên ngắn hơn một lần dựng cả màn. Cùng
-  // bất biến DAEMON-ORCHESTRATED như `lab-compose` bên dưới (agent-pipeline
-  // thường bị `computeEnabledMcp` cắt MCP ngoài) — server.ts nhận diện
-  // skillId này và tự chạy runLabKit (nguyên khuôn runLabCompose).
-  // WP-kit-regen (2026-08-22 — .tmp/pipeline/wp-kit-regen.yaml): TỪ WP NÀY
-  // `kit/kit.json` là output BÌNH THƯỜNG của lab-kit, không còn "bền ngoài
-  // outputs" — Chạy lại lab-kit nghĩa là GEN LẠI TỪ ĐẦU (registry cũ bị dọn
-  // trước khi build brief, agent xoá sạch children trang kit rồi dựng bộ mới
-  // toàn bộ), theo yêu cầu user. `patterns/` của lab-compose bên dưới VẪN
-  // bền ngoài outputs — ngữ nghĩa đó không đổi.
-  // WP-kit-plan (2026-08-22 — .tmp/pipeline/wp-kit-plan.yaml): `dependsOn`
-  // THÊM `lab-kit-plan` — lab-kit KHÔNG còn tự phân tích chọn lọc, nó DỰNG
-  // ĐÚNG danh sách 'derive' đã được NGƯỜI duyệt ở kit-plan.json (fail-fast
-  // nếu thiếu, xem runLabKit trong server.ts).
-  { id: 'lab-kit',          name: 'Nâng bộ comp',              skillId: 'lab-kit-compose',       dependsOn: ['lab-docs', 'lab-kit-plan'], outputs: ['kit-shots/', 'kit-result.json', 'kit/kit.json'], inputPlaceholder: 'Định hướng thẩm mỹ (tuỳ chọn)' },
   // `lab-compose` KHÔNG chạy qua đường agent-pipeline thường — run profile
   // 'pipeline' bị `computeEnabledMcp` (figma-build.ts) cắt sạch MCP ngoài
   // (0.8.52 quyết định, KHÔNG nới luật đó ở đây). Thay vào đó server.ts nhận
@@ -454,7 +419,66 @@ const PIPELINE_DEFS_BASE: readonly PipelineDef[] = [
   // `lab-docs`, KHÔNG có `lab-kit`: kit là ƯU TIÊN khi có (buildComposeBrief's
   // `hasKit`), không phải điều kiện cứng — một dự án chưa chạy lab-kit vẫn
   // sáng tác màn được thẳng từ comp base, đúng tinh thần "re-run độc lập".
+  // WP-lab-reorder (2026-08-23 — .tmp/pipeline/wp-lab-reorder.yaml): `lab-
+  // compose` nay đứng NGAY SAU `lab-map`, TRƯỚC `lab-kit-plan`/`lab-kit`
+  // trong thứ tự workflow (`dependsOn` KHÔNG đổi — vẫn chỉ `lab-docs`, map là
+  // ƯU TIÊN khi có, không phải điều kiện cứng, cùng tinh thần cũ) — "Sáng tác
+  // màn" chạy NGAY sau "Bản đồ màn" để "Đề xuất kit" có màn thật làm bằng
+  // chứng thay vì đoán từ docs. Lần chạy ĐẦU chưa có kit là bình thường (dựng
+  // từ comp base); lần "Chạy lại" SAU "Đóng gói comp" (lab-kit) → ưu tiên kit
+  // như cũ (hành vi buildComposeBrief's `hasKit` không đổi).
   { id: 'lab-compose',      name: 'Sáng tác màn',              skillId: 'lab-screen-compose',    dependsOn: ['lab-docs'],         outputs: ['screens/', 'lab-result.json'], inputPlaceholder: 'Phạm vi màn / định hướng thị giác (tuỳ chọn)' },
+  // `lab-kit-plan` (WP-kit-plan, 2026-08-22 — .tmp/pipeline/wp-kit-plan.yaml):
+  // stage CỔNG DUYỆT CỦA NGƯỜI trước "Đóng gói comp" — agent CHỈ ĐỌC (docs +
+  // criteria), KHÔNG có tool Figma trong phiên, xuất kit-plan.json (máy đọc)
+  // + kit-plan.md (người đọc/duyệt) theo PHÉP THỬ HAI TẦNG (mặc định KHÔNG
+  // sinh — chỉ sinh khi override trên base không đạt, và gap phải nêu đích
+  // danh). Cổng duyệt = thao tác bấm-tay từng stage sẵn có (run-all KHÔNG
+  // dừng chờ — chấp nhận, không chế cơ chế approve mới). Cùng bất biến
+  // DAEMON-ORCHESTRATED như `lab-kit`/`lab-compose` — server.ts nhận diện
+  // skillId này và tự chạy runLabKitPlan (rút gọn từ runLabKit, KHÔNG Figma
+  // MCP nào — Symbol INTERNAL_MCP_SERVER_IDS rỗng).
+  // WP-lab-reorder (2026-08-23 — .tmp/pipeline/wp-lab-reorder.yaml): `lab-
+  // kit-plan` nay đứng SAU `lab-compose` — vai trò đổi từ "đoán từ docs" (màn
+  // chưa tồn tại) sang "QUÉT MÀN ĐÃ DUYỆT" (`lab-result.json` + PNG `screens/`
+  // + tiền-quét `kit-candidates.json`/`kit-candidates/` của daemon, xem
+  // runLabKitPlan). `dependsOn` THÊM `lab-compose` (map vẫn ưu tiên qua
+  // `lab-docs` gián tiếp — xem comment lab-map) để runLabKitPlan fail-fast
+  // đúng lúc khi chưa có `lab-result.json`. `outputs` THÊM
+  // `kit-candidates.json`/`kit-candidates/` (tiền-quét daemon, KHÔNG phải sản
+  // phẩm của agent — vẫn khai trong `outputs` vì server.ts tự ghi/dọn nó mỗi
+  // lần chạy stage này, cùng cơ chế re-run-clear generic).
+  {
+    id: 'lab-kit-plan',
+    name: 'Đề xuất kit',
+    skillId: 'lab-kit-plan',
+    dependsOn: ['lab-docs', 'lab-compose'],
+    outputs: ['kit-plan.json', 'kit-plan.md', 'kit-candidates.json', 'kit-candidates/'],
+    inputPlaceholder: 'Định hướng đề xuất (tuỳ chọn)',
+  },
+  // `lab-kit` (WP-kit, 2026-08-22 — .tmp/pipeline/wp-kit.yaml): stage cuối
+  // cùng của ds-lab — agent TỰ TẠO bộ component phái sinh thẩm mỹ cao hơn (từ
+  // comp base + tokens.md), để designer xem được kit + re-run độc lập. Cùng
+  // bất biến DAEMON-ORCHESTRATED như `lab-compose` (agent-pipeline thường bị
+  // `computeEnabledMcp` cắt MCP ngoài) — server.ts nhận diện skillId này và
+  // tự chạy runLabKit (nguyên khuôn runLabCompose).
+  // WP-kit-regen (2026-08-22 — .tmp/pipeline/wp-kit-regen.yaml): TỪ WP NÀY
+  // `kit/kit.json` là output BÌNH THƯỜNG của lab-kit, không còn "bền ngoài
+  // outputs" — Chạy lại lab-kit nghĩa là GEN LẠI TỪ ĐẦU (registry cũ bị dọn
+  // trước khi build brief, agent xoá sạch children trang kit rồi dựng bộ mới
+  // toàn bộ), theo yêu cầu user. `patterns/` của lab-compose bên trên VẪN bền
+  // ngoài outputs — ngữ nghĩa đó không đổi.
+  // WP-kit-plan (2026-08-22 — .tmp/pipeline/wp-kit-plan.yaml): `dependsOn`
+  // THÊM `lab-kit-plan` — lab-kit KHÔNG còn tự phân tích chọn lọc, nó DỰNG
+  // ĐÚNG danh sách 'derive' đã được NGƯỜI duyệt ở kit-plan.json (fail-fast
+  // nếu thiếu, xem runLabKit trong server.ts).
+  // WP-lab-reorder (2026-08-23 — .tmp/pipeline/wp-lab-reorder.yaml): tên hiển
+  // thị đổi "Nâng bộ comp" → "Đóng gói comp" — vai trò đổi từ "dựng comp mới
+  // từ base" sang "ĐÓNG GÓI comp từ node nguồn TRONG MÀN đã duyệt
+  // (componentize-in-place) + SWAP ngược instance vào màn" (id/skillId/file
+  // output giữ NGUYÊN — chỉ đổi tên hiển thị + hành vi bên trong, xem
+  // buildKitBrief/skills/lab-kit-compose). `dependsOn` KHÔNG đổi.
+  { id: 'lab-kit',          name: 'Đóng gói comp',              skillId: 'lab-kit-compose',       dependsOn: ['lab-docs', 'lab-kit-plan'], outputs: ['kit-shots/', 'kit-result.json', 'kit/kit.json'], inputPlaceholder: 'Định hướng thẩm mỹ (tuỳ chọn)' },
 ];
 
 // The registry every consumer imports. Identical to `PIPELINE_DEFS_BASE`
@@ -510,8 +534,16 @@ const WORKFLOW_DEFS: ReadonlyArray<Omit<Workflow, 'stages'>> = [
     id: 'ds-lab',
     name: 'DS → Màn hình sáng tạo (Lab)',
     description:
-      'Độc lập hoàn toàn với Docs → UI-Spec, Docs → PRD Requirements Review và Docs → Rà soát tài liệu: nạp tài liệu riêng cho workflow này (lab-docs), rồi để agent CHỈ ĐỌC biên một bản đồ màn ổn định (lab-map — screen-map.json/screen-map.md, ưu tiên artifact docs-review của cùng dự án nếu có), rồi (tuỳ chọn) để agent CHỈ ĐỌC đề xuất một bộ component phái sinh cho NGƯỜI duyệt (lab-kit-plan — kit-plan.json/kit-plan.md, không tool Figma), rồi để agent nâng ĐÚNG bộ component đã duyệt đó (lab-kit — CHỈ trong file preview), rồi để agent Figma TOÀN QUYỀN sáng tác màn hình mới trong file Figma preview từ comp base (hoặc kit, nếu có) + tokens của Design System theo đúng bản đồ. URD chỉ cho biết màn LÀM GÌ (chức năng + nội dung thật) — ảnh mockup nhúng trong tài liệu chỉ để hiểu tính năng, không phải hướng bố cục. Kết quả của mỗi lần chạy là ảnh chụp (PNG) của từng màn (hoặc từng comp kit) agent vừa dựng trong Figma.',
-    pipelineIds: ['lab-docs', 'lab-map', 'lab-kit-plan', 'lab-kit', 'lab-compose'],
+      // WP-lab-reorder (2026-08-23 — .tmp/pipeline/wp-lab-reorder.yaml): thứ tự
+      // đảo thành lab-docs → lab-map → lab-compose → lab-kit-plan → lab-kit —
+      // "Sáng tác màn" chạy NGAY sau "Bản đồ màn" (từ comp base, chưa cần
+      // kit) để có màn THẬT làm bằng chứng; "Đề xuất kit" đổi vai thành QUÉT
+      // MÀN ĐÃ DUYỆT (không còn đoán từ docs); "Đóng gói comp" (tên cũ "Nâng
+      // bộ comp") đóng gói ĐÚNG những gì đã duyệt trên màn (componentize-in-
+      // place từ node nguồn) rồi SWAP ngược instance vào màn — màn tự "chuẩn
+      // hoá" thành instance kit, không phải sáng tác lại lần hai.
+      'Độc lập hoàn toàn với Docs → UI-Spec, Docs → PRD Requirements Review và Docs → Rà soát tài liệu: nạp tài liệu riêng cho workflow này (lab-docs), rồi để agent CHỈ ĐỌC biên một bản đồ màn ổn định (lab-map — screen-map.json/screen-map.md, ưu tiên artifact docs-review của cùng dự án nếu có), rồi để agent Figma TOÀN QUYỀN sáng tác màn hình mới trong file Figma preview từ comp base + tokens của Design System theo đúng bản đồ (lab-compose), rồi (tuỳ chọn) để agent CHỈ ĐỌC quét màn ĐÃ DUYỆT và đề xuất comp cần đóng gói cho NGƯỜI duyệt (lab-kit-plan — kit-plan.json/kit-plan.md + kit-candidates.json daemon tự quét, không tool Figma), rồi để agent đóng gói ĐÚNG danh sách đã duyệt đó từ node nguồn trong màn + swap ngược instance vào màn (lab-kit — CHỈ trong file preview). URD chỉ cho biết màn LÀM GÌ (chức năng + nội dung thật) — ảnh mockup nhúng trong tài liệu chỉ để hiểu tính năng, không phải hướng bố cục. Kết quả của mỗi lần chạy là ảnh chụp (PNG) của từng màn (hoặc từng comp kit) agent vừa dựng trong Figma.',
+    pipelineIds: ['lab-docs', 'lab-map', 'lab-compose', 'lab-kit-plan', 'lab-kit'],
   },
 ];
 

@@ -45,10 +45,15 @@ function def(id: string) {
 // WP-lab-map (.tmp/pipeline/wp-lab-map.yaml, 2026-08-23): ds-lab grew a 5th
 // stage, the read-only "Bản đồ màn" (lab-map), between lab-docs and
 // lab-kit-plan — see pipelines.test.ts's dedicated lab-map assertions.
-test('ds-lab: 5-stage workflow (WP-lab-map added lab-map before lab-kit-plan), independent of docs-to-ui/docs-to-prd/docs-review', () => {
+// WP-lab-reorder (.tmp/pipeline/wp-lab-reorder.yaml, 2026-08-23): order
+// REVERSED to lab-docs → lab-map → lab-compose → lab-kit-plan → lab-kit;
+// lab-kit-plan's dependsOn grew `lab-compose` and its display name changed
+// "Nâng bộ comp" → "Đóng gói comp" — see pipelines.test.ts's dedicated
+// lab-kit-plan/lab-kit assertions for the full picture.
+test('ds-lab: 5-stage workflow (WP-lab-reorder: lab-docs → lab-map → lab-compose → lab-kit-plan → lab-kit), independent of docs-to-ui/docs-to-prd/docs-review', () => {
   const wf = getWorkflow('ds-lab');
   assert.ok(wf, 'ds-lab workflow should exist');
-  assert.deepEqual(wf!.pipelineIds, ['lab-docs', 'lab-map', 'lab-kit-plan', 'lab-kit', 'lab-compose']);
+  assert.deepEqual(wf!.pipelineIds, ['lab-docs', 'lab-map', 'lab-compose', 'lab-kit-plan', 'lab-kit']);
   assert.equal(def('lab-docs').skillId, 'confluence-ingest');
   assert.equal(def('lab-map').skillId, 'lab-map');
   assert.equal(def('lab-kit').skillId, 'lab-kit-compose');
@@ -410,7 +415,7 @@ describe('buildComposeBrief', () => {
     expect(brief).toContain('doc__6.1.1, doc__6.2.1');
     expect(brief).toContain('mustHave = checklist phải có mặt, không phải bố cục');
     expect(brief).toContain('frame tên `<key> — <tên>`');
-    expect(brief).toContain('luật #2/#9');
+    expect(brief).toContain('luật #2/#6/#7/#8');
   });
 
   it('map absent (undefined/null) → says the map is not ready yet, keeps the old scope fallback text', () => {
@@ -448,6 +453,90 @@ describe('buildComposeBrief', () => {
       map: { screens: [{ key: 'A', name: 'A', mustHaveCount: 0 }], mainPath: ['A'], scoped: ['A'] },
     });
     expect(brief.length).toBeLessThanOrEqual(1800);
+  });
+
+  // ── WP-lab-shell (.tmp/pipeline/wp-lab-shell.yaml): khung màn trong brief ──
+
+  it('map.shells present → one "Khung <key>" line per scoped screen, empty clusters omitted', () => {
+    const brief = buildComposeBrief({
+      ...baseOpts,
+      scopeHint: null,
+      map: {
+        screens: [],
+        mainPath: [],
+        scoped: ['doc__6.1.1', 'doc__6.2.1'],
+        shells: [
+          { key: 'doc__6.1.1', kind: 'root', must: ['tabbar'], should: ['search'], avoid: ['back'] },
+          { key: 'doc__6.2.1', kind: 'child', must: ['app-bar', 'back'], should: [], avoid: ['tabbar'] },
+        ],
+      },
+    });
+    expect(brief).toContain('- Khung doc__6.1.1: root · phải: tabbar · nên: search · tránh: back');
+    expect(brief).toContain('- Khung doc__6.2.1: child · phải: app-bar, back · tránh: tabbar');
+  });
+
+  it('map.bindings present → "Comp khung" line resolves bound roles and marks unbound roles for hand-building', () => {
+    const brief = buildComposeBrief({
+      ...baseOpts,
+      scopeHint: null,
+      map: {
+        screens: [],
+        mainPath: [],
+        scoped: ['doc__6.1.1'],
+        shells: [{ key: 'doc__6.1.1', kind: 'root', must: ['tabbar'], should: [], avoid: [] }],
+        bindings: [{ role: 'app-bar', name: 'App Bar', key: 'abc', from: 'ds' }],
+      },
+    });
+    expect(brief).toMatch(/- Comp khung: tabbar → \(DS\/kit chưa có — tự dựng tối giản, ghi notes\)/);
+  });
+
+  it('a role bound via kit renders "(kit)"; a role bound via DS key renders "(key <key>)"', () => {
+    const brief = buildComposeBrief({
+      ...baseOpts,
+      scopeHint: null,
+      map: {
+        screens: [],
+        mainPath: [],
+        scoped: ['S1'],
+        shells: [{ key: 'S1', kind: 'child', must: ['app-bar', 'back'], should: [], avoid: [] }],
+        bindings: [
+          { role: 'app-bar', name: 'App Bar', nodeId: '1:1', from: 'kit' } as unknown as {
+            role: string;
+            name: string;
+            key?: string;
+            from: 'kit' | 'ds';
+          },
+          { role: 'back', name: 'Back Button', key: 'back-key', from: 'ds' },
+        ],
+      },
+    });
+    expect(brief).toContain('app-bar → "App Bar" (kit)');
+    expect(brief).toContain('back → "Back Button" (key back-key)');
+  });
+
+  it('no shells at all → no "Khung"/"Comp khung" lines are printed', () => {
+    const brief = buildComposeBrief({
+      ...baseOpts,
+      scopeHint: null,
+      map: { screens: [], mainPath: [], scoped: ['S1'] },
+    });
+    expect(brief).not.toContain('- Khung ');
+    expect(brief).not.toContain('- Comp khung');
+  });
+
+  it('cap có-map nới lên ≤2100 khi có shells + bindings (dữ liệu tối thiểu)', () => {
+    const brief = buildComposeBrief({
+      ...minOpts,
+      scopeHint: null,
+      map: {
+        screens: [{ key: 'A', name: 'A', mustHaveCount: 0 }],
+        mainPath: ['A'],
+        scoped: ['A'],
+        shells: [{ key: 'A', kind: 'child', must: ['app-bar', 'back'], should: [], avoid: ['tabbar'] }],
+        bindings: [{ role: 'app-bar', name: 'App Bar', key: 'k', from: 'ds' }],
+      },
+    });
+    expect(brief.length).toBeLessThanOrEqual(2100);
   });
 });
 

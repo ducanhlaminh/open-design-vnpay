@@ -115,6 +115,45 @@ thế nào":
   `SCR-<code-hoặc-số-thứ-tự>`, ngắn gọn và ổn định trong CHÍNH dự án này (lần
   chạy lại lab-map sau vẫn nên giữ cùng key cho cùng một màn khi có thể).
 
+## Khung màn (shell) — phải dùng / nên dùng / tránh
+
+`shell` cũng nói CÁI GÌ, không nói LÀM THẾ NÀO: nó là sự **CÓ MẶT** của một
+vai trò khung (app-bar, tabbar, back, close, primary-cta, search) — **KHÔNG**
+phải vị trí/bố cục (đặt App Bar ở đâu, Tabbar cao bao nhiêu là việc của
+"Sáng tác màn"). Ghi `shell` theo bảng CỐ ĐỊNH sau, keyed theo **loại màn**
+(`kind`):
+
+| kind | Phải dùng (`must`) | Nên dùng (`should`) | Tránh (`avoid`) |
+| --- | --- | --- | --- |
+| `root` (home/tab chính) | tabbar | search | back |
+| `child` (màn con/detail/form bước) | app-bar, back | — | tabbar |
+| `sheet` (bottom-sheet/drawer) | — | close | app-bar, tabbar |
+| `modal` (dialog/xác nhận) | close | — | app-bar, tabbar |
+| `result` (kết quả thành công/thất bại) | primary-cta | — | back, tabbar |
+| `fullscreen` (scanner/bản đồ/viewer) | close | — | tabbar |
+
+Cách chọn `kind` cho một màn — ĐÚNG THỨ TỰ ưu tiên:
+
+1. Tài liệu/docs-review nói RÕ loại màn (ví dụ ux-review ghi "hiển thị dạng
+   dialog xác nhận") → docs THẮNG, dùng đúng kind đó.
+2. Tên/mục đích màn gợi ý rõ một trong 4 loại đặc biệt: có "sheet"/"drawer"/
+   "popup" → `sheet`; có "modal"/"dialog"/"xác nhận" → `modal`; có "kết quả
+   thanh toán/giao dịch"/"thành công"/"thất bại"/"hoàn tất" → `result` (CHÚ Ý:
+   "kết quả tìm kiếm" là màn danh sách → `child`, không phải `result`); có "scanner"/"quét"/
+   "camera"/"bản đồ"/"viewer" → `fullscreen`.
+3. Không khớp gì ở trên: màn là ĐIỂM VÀO của `mainPath` (không ai `nav`/
+   `mainPath`/`branches` trỏ tới nó) → `root`; có màn khác trỏ tới nó →
+   `child`.
+
+Ví dụ: màn **Detail** (được `nav` từ màn danh sách trỏ tới) → `child` — PHẢI
+App Bar + Back, TRÁNH Tabbar. Màn **Home** (điểm vào `mainPath`, không ai trỏ
+tới) → `root` — PHẢI Tabbar, TRÁNH Back.
+
+Bỏ trống `shell` (không chắc, hoặc hết thời gian phân tích) → daemon TỰ SUY
+đúng theo bảng trên (tên màn trước, mục đích sau, rồi vị trí trong đồ thị
+luồng) — không phải lỗi, nhưng bạn phân tích càng đúng thì "Sáng tác màn" và
+"Đề xuất kit" ở các bước sau càng ít phải đoán.
+
 ## `mainPath` — đường đi CHÍNH, không phải mọi nhánh
 
 Với mỗi luồng: xác định đường đi CHÍNH từ điểm bắt đầu (`type: "start"`) tới
@@ -168,7 +207,8 @@ chừng (một vài màn xét dở) — không có người ngồi cạnh để 
       "states": ["có dữ liệu", "rỗng"],
       "nav": [{ "el": "country-item", "to": "2.1.-PRD-Detail-Mua-SIM-du-lich__6.2.3", "label": "Chọn quốc gia" }],
       "source": { "doc": "docs-feature/.../2.1.-PRD-Detail-Mua-SIM-du-lich.md", "line": 285 },
-      "dsHints": ["Search Bar", "Listing"]
+      "dsHints": ["Search Bar", "Listing"],
+      "shell": { "kind": "child", "must": ["app-bar", "back"], "should": [], "avoid": ["tabbar"] }
     }
   ]
 }
@@ -186,6 +226,8 @@ chừng (một vài màn xét dở) — không có người ngồi cạnh để 
   bạn.
 - `screens[].source`: trỏ về TÀI LIỆU GỐC (không phải map-src/) để người đọc
   (và bạn ở lần chạy sau) mở đúng đoạn khi cần chi tiết hơn.
+- `screens[].shell`: xem mục "Khung màn (shell)" ở trên — `kind` + `must`/
+  `should`/`avoid` theo đúng bảng luật; bỏ trống thì daemon tự suy.
 
 **`screen-map.md`** (bảng cho NGƯỜI đọc và duyệt trước khi bấm các bước sau):
 
@@ -195,9 +237,9 @@ chừng (một vài màn xét dở) — không có người ngồi cạnh để 
 ## FLOW-3-1-luong-so-do — 3.1 Luồng sơ đồ (proposed)
 Luồng chính: 2.1...__6.1.1 → 2.1...__6.2.1 → 2.1...__6.2.3 → 2.1...__6.4.1
 
-| Key | Tên | Mục đích | Phải có | Trạng thái | Đi tới |
-| --- | --- | --- | --- | --- | --- |
-| 2.1...__6.2.1 | Màn hình chọn Quốc gia & Khu vực | Chọn quốc gia/khu vực | app-bar: SIM Du lịch, search-input: Tìm kiếm..., listing | có dữ liệu, rỗng | 2.1...__6.2.3 |
+| Key | Tên | Mục đích | Phải có | Khung | Trạng thái | Đi tới |
+| --- | --- | --- | --- | --- | --- | --- |
+| 2.1...__6.2.1 | Màn hình chọn Quốc gia & Khu vực | Chọn quốc gia/khu vực | app-bar: SIM Du lịch, search-input: Tìm kiếm..., listing | child · phải: app-bar, back · tránh: tabbar | có dữ liệu, rỗng | 2.1...__6.2.3 |
 ```
 
 Đây là bản để **NGƯỜI đọc**, không phải hợp đồng máy — thiếu vài chi tiết
@@ -216,3 +258,7 @@ bước dựng (không ghi → daemon tự render một bản tối giản từ
   sẽ DÙNG ĐÚNG key/mustHave trong bản đồ của bạn — bản đồ càng chính xác và
   ổn định, các bước dựng càng ít việc thừa/thiếu và bám key tốt hơn giữa các
   lần chạy lại.
+- Cả hai bước sau CŨNG đọc `shell` của từng màn (đề xuất kit dùng để biết vai
+  trò khung nào DS chưa có mà đề xuất derive; sáng tác màn dùng để biết khung
+  nào phải có/tránh) — `shell` bạn ghi càng đúng, hai bước đó càng ít phải
+  đoán lại từ tên màn.
