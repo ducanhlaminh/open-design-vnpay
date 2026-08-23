@@ -65,4 +65,23 @@ describe('isUiPreviewFile', () => {
   it('matches a dr-docs ingest output page under docs-feature (not under review/)', () => {
     expect(isUiPreviewFile('docs-review/docs-feature/A/x.md')).toBe(true);
   });
+
+  // ds-lab (0.8.105): Quick result of "Đề xuất kit" opened on kit-plan.json
+  // (raw JSON, sorted first) instead of the human table kit-plan.md — the user
+  // read it as "no Quick result". Readable Lab outputs are previewable; their
+  // machine-read siblings stay hidden.
+  it('ds-lab: kit-plan.md is previewable, kit-plan.json is not', () => {
+    expect(isUiPreviewFile('ds-lab/kit-plan.md')).toBe(true);
+    expect(isUiPreviewFile('ds-lab/kit-plan.json')).toBe(false);
+  });
+
+  it('ds-lab: kit-shots/*.png + screens/*.png + their _audit.md are previewable; result JSONs are not', () => {
+    expect(isUiPreviewFile('ds-lab/kit-shots/card-plan.png')).toBe(true);
+    expect(isUiPreviewFile('ds-lab/screens/SCR-01.png')).toBe(true);
+    expect(isUiPreviewFile('ds-lab/kit-shots/_audit.md')).toBe(true);
+    expect(isUiPreviewFile('ds-lab/screens/_audit.md')).toBe(true);
+    expect(isUiPreviewFile('ds-lab/kit-result.json')).toBe(false);
+    expect(isUiPreviewFile('ds-lab/lab-result.json')).toBe(false);
+    expect(isUiPreviewFile('ds-lab/kit/kit.json')).toBe(false);
+  });
 });

@@ -3051,6 +3051,15 @@ export function isUiPreviewFile(name: string): boolean {
   // screens/cells.json) and the derived flows/<id>.flowchart.json / index.json
   // stay hidden — same diagram, no reason to list it five times.
   if (/(^|\/)flows\/[^/]+\/ux-review\.json$/.test(lower)) return true;
+  // ds-lab (0.8.105): the human-facing outputs of the Lab stages — the
+  // "Đề xuất kit" proposal table (kit-plan.md), the PNG captures of each kit
+  // comp / screen, and the daemon's post-run audit note (_audit.md). Their
+  // machine-read siblings (kit-plan.json, kit-result.json, lab-result.json,
+  // kit/kit.json) stay hidden so Quick result opens on the readable file
+  // instead of a raw JSON blob (naturalPathCompare sorted kit-plan.json first).
+  if (/(^|\/)kit-plan\.md$/.test(lower)) return true;
+  if (/(^|\/)(kit-shots|screens)\/[^/]+\.png$/.test(lower)) return true;
+  if (/(^|\/)(kit-shots|screens)\/_audit\.md$/.test(lower)) return true;
   // UI-Spec previews: React per-screen pages + HTML prototype (not the
   // dist/index.html bundle, dev entry, or build assets).
   if (/\.html?$/.test(base)) {
