@@ -2641,8 +2641,13 @@ export function PipelinesView() {
                   <span className="pl-step__node">
                     {p.status === 'succeeded' ? (
                       <Icon name="check" size={14} />
-                    ) : isActive ? (
+                    ) : isRunning ? (
                       <Icon name="spinner" size={14} />
+                    ) : isQueued ? (
+                      // Đang xếp hàng (run-all) ≠ đang chạy: cùng icon với nút
+                      // "Trong hàng đợi" của card, không spinner — trước đây cả
+                      // chuỗi bước chờ đều quay tròn như thể đang chạy song song.
+                      <Icon name="history" size={14} />
                     ) : isSkipped ? (
                       <Icon name="minus" size={13} />
                     ) : !p.active ? (
