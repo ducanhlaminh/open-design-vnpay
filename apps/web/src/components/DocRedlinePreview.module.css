@@ -87,6 +87,52 @@
   scroll-margin-top: 16px;
 }
 
+.blockTintAdd {
+  background: rgba(34, 197, 94, 0.08);
+  box-shadow: inset 3px 0 0 rgba(34, 197, 94, 0.65);
+  border-radius: 4px;
+}
+
+.blockTintFull {
+  border-radius: 4px;
+  outline: 1px solid rgba(245, 158, 11, 0.55);
+  outline-offset: 3px;
+  background: rgba(245, 158, 11, 0.07);
+}
+
+.blockTintFull[data-redline-block='add'] {
+  outline-color: rgba(34, 197, 94, 0.6);
+  background: rgba(34, 197, 94, 0.08);
+}
+
+.blockTintFull[data-redline-block='note'] {
+  outline-color: rgba(139, 92, 246, 0.58);
+  background: rgba(139, 92, 246, 0.08);
+}
+
+.modeToolbar,
+.railToolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.railPanel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.railToolbar {
+  position: sticky;
+  top: -12px;
+  z-index: 3;
+  padding: 10px 0 8px;
+  background: var(--bg-panel, #fff);
+}
+
 /* Rail chỗ sửa bên phải: tự cuộn riêng, không đẩy tài liệu. */
 .rail {
   min-width: 0;
@@ -1054,6 +1100,13 @@
 }
 
 @media (max-width: 760px) {
+  .strip,
+  .modeToolbar,
+  .railToolbar {
+    align-items: stretch;
+    flex-wrap: wrap;
+  }
+
   .grid {
     grid-template-columns: 1fr;
   }

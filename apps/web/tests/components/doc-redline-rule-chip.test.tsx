@@ -7,7 +7,8 @@
 //
 // Fixture tách khỏi doc-redline-preview.test.tsx vì file đó khoá tập id neo
 // được của nó; ở đây cần cả một CHANGE lẫn một NOTE có rule_id để chứng minh
-// một chỗ sửa (RuleChip) ăn cả hai loại thẻ.
+// RuleChip dùng chung cho hai loại thẻ. Từ WP redline mode, hai loại không còn
+// cùng nằm trong DOM: test phải chọn đúng tab trước khi assert.
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/react';
 
@@ -78,30 +79,39 @@ beforeAll(() => {
  *  KHÔNG còn dùng `button[aria-expanded]` chung chung: wp3b.yaml mục D thêm
  *  nút "Chi tiết ▾/▴" (cũng mang `aria-expanded`) vào mọi thẻ, nên selector cũ
  *  đếm lẫn cả nút đó. `ruleHelpBtn` chỉ nút "?" của RuleChip mới có. */
-async function renderAndGetChips(): Promise<HTMLButtonElement[]> {
+async function renderAndGetChip(mode: 'changes' | 'notes' = 'changes'): Promise<HTMLButtonElement> {
   const { container } = render(<DocRedlinePreview projectId="p1" file={FILE} />);
   await waitFor(() => {
-    expect(container.querySelectorAll('[class*="ruleHelpBtn"]').length).toBe(2);
+    expect(container.querySelector('[data-placement="rail"]')).not.toBeNull();
   });
-  return Array.from(container.querySelectorAll<HTMLButtonElement>('[class*="ruleHelpBtn"]'));
+  if (mode === 'notes') {
+    const railMode = container.querySelector('[data-placement="rail"]');
+    const noteTab = Array.from(railMode?.querySelectorAll<HTMLButtonElement>('[role="tab"]') ?? [])
+      .find((button) => button.textContent?.startsWith('Nhận xét'));
+    expect(noteTab, 'rail phải có tab Nhận xét').toBeDefined();
+    fireEvent.click(noteTab!);
+  }
+  return waitFor(() => {
+    const chips = container.querySelectorAll<HTMLButtonElement>('[class*="ruleHelpBtn"]');
+    expect(chips.length).toBe(1);
+    return chips[0]!;
+  });
 }
 
 describe('chip rule — nhãn dễ hiểu, tooltip, popover chi tiết', () => {
   it('badge của rule mặc định hiện NHÃN chứ không hiện mã; nút "?" đứng cạnh mang tooltip một câu', async () => {
-    const [helpBtn] = await renderAndGetChips();
+    const helpBtn = await renderAndGetChip();
     // Badge là span nhãn thuần đứng ngay trước nút "?" (phần bấm được duy nhất).
-    const badge = helpBtn!.previousElementSibling as HTMLElement;
+    const badge = helpBtn.previousElementSibling as HTMLElement;
 
     expect(badge.textContent).toBe('Thiếu trường hợp biên');
     expect(badge.textContent).not.toContain('default#');
-    expect(helpBtn!.textContent).toBe('?');
-    expect(helpBtn!.getAttribute('title')).toBe('Chưa nói điều gì xảy ra khi thao tác không suôn sẻ.');
+    expect(helpBtn.textContent).toBe('?');
+    expect(helpBtn.getAttribute('title')).toBe('Chưa nói điều gì xảy ra khi thao tác không suôn sẻ.');
   });
 
   it('badge của rule dự án hiện phần sau dấu #, nút "?" mời bấm xem nội dung', async () => {
-    const chips = await renderAndGetChips();
-    // Thẻ thứ hai là NOTE — cùng một RuleChip, nên một chỗ sửa ăn cả hai loại.
-    const noteHelpBtn = chips[1]!;
+    const noteHelpBtn = await renderAndGetChip('notes');
     const noteBadge = noteHelpBtn.previousElementSibling as HTMLElement;
 
     expect(noteBadge.textContent).toBe('R-OVERLAY');
@@ -109,16 +119,16 @@ describe('chip rule — nhãn dễ hiểu, tooltip, popover chi tiết', () => {
   });
 
   it('bấm chip mở popover có CẢ nhãn, mã kỹ thuật đầy đủ và đoạn giải thích', async () => {
-    const [chip] = await renderAndGetChips();
+    const chip = await renderAndGetChip();
 
-    fireEvent.click(chip!);
+    fireEvent.click(chip);
 
     const pop = await waitFor(() => {
-      const el = chip!.parentElement?.querySelector('[role="note"]');
+      const el = chip.parentElement?.querySelector('[role="note"]');
       expect(el, 'popover phải mở').not.toBeNull();
       return el as HTMLElement;
     });
-    expect(chip!.getAttribute('aria-expanded')).toBe('true');
+    expect(chip.getAttribute('aria-expanded')).toBe('true');
     expect(pop.textContent).toContain('Thiếu trường hợp biên');
     // Mã kỹ thuật vẫn còn — đó là đường trace ngược về criteria.
     expect(pop.textContent).toContain('default#edge-case');
@@ -127,15 +137,14 @@ describe('chip rule — nhãn dễ hiểu, tooltip, popover chi tiết', () => {
     expect(pop.textContent).not.toContain('validation');
 
     // Bấm lại là đóng (giữ nguyên hành vi toggle cũ).
-    fireEvent.click(chip!);
+    fireEvent.click(chip);
     await waitFor(() => {
-      expect(chip!.parentElement?.querySelector('[role="note"]')).toBeNull();
+      expect(chip.parentElement?.querySelector('[role="note"]')).toBeNull();
     });
   });
 
   it('popover của rule dự án hiện mã đầy đủ và trích đoạn từ file criteria', async () => {
-    const chips = await renderAndGetChips();
-    const noteChip = chips[1]!;
+    const noteChip = await renderAndGetChip('notes');
 
     fireEvent.click(noteChip);
 

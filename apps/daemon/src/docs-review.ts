@@ -374,6 +374,13 @@ export interface DocSection {
   /** Dòng heading NGUYÊN VĂN mở đầu section (kể cả dấu `#`). Chuỗi rỗng =
    *  phần trước heading đầu tiên (frontmatter + mở đầu). */
   heading: string;
+  /** Ordinal zero-based của heading thật đầu tiên nằm trong lát. Bỏ trống nếu
+   *  lát bắt đầu ở document start/preamble. Heading trong fenced code không
+   *  tham gia phép đếm. */
+  sectionStartHeadingOrdinal?: number;
+  /** Ordinal zero-based của heading thật đầu tiên SAU lát. Bỏ trống nếu lát
+   *  kéo tới document end. */
+  sectionEndHeadingOrdinalExclusive?: number;
   /** 1-based. */
   startLine: number;
   /** 1-based, INCLUSIVE. */
@@ -407,10 +414,18 @@ export function splitSections(md: string, opts?: { minLines?: number }): DocSect
   const lines = md.split(/\r?\n/);
 
   // Bước 1 — cắt thô thành block: phần mở đầu (nếu có) + mỗi heading một block.
-  type Block = { heading: string; startLine: number; endLine: number; bodyLines: number };
+  type Block = {
+    heading: string;
+    startLine: number;
+    endLine: number;
+    bodyLines: number;
+    sectionStartHeadingOrdinal?: number;
+    sectionEndHeadingOrdinalExclusive?: number;
+  };
   const blocks: Block[] = [];
   let fence: string | null = null;
   let cur: Block | null = null;
+  let headingOrdinal = 0;
   const flushBlock = () => {
     if (cur) blocks.push(cur);
     cur = null;
@@ -421,7 +436,14 @@ export function splitSections(md: string, opts?: { minLines?: number }): DocSect
     const isHeading = fence === null && HEADING_RE.test(line);
     if (isHeading) {
       flushBlock();
-      cur = { heading: line, startLine: lineNo, endLine: lineNo, bodyLines: 0 };
+      cur = {
+        heading: line,
+        startLine: lineNo,
+        endLine: lineNo,
+        bodyLines: 0,
+        sectionStartHeadingOrdinal: headingOrdinal,
+      };
+      headingOrdinal += 1;
     } else {
       if (!cur) cur = { heading: '', startLine: lineNo, endLine: lineNo, bodyLines: 0 };
       cur.endLine = lineNo;
@@ -437,6 +459,13 @@ export function splitSections(md: string, opts?: { minLines?: number }): DocSect
   flushBlock();
   if (blocks.length === 0) {
     return [{ index: 0, heading: '', startLine: 1, endLine: lines.length, bodyLines: 0, imageRefs: [] }];
+  }
+
+  // Mỗi block thô kết thúc tại heading thật kế tiếp. Preamble vì thế có
+  // start bị bỏ trống và end=0; block heading cuối có end bị bỏ trống.
+  for (let i = 0; i < blocks.length - 1; i += 1) {
+    const nextStart = blocks[i + 1]!.sectionStartHeadingOrdinal;
+    if (nextStart !== undefined) blocks[i]!.sectionEndHeadingOrdinalExclusive = nextStart;
   }
 
   // Bước 2 — gộp tham lam tới ngưỡng, không gộp qua block rỗng.
@@ -456,6 +485,11 @@ export function splitSections(md: string, opts?: { minLines?: number }): DocSect
     else {
       acc.endLine = b.endLine;
       acc.bodyLines += b.bodyLines;
+      if (b.sectionEndHeadingOrdinalExclusive === undefined) {
+        delete acc.sectionEndHeadingOrdinalExclusive;
+      } else {
+        acc.sectionEndHeadingOrdinalExclusive = b.sectionEndHeadingOrdinalExclusive;
+      }
     }
     if (acc.bodyLines >= minLines) flushAcc();
   }
@@ -471,6 +505,12 @@ export function splitSections(md: string, opts?: { minLines?: number }): DocSect
     return {
       index,
       heading: b.heading,
+      ...(b.sectionStartHeadingOrdinal !== undefined
+        ? { sectionStartHeadingOrdinal: b.sectionStartHeadingOrdinal }
+        : {}),
+      ...(b.sectionEndHeadingOrdinalExclusive !== undefined
+        ? { sectionEndHeadingOrdinalExclusive: b.sectionEndHeadingOrdinalExclusive }
+        : {}),
       startLine: b.startLine,
       endLine: b.endLine,
       bodyLines: b.bodyLines,
@@ -500,6 +540,14 @@ export interface DocNote {
   /** Như {@link DocChange.doc_refs} nhưng nguyên văn lấy từ bản GỐC (note
    *  không sửa gì nên gốc và bản đã sửa như nhau tại các đoạn nó viện dẫn). */
   doc_refs?: string[];
+  /** Provenance định vị UI do daemon gắn khi gộp output cấp section; không
+   *  phải nội dung review/rule và agent không cần tự khai. */
+  sectionIndex?: number;
+  /** Heading nguyên văn (gồm dấu `#`) của section nguồn; chuỗi rỗng là phần
+   *  mở đầu trước heading đầu tiên. */
+  sectionHeading?: string;
+  sectionStartHeadingOrdinal?: number;
+  sectionEndHeadingOrdinalExclusive?: number;
   finding: string;
   suggestion: string;
   /** Daemon gắn khi `anchor` không tìm thấy trong bản gốc (xem
@@ -534,6 +582,14 @@ export interface DocChange {
    *  F-009). Tối đa 3. UI dựng thành nút nhảy tới đoạn đó — viện dẫn suông
    *  bằng lời ("như luồng F-009 mô tả") thì người đọc phải tự đi tìm. */
   doc_refs?: string[];
+  /** Provenance định vị UI do daemon gắn khi gộp output cấp section; không
+   *  phải nội dung review/rule và agent không cần tự khai. */
+  sectionIndex?: number;
+  /** Heading nguyên văn (gồm dấu `#`) của section nguồn; chuỗi rỗng là phần
+   *  mở đầu trước heading đầu tiên. */
+  sectionHeading?: string;
+  sectionStartHeadingOrdinal?: number;
+  sectionEndHeadingOrdinalExclusive?: number;
   reason: string;
 }
 // GHI CHÚ THIẾT KẾ (sửa sau vòng review 2 — bắt buộc đọc trước khi đổi lại):
@@ -597,6 +653,76 @@ function docRefsShapeErrors(value: unknown, index: number): string[] {
   return errors;
 }
 
+/** Kiểm shape của provenance section optional trên changes/notes. Daemon là
+ *  owner gắn giá trị thật khi merge; parser vẫn validate để file cấp trang cũ
+ *  hoặc dữ liệu đọc lại không thể mang metadata sai kiểu vào UI. */
+function sectionProvenanceShapeErrors(item: Record<string, unknown>, index: number): string[] {
+  const errors: string[] = [];
+  if (
+    item.sectionIndex !== undefined
+    && (typeof item.sectionIndex !== 'number' || !Number.isInteger(item.sectionIndex) || item.sectionIndex < 0)
+  ) {
+    errors.push(
+      `Phần tử thứ ${index}: 'sectionIndex' phải là số nguyên >= 0 khi có mặt, nhận được ${JSON.stringify(item.sectionIndex)}.`,
+    );
+  }
+  if (item.sectionHeading !== undefined && typeof item.sectionHeading !== 'string') {
+    errors.push(
+      `Phần tử thứ ${index}: 'sectionHeading' phải là chuỗi khi có mặt, nhận được ${JSON.stringify(item.sectionHeading)}.`,
+    );
+  }
+  for (const field of ['sectionStartHeadingOrdinal', 'sectionEndHeadingOrdinalExclusive'] as const) {
+    const value = item[field];
+    if (value !== undefined && (typeof value !== 'number' || !Number.isInteger(value) || value < 0)) {
+      errors.push(
+        `Phần tử thứ ${index}: '${field}' phải là số nguyên >= 0 khi có mặt, nhận được ${JSON.stringify(value)}.`,
+      );
+    }
+  }
+  if (
+    typeof item.sectionStartHeadingOrdinal === 'number'
+    && typeof item.sectionEndHeadingOrdinalExclusive === 'number'
+    && item.sectionEndHeadingOrdinalExclusive <= item.sectionStartHeadingOrdinal
+  ) {
+    errors.push(
+      `Phần tử thứ ${index}: 'sectionEndHeadingOrdinalExclusive' phải lớn hơn 'sectionStartHeadingOrdinal'.`,
+    );
+  }
+  return errors;
+}
+
+/** Gắn provenance section lên bản sao của mỗi annotation. Dùng chung cho
+ *  change/note để daemon luôn ghi đè metadata do agent có thể tự gửi và không
+ *  mutate object parser. */
+export function stampSectionProvenance<T extends DocChange | DocNote>(
+  annotations: readonly T[],
+  section: Pick<
+    DocSection,
+    'index' | 'heading' | 'sectionStartHeadingOrdinal' | 'sectionEndHeadingOrdinalExclusive'
+  >,
+): T[] {
+  return annotations.map((annotation) => {
+    const {
+      sectionIndex: _agentSectionIndex,
+      sectionHeading: _agentSectionHeading,
+      sectionStartHeadingOrdinal: _agentStartOrdinal,
+      sectionEndHeadingOrdinalExclusive: _agentEndOrdinal,
+      ...content
+    } = annotation;
+    return {
+      ...content,
+      sectionIndex: section.index,
+      sectionHeading: section.heading,
+      ...(section.sectionStartHeadingOrdinal !== undefined
+        ? { sectionStartHeadingOrdinal: section.sectionStartHeadingOrdinal }
+        : {}),
+      ...(section.sectionEndHeadingOrdinalExclusive !== undefined
+        ? { sectionEndHeadingOrdinalExclusive: section.sectionEndHeadingOrdinalExclusive }
+        : {}),
+    } as T;
+  });
+}
+
 /** Parse + validate the SHAPE of a page's `changes.json` (raw file text).
  *  `JSON.parse` + `Array.isArray` + `as DocChange[]` does NOT check anything
  *  at runtime — a cast is a compile-time-only assertion — so a malformed
@@ -657,6 +783,7 @@ export function parseChangesFile(raw: string): { changes: DocChange[] } | { erro
       errors.push(`Phần tử thứ ${i}: 'anchor' phải là chuỗi khi có mặt, nhận được ${JSON.stringify(item.anchor)}.`);
     }
     errors.push(...docRefsShapeErrors(item.doc_refs, i));
+    errors.push(...sectionProvenanceShapeErrors(item, i));
     changes.push(item as unknown as DocChange);
   });
 
@@ -894,6 +1021,7 @@ export function parseNotesFile(raw: string): { notes: DocNote[] } | { errors: st
       errors.push(`Phần tử thứ ${i}: 'rule_id' phải là chuỗi khi có mặt, nhận được ${JSON.stringify(item.rule_id)}.`);
     }
     errors.push(...docRefsShapeErrors(item.doc_refs, i));
+    errors.push(...sectionProvenanceShapeErrors(item, i));
     notes.push(item as unknown as DocNote);
   });
 

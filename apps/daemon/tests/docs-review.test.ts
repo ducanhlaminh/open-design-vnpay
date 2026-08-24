@@ -29,6 +29,7 @@ import {
   systemChangesPath,
   renderPageOutline,
   dedupeNotes,
+  stampSectionProvenance,
   headingLevel,
   isParentHeadingSection,
   clipQuote,
@@ -445,6 +446,48 @@ test('parseChangesFile: rejects non-array JSON and invalid JSON alike', () => {
   assert.ok('errors' in notJson);
 });
 
+test('parseChangesFile: giữ provenance section hợp lệ và từ chối shape sai', () => {
+  const valid = parseChangesFile(JSON.stringify([
+    {
+      id: 'c1', kind: 'gap', severity: 'major', quote: 'Bổ sung nội dung.', reason: 'Thiếu nội dung.',
+      sectionIndex: 3, sectionHeading: '## 6.1 Màn trang chủ',
+      sectionStartHeadingOrdinal: 7, sectionEndHeadingOrdinalExclusive: 10,
+    },
+  ]));
+  assert.ok('changes' in valid, JSON.stringify(valid));
+  if ('changes' in valid) {
+    assert.equal(valid.changes[0]!.sectionIndex, 3);
+    assert.equal(valid.changes[0]!.sectionHeading, '## 6.1 Màn trang chủ');
+    assert.equal(valid.changes[0]!.sectionStartHeadingOrdinal, 7);
+    assert.equal(valid.changes[0]!.sectionEndHeadingOrdinalExclusive, 10);
+  }
+
+  for (const [field, value] of [
+    ['sectionIndex', -1],
+    ['sectionIndex', 1.5],
+    ['sectionIndex', '3'],
+    ['sectionHeading', 42],
+    ['sectionStartHeadingOrdinal', -1],
+    ['sectionStartHeadingOrdinal', 1.5],
+    ['sectionEndHeadingOrdinalExclusive', '4'],
+  ] as const) {
+    const invalid = parseChangesFile(JSON.stringify([
+      { id: 'c1', kind: 'gap', severity: 'major', quote: 'q', reason: 'r', [field]: value },
+    ]));
+    assert.ok('errors' in invalid, `${field}=${JSON.stringify(value)} should fail`);
+    if ('errors' in invalid) assert.ok(invalid.errors.some((error) => error.includes(field)), invalid.errors.join('\n'));
+  }
+
+  const reversedRange = parseChangesFile(JSON.stringify([{
+    id: 'c1', kind: 'gap', severity: 'major', quote: 'q', reason: 'r',
+    sectionStartHeadingOrdinal: 4, sectionEndHeadingOrdinalExclusive: 4,
+  }]));
+  assert.ok('errors' in reversedRange);
+  if ('errors' in reversedRange) {
+    assert.ok(reversedRange.errors.some((error) => error.includes('sectionEndHeadingOrdinalExclusive')));
+  }
+});
+
 // SỬA LỖI VÒNG 3 — cloneDocsForReview: docs/ có _index.md thì
 // review/docs/_index.md PHẢI tồn tại và giống hệt bản gốc; _index.md KHÔNG
 // nằm trong mảng đường dẫn trang mà hàm trả về. (Test tương đương cũng nằm ở
@@ -568,10 +611,46 @@ test('splitSections: gộp tham lam các block heading liên tiếp cho tới kh
   assert.equal(merged[0]!.startLine, 1);
   assert.equal(merged[0]!.endLine, 6);
   assert.equal(merged[0]!.bodyLines, 3); // a1 + b1 + c1, KHÔNG tính dòng heading
+  assert.equal(merged[0]!.sectionStartHeadingOrdinal, 0);
+  assert.equal(merged[0]!.sectionEndHeadingOrdinalExclusive, undefined);
 
   // minLines = 1 => không gộp gì, ba section riêng.
   const split = splitSections(md, { minLines: 1 });
   assert.deepEqual(split.map((s) => s.heading), ['# A', '# B', '# C']);
+});
+
+test('splitSections: range ordinal thật phủ toàn bộ merged slice và bỏ qua heading trong fence', () => {
+  const md = [
+    '# A', 'a1',
+    '```md', '# Không phải heading', '```',
+    '# B', 'target dưới B',
+    '# C', 'c1',
+    '# D', 'd1',
+  ].join('\n');
+  const sections = splitSections(md, { minLines: 6 });
+
+  assert.deepEqual(
+    sections.map((section) => ({
+      heading: section.heading,
+      start: section.sectionStartHeadingOrdinal,
+      end: section.sectionEndHeadingOrdinalExclusive,
+    })),
+    [
+      { heading: '# A', start: 0, end: 3 },
+      { heading: '# D', start: 3, end: undefined },
+    ],
+  );
+});
+
+test('splitSections: preamble và section cuối dùng omitted boundary đúng contract', () => {
+  const md = ['Mở đầu.', '# A', 'a1', '# B', 'b1'].join('\n');
+  const sections = splitSections(md, { minLines: 1 });
+
+  assert.equal(sections[0]!.heading, '');
+  assert.equal(sections[0]!.sectionStartHeadingOrdinal, undefined);
+  assert.equal(sections[0]!.sectionEndHeadingOrdinalExclusive, 0);
+  assert.equal(sections.at(-1)!.sectionStartHeadingOrdinal, 1);
+  assert.equal(sections.at(-1)!.sectionEndHeadingOrdinalExclusive, undefined);
 });
 
 test('splitSections: mặc định minLines = 120 nên một tài liệu ngắn nhiều heading gộp về một section', () => {
@@ -681,6 +760,80 @@ test('parseNotesFile: rule_id tuỳ chọn nhưng phải là chuỗi khi có m�
 test('parseNotesFile: JSON hỏng / không phải mảng => errors, đúng khuôn parseChangesFile', () => {
   assert.ok('errors' in parseNotesFile('not json at all'));
   assert.ok('errors' in parseNotesFile('{"id":"n1"}'));
+});
+
+test('parseNotesFile: giữ provenance section hợp lệ (kể cả heading rỗng) và từ chối shape sai', () => {
+  const valid = parseNotesFile(JSON.stringify([
+    {
+      id: 'n1', kind: 'gap', severity: 'minor', anchor: 'Mở đầu', finding: 'f', suggestion: 's',
+      sectionIndex: 0, sectionHeading: '',
+      sectionEndHeadingOrdinalExclusive: 0,
+    },
+  ]));
+  assert.ok('notes' in valid, JSON.stringify(valid));
+  if ('notes' in valid) {
+    assert.equal(valid.notes[0]!.sectionIndex, 0);
+    assert.equal(valid.notes[0]!.sectionHeading, '');
+    assert.equal(valid.notes[0]!.sectionEndHeadingOrdinalExclusive, 0);
+  }
+
+  for (const [field, value] of [
+    ['sectionIndex', -1],
+    ['sectionIndex', 0.25],
+    ['sectionHeading', null],
+    ['sectionStartHeadingOrdinal', -1],
+    ['sectionEndHeadingOrdinalExclusive', 0.25],
+  ] as const) {
+    const invalid = parseNotesFile(JSON.stringify([
+      { id: 'n1', kind: 'gap', severity: 'minor', anchor: 'A', finding: 'f', suggestion: 's', [field]: value },
+    ]));
+    assert.ok('errors' in invalid, `${field}=${JSON.stringify(value)} should fail`);
+    if ('errors' in invalid) assert.ok(invalid.errors.some((error) => error.includes(field)), invalid.errors.join('\n'));
+  }
+});
+
+test('stampSectionProvenance: tạo bản sao change/note với index + heading của section, không mutate input', () => {
+  const change: DocChange = { id: 'c1', kind: 'gap', severity: 'major', quote: 'q', reason: 'r' };
+  const note: DocNote = { id: 'n1', kind: 'gap', severity: 'minor', anchor: 'A', finding: 'f', suggestion: 's' };
+  const section = {
+    index: 4,
+    heading: '### 6.1.2 Xác nhận',
+    sectionStartHeadingOrdinal: 8,
+    sectionEndHeadingOrdinalExclusive: 11,
+  };
+
+  const stampedChanges = stampSectionProvenance([change], section);
+  const stampedNotes = stampSectionProvenance([note], section);
+
+  const expectedProvenance = {
+    sectionIndex: 4,
+    sectionHeading: '### 6.1.2 Xác nhận',
+    sectionStartHeadingOrdinal: 8,
+    sectionEndHeadingOrdinalExclusive: 11,
+  };
+  assert.deepEqual(stampedChanges[0], { ...change, ...expectedProvenance });
+  assert.deepEqual(stampedNotes[0], { ...note, ...expectedProvenance });
+  assert.notEqual(stampedChanges[0], change);
+  assert.notEqual(stampedNotes[0], note);
+  assert.equal(change.sectionIndex, undefined);
+  assert.equal(note.sectionHeading, undefined);
+});
+
+test('stampSectionProvenance: xóa ordinal do agent gửi khi boundary thật bị omitted', () => {
+  const change: DocChange = {
+    id: 'c1', kind: 'gap', severity: 'major', quote: 'q', reason: 'r',
+    sectionStartHeadingOrdinal: 99,
+    sectionEndHeadingOrdinalExclusive: 100,
+  };
+  const [stamped] = stampSectionProvenance([change], {
+    index: 0,
+    heading: '',
+    sectionEndHeadingOrdinalExclusive: 0,
+  });
+
+  assert.equal(stamped!.sectionStartHeadingOrdinal, undefined);
+  assert.equal(stamped!.sectionEndHeadingOrdinalExclusive, 0);
+  assert.equal(change.sectionStartHeadingOrdinal, 99);
 });
 
 test('validateNotes: anchor có trong bản GỐC => không lỗi; chịu được khác biệt khoảng trắng/xuống dòng', () => {
@@ -1723,6 +1876,8 @@ test('dedupeNotes: 3 note y hệt nhau (cùng kind/rule_id/finding/suggestion) �
       severity: 'major',
       rule_id: 'comp/PAGE__6.1.1.screen.json',
       anchor: 'Trường Họ và tên',
+      sectionIndex: 2,
+      sectionHeading: '## 6.1 Thông tin cá nhân',
       finding: 'Dùng Text Field State=Default',
       suggestion: 'Dùng Text Field',
     },
@@ -1732,6 +1887,8 @@ test('dedupeNotes: 3 note y hệt nhau (cùng kind/rule_id/finding/suggestion) �
       severity: 'major',
       rule_id: 'comp/PAGE__6.1.1.screen.json',
       anchor: 'Trường Số điện thoại',
+      sectionIndex: 5,
+      sectionHeading: '## 6.2 Liên hệ',
       finding: 'Dùng Text Field State=Default',
       suggestion: 'Dùng Text Field',
     },
@@ -1750,6 +1907,8 @@ test('dedupeNotes: 3 note y hệt nhau (cùng kind/rule_id/finding/suggestion) �
   assert.equal(droppedCount, 2);
   assert.equal(out[0]!.id, 'n1');
   assert.equal(out[0]!.anchor, 'Trường Họ và tên');
+  assert.equal(out[0]!.sectionIndex, 2);
+  assert.equal(out[0]!.sectionHeading, '## 6.1 Thông tin cá nhân');
 });
 
 test('dedupeNotes: khác `finding` thì KHÔNG gộp', () => {

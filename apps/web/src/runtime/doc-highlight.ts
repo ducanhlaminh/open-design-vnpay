@@ -92,6 +92,38 @@ export interface HighlightRequest {
   className?: string;
   /** Đè style nội tuyến cho RIÊNG request này; cùng lý do như `className`. */
   inlineStyle?: string;
+  /** Giới hạn phép neo trong section sở hữu. File review cũ không có scope
+   *  vẫn dò toàn tài liệu như trước. */
+  scope?: HighlightScope;
+}
+
+export interface HighlightScope {
+  /** Chỉ số lát fan-out; không phải heading ordinal. */
+  sectionIndex?: number;
+  /** Heading markdown nguyên văn, gồm dấu `#`; chuỗi rỗng là preamble. */
+  sectionHeading?: string;
+  /** Heading ordinal zero-based bắt đầu lát; omitted = document start. */
+  sectionStartHeadingOrdinal?: number;
+  /** Heading ordinal zero-based ngay sau lát; omitted = document end. */
+  sectionEndHeadingOrdinalExclusive?: number;
+}
+
+export type HighlightBlockKind = 'paragraph' | 'list-item' | 'table' | 'heading';
+
+/** Metadata để caller tint nguyên block mà không bọc `<mark>` qua biên block.
+ *  `blockIndex` là chỉ số ổn định trong `querySelectorAll('p, li, table,
+ *  h1, h2, h3, h4, h5, h6')` của HTML kết quả. */
+export interface HighlightBlockTarget {
+  id: string;
+  blockIndex: number;
+  tagName: string;
+  kind: HighlightBlockKind;
+}
+
+export interface HighlightResult {
+  html: string;
+  matched: Set<string>;
+  blocks: HighlightBlockTarget[];
 }
 
 /**
@@ -118,8 +150,9 @@ export function injectHighlights(
   requests: readonly HighlightRequest[],
   className: string,
   inlineStyle?: string,
-): { html: string; matched: Set<string> } {
+): HighlightResult {
   const matched = new Set<string>();
+  const blocks: HighlightBlockTarget[] = [];
   const openTag = (req: HighlightRequest) => {
     const cls = req.className ?? className;
     const style = req.inlineStyle ?? inlineStyle;
@@ -135,13 +168,14 @@ export function injectHighlights(
     if (matched.has(req.id)) continue;
     const re = fuzzyRegex(escapeHtmlText(req.text.normalize('NFC')));
     if (!re) continue;
-    const next = insertOneHighlight(current, re, openTag(req));
+    const next = insertOneHighlight(current, re, openTag(req), req.scope);
     if (next != null) {
-      current = next;
+      blocks.push(...blockTargetsForMatch(req.id, next.layout, next.matchStart, next.matchEnd));
+      current = next.html;
       matched.add(req.id);
     }
   }
-  return { html: current, matched };
+  return { html: current, matched, blocks };
 }
 
 /**
@@ -155,34 +189,33 @@ export function injectHighlights(
  * Khớp trải qua nhiều khoảng thì mỗi khoảng được bọc một `<mark>` riêng — cùng
  * `data-change-id`, nên phía gọi vẫn gom chúng về một chỗ sửa.
  */
-function insertOneHighlight(html: string, re: RegExp, openTag: string): string | null {
-  // Xen kẽ [text, thẻ, text, thẻ, …]; phần chỉ số CHẴN là text.
-  const parts = html.split(/(<[^>]*>)/);
-  const spans: { part: number; start: number; len: number }[] = [];
-  let full = '';
-  for (let i = 0; i < parts.length; i += 2) {
-    const text = parts[i] ?? '';
-    spans.push({ part: i, start: full.length, len: text.length });
-    full += text;
-  }
-  const m = re.exec(full);
+function insertOneHighlight(
+  html: string,
+  re: RegExp,
+  openTag: string,
+  scope?: HighlightScope,
+): { html: string; matchStart: number; matchEnd: number; layout: HtmlTextLayout } | null {
+  const layout = buildHtmlTextLayout(html);
+  const range = resolveScopeRange(layout, scope);
+  if (!range) return null;
+  const m = re.exec(layout.full.slice(range.start, range.end));
   if (!m || !m[0]) return null;
-  const matchStart = m.index;
+  const matchStart = range.start + m.index;
   const matchEnd = matchStart + m[0].length;
 
   // Chèn từ CUỐI về ĐẦU để các vị trí phía trước không bị lệch.
-  for (let k = spans.length - 1; k >= 0; k -= 1) {
-    const span = spans[k]!;
+  for (let k = layout.spans.length - 1; k >= 0; k -= 1) {
+    const span = layout.spans[k]!;
     const spanEnd = span.start + span.len;
     if (spanEnd <= matchStart || span.start >= matchEnd) continue;
     const localStart = Math.max(matchStart, span.start) - span.start;
     const localEnd = Math.min(matchEnd, spanEnd) - span.start;
     if (localEnd <= localStart) continue; // đừng đẻ ra <mark></mark> rỗng
-    const text = parts[span.part]!;
-    parts[span.part] =
+    const text = layout.parts[span.part]!;
+    layout.parts[span.part] =
       text.slice(0, localStart) + openTag + text.slice(localStart, localEnd) + '</mark>' + text.slice(localEnd);
   }
-  return parts.join('');
+  return { html: layout.parts.join(''), matchStart, matchEnd, layout };
 }
 
 export interface DeletedRunRequest {
@@ -194,6 +227,8 @@ export interface DeletedRunRequest {
   anchor: string;
   /** Nguyên văn đoạn ĐÃ BỊ XOÁ, lấy từ bản gốc. */
   text: string;
+  /** Cùng contract scope với HighlightRequest. */
+  scope?: HighlightScope;
 }
 
 /** Đoạn xoá hiện trong tài liệu bị cắt ở 220 ký tự.
@@ -226,21 +261,23 @@ export function injectDeletedRuns(
   requests: readonly DeletedRunRequest[],
   className: string,
   inlineStyle?: string,
-): { html: string; matched: Set<string> } {
+): HighlightResult {
   const matched = new Set<string>();
+  const blocks: HighlightBlockTarget[] = [];
   let current = html;
   for (const req of requests) {
     if (matched.has(req.id)) continue;
     const re = fuzzyRegex(escapeHtmlText(req.anchor));
     if (!re) continue;
     const node = deletedRunHtml(req.id, req.text, className, inlineStyle);
-    const next = insertAfterOneMatch(current, re, node);
+    const next = insertAfterOneMatch(current, re, node, req.scope);
     if (next != null) {
-      current = next;
+      blocks.push(...blockTargetsForMatch(req.id, next.layout, next.matchStart, next.matchEnd));
+      current = next.html;
       matched.add(req.id);
     }
   }
-  return { html: current, matched };
+  return { html: current, matched, blocks };
 }
 
 /** `<mark data-op="del"><del>…</del></mark>` cho một đoạn đã xoá. `data-op` chỉ
@@ -266,32 +303,241 @@ function deletedRunHtml(id: string, text: string, className: string, inlineStyle
  * cảnh inline của chỗ nó neo (trong ô bảng, trong mục danh sách) thay vì rơi ra
  * ngoài và phá cấu trúc khối.
  */
-function insertAfterOneMatch(html: string, re: RegExp, node: string): string | null {
-  // Xen kẽ [text, thẻ, text, thẻ, …]; phần chỉ số CHẴN là text.
-  const parts = html.split(/(<[^>]*>)/);
-  const spans: { part: number; start: number; len: number }[] = [];
-  let full = '';
-  for (let i = 0; i < parts.length; i += 2) {
-    const text = parts[i] ?? '';
-    spans.push({ part: i, start: full.length, len: text.length });
-    full += text;
-  }
-  const m = re.exec(full);
+function insertAfterOneMatch(
+  html: string,
+  re: RegExp,
+  node: string,
+  scope?: HighlightScope,
+): { html: string; matchStart: number; matchEnd: number; layout: HtmlTextLayout } | null {
+  const layout = buildHtmlTextLayout(html);
+  const range = resolveScopeRange(layout, scope);
+  if (!range) return null;
+  const m = re.exec(layout.full.slice(range.start, range.end));
   if (!m || !m[0]) return null;
-  const matchEnd = m.index + m[0].length;
+  const matchStart = range.start + m.index;
+  const matchEnd = matchStart + m[0].length;
 
-  for (const span of spans) {
+  for (const span of layout.spans) {
     const spanEnd = span.start + span.len;
     // Khoảng text CHỨA điểm kết thúc match. `span.start < matchEnd` loại các
     // khoảng rỗng nằm đúng tại điểm chèn, `matchEnd <= spanEnd` chốt khoảng
     // đầu tiên đủ dài để chứa nó.
     if (span.start >= matchEnd || matchEnd > spanEnd) continue;
     const local = matchEnd - span.start;
-    const text = parts[span.part]!;
-    parts[span.part] = text.slice(0, local) + node + text.slice(local);
-    return parts.join('');
+    const text = layout.parts[span.part]!;
+    layout.parts[span.part] = text.slice(0, local) + node + text.slice(local);
+    return { html: layout.parts.join(''), matchStart, matchEnd, layout };
   }
   return null;
+}
+
+interface HtmlBlock {
+  blockIndex: number;
+  tagName: string;
+  kind: HighlightBlockKind;
+}
+
+interface HtmlTextSpan {
+  part: number;
+  start: number;
+  len: number;
+  block?: HtmlBlock;
+}
+
+interface HtmlHeading {
+  level: number;
+  ordinal: number;
+  start: number;
+  end: number;
+  text: string;
+}
+
+interface HtmlTextLayout {
+  parts: string[];
+  full: string;
+  spans: HtmlTextSpan[];
+  headings: HtmlHeading[];
+}
+
+interface ElementFrame {
+  tagName: string;
+  block?: HtmlBlock;
+  heading?: HtmlHeading;
+}
+
+const BLOCK_KIND_BY_TAG: Partial<Record<string, HighlightBlockKind>> = {
+  p: 'paragraph',
+  li: 'list-item',
+  table: 'table',
+  h1: 'heading',
+  h2: 'heading',
+  h3: 'heading',
+  h4: 'heading',
+  h5: 'heading',
+  h6: 'heading',
+};
+
+/** Tạo chỉ mục text/heading/block trực tiếp từ chuỗi HTML. Không dùng DOM để
+ *  module runtime vẫn thuần và chạy được trong server render. */
+function buildHtmlTextLayout(html: string): HtmlTextLayout {
+  const parts = html.split(/(<[^>]*>)/);
+  const spans: HtmlTextSpan[] = [];
+  const headings: HtmlHeading[] = [];
+  const stack: ElementFrame[] = [];
+  let full = '';
+  let blockCount = 0;
+
+  for (let part = 0; part < parts.length; part += 1) {
+    const value = parts[part] ?? '';
+    if (part % 2 === 0) {
+      const block = preferredBlock(stack);
+      spans.push({ part, start: full.length, len: value.length, ...(block ? { block } : {}) });
+      full += value;
+      continue;
+    }
+
+    const closing = /^<\s*\/\s*([a-zA-Z0-9-]+)/.exec(value);
+    if (closing) {
+      const tagName = closing[1]!.toLowerCase();
+      for (let i = stack.length - 1; i >= 0; i -= 1) {
+        const frame = stack[i]!;
+        if (frame.tagName !== tagName) continue;
+        const removed = stack.splice(i);
+        for (const item of removed) {
+          if (item.heading) {
+            item.heading.end = full.length;
+            item.heading.text = full.slice(item.heading.start, item.heading.end);
+          }
+        }
+        break;
+      }
+      continue;
+    }
+
+    const opening = /^<\s*([a-zA-Z0-9-]+)/.exec(value);
+    if (!opening || /^<\s*[!?]/.test(value)) continue;
+    const tagName = opening[1]!.toLowerCase();
+    const kind = BLOCK_KIND_BY_TAG[tagName];
+    const block = kind ? { blockIndex: blockCount++, tagName, kind } : undefined;
+    const headingLevel = /^h([1-6])$/.exec(tagName);
+    const heading = headingLevel
+      ? { level: Number(headingLevel[1]), ordinal: headings.length, start: full.length, end: full.length, text: '' }
+      : undefined;
+    if (heading) headings.push(heading);
+    if (!/\/\s*>$/.test(value) && !/^(?:br|hr|img|input|meta|link|source|wbr)$/.test(tagName)) {
+      stack.push({ tagName, ...(block ? { block } : {}), ...(heading ? { heading } : {}) });
+    }
+  }
+
+  for (const frame of stack) {
+    if (frame.heading) {
+      frame.heading.end = full.length;
+      frame.heading.text = full.slice(frame.heading.start);
+    }
+  }
+  return { parts, full, spans, headings };
+}
+
+function preferredBlock(stack: readonly ElementFrame[]): HtmlBlock | undefined {
+  for (const tagName of ['table', 'li', 'p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6']) {
+    for (let i = stack.length - 1; i >= 0; i -= 1) {
+      const block = stack[i]?.block;
+      if (block?.tagName === tagName) return block;
+    }
+  }
+  return undefined;
+}
+
+function normalizedHeading(value: string): string {
+  const markdownText = value
+    .trim()
+    .replace(/^#{1,6}\s*/, '')
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, ' ')
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/[*_`~]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return escapeHtmlText(markdownText.normalize('NFC')).toLocaleLowerCase('vi');
+}
+
+function resolveScopeRange(
+  layout: HtmlTextLayout,
+  scope?: HighlightScope,
+): { start: number; end: number } | null {
+  if (!scope || (
+    scope.sectionIndex == null
+    && scope.sectionHeading == null
+    && scope.sectionStartHeadingOrdinal == null
+    && scope.sectionEndHeadingOrdinalExclusive == null
+  )) {
+    return { start: 0, end: layout.full.length };
+  }
+
+  const hasOrdinalRange = scope.sectionStartHeadingOrdinal != null
+    || scope.sectionEndHeadingOrdinalExclusive != null;
+  if (hasOrdinalRange) {
+    const startOrdinal = scope.sectionStartHeadingOrdinal;
+    const endOrdinal = scope.sectionEndHeadingOrdinalExclusive;
+    const startHeading = startOrdinal == null ? undefined : layout.headings[startOrdinal];
+    if (startOrdinal != null && !startHeading) return null;
+    if (endOrdinal != null && endOrdinal > layout.headings.length) return null;
+
+    // sectionHeading là checksum dễ đọc cho range mới, không tham gia chọn
+    // heading. Nhờ vậy duplicate heading vẫn được định vị hoàn toàn bằng ordinal.
+    if (
+      startHeading
+      && scope.sectionHeading != null
+      && normalizedHeading(startHeading.text) !== normalizedHeading(scope.sectionHeading)
+    ) return null;
+
+    const start = startHeading?.start ?? 0;
+    const end = endOrdinal == null
+      ? layout.full.length
+      : (layout.headings[endOrdinal]?.start ?? layout.full.length);
+    return start <= end ? { start, end } : null;
+  }
+
+  const headingValue = scope.sectionHeading;
+  if (headingValue == null) {
+    // Metadata cũ chỉ có sectionIndex không đủ để suy ra heading: một section
+    // fan-out có thể chứa nhiều heading. Giữ fallback toàn tài liệu.
+    return { start: 0, end: layout.full.length };
+  }
+  if (headingValue === '') {
+    return { start: 0, end: layout.headings[0]?.start ?? layout.full.length };
+  }
+
+  let candidates = layout.headings;
+  const wanted = normalizedHeading(headingValue);
+  candidates = layout.headings.filter((heading) => normalizedHeading(heading.text) === wanted);
+  if (candidates.length === 0) return null;
+
+  // Legacy fallback: heading text only. sectionIndex is deliberately ignored
+  // because it identifies a merged fan-out slice, never a rendered heading.
+  const selected = candidates[0]!;
+
+  const next = layout.headings.find(
+    (heading) => heading.ordinal > selected.ordinal && heading.level <= selected.level,
+  );
+  return { start: selected.start, end: next?.start ?? layout.full.length };
+}
+
+function blockTargetsForMatch(
+  id: string,
+  layout: HtmlTextLayout,
+  matchStart: number,
+  matchEnd: number,
+): HighlightBlockTarget[] {
+  const seen = new Set<number>();
+  const targets: HighlightBlockTarget[] = [];
+  for (const span of layout.spans) {
+    const spanEnd = span.start + span.len;
+    if (spanEnd <= matchStart || span.start >= matchEnd || !span.block || seen.has(span.block.blockIndex)) continue;
+    seen.add(span.block.blockIndex);
+    targets.push({ id, ...span.block });
+  }
+  return targets;
 }
 
 /** Find `re` across `container`'s rendered text nodes and wrap the matched

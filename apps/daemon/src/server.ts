@@ -608,6 +608,7 @@ import {
   validateNotes,
   partitionNotesByAnchor,
   dedupeNotes,
+  stampSectionProvenance,
   isParentHeadingSection,
   validateRuleIds,
   findReviewMarkers,
@@ -18639,9 +18640,10 @@ export async function startServer({
                         }
                         const inserted = insertCompositionTable(sliceText, idx, draftMd, entry.key);
                         sliceText = inserted.text;
-                        sysChanges.push(inserted.change);
+                        const [systemChange] = stampSectionProvenance([inserted.change], sec);
+                        sysChanges.push(systemChange!);
                         const tableEntries = tablesBySection.get(sectionIndex) ?? [];
-                        tableEntries.push({ key: entry.key, draftBlock: inserted.change.quote ?? '', change: inserted.change });
+                        tableEntries.push({ key: entry.key, draftBlock: systemChange!.quote ?? '', change: systemChange! });
                         tablesBySection.set(sectionIndex, tableEntries);
                         kickoffEntries.push({ key: entry.key, name: screenDoc.name });
                       } catch (screenError) {
@@ -18717,7 +18719,7 @@ export async function startServer({
                     const replaced = replaceDiagramInSlice(sliceText, { asIsMmd, proposedMmd, flowId: flow.id, uxReview });
                     if (!replaced) continue;
                     await fs.promises.writeFile(secSliceAbs, replaced.text, 'utf8');
-                    sysChanges.push(replaced.change);
+                    sysChanges.push(...stampSectionProvenance([replaced.change], sec));
                     diagramFlowIdBySection.set(sec.index, flow.id);
                     pageChangedFlowIds.push(flow.id);
                     break; // một sơ đồ chỉ nằm trong đúng một section của trang
@@ -18971,8 +18973,8 @@ export async function startServer({
                   tasks[taskIdx]!.status = 'failed';
                 } else {
                   finalSlices[si] = slice;
-                  keptChanges.push(...agentChanges);
-                  keptNotes.push(...partitioned.notes);
+                  keptChanges.push(...stampSectionProvenance(agentChanges, sec));
+                  keptNotes.push(...stampSectionProvenance(partitioned.notes, sec));
                   // Cập nhật `quote` của change bảng (đối tượng CHUNG với
                   // phần tử trong `sysChanges` — mutate tại đây phản ánh
                   // thẳng vào đó) thành bảng cuối agent đã sửa ô.

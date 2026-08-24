@@ -31,6 +31,17 @@ describe('renderMarkdownToSafeHtml', () => {
     expect(out).toContain('<pre><code>const x = 1 &lt; 2;</code></pre>');
   });
 
+  it('treats tilde fences as code so headings inside do not affect document structure', () => {
+    const md = ['# A', '~~~md', '# fake', '~~~', '# B'].join('\n');
+
+    const out = renderMarkdownToSafeHtml(md);
+
+    expect(out).toContain('<h1>A</h1>');
+    expect(out).toContain('<pre><code class="language-md"># fake</code></pre>');
+    expect(out).toContain('<h1>B</h1>');
+    expect(out).not.toContain('<h1>fake</h1>');
+  });
+
   it('escapes raw html', () => {
     const out = renderMarkdownToSafeHtml('<script>alert(1)</script>');
     expect(out).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');

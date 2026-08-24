@@ -33,10 +33,14 @@ import { renderMarkdownToSafeHtml } from '../artifacts/markdown';
 // KHÔNG import từ './FileViewer' — FileViewer đã import component này để route
 // file redline, nên chiều ngược lại tạo import vòng (xem markdown-images.ts).
 import { inlineMarkdownImages } from '../runtime/markdown-images';
-import { injectDeletedRuns, injectHighlights, quoteSegments } from '../runtime/doc-highlight';
+import { injectDeletedRuns, injectHighlights, quoteSegments, type HighlightBlockTarget, type HighlightScope } from '../runtime/doc-highlight';
 import { wordDiff } from '../runtime/word-diff';
 import { Icon } from './Icon';
 import { MermaidDiagram } from './MermaidDiagram';
+import { DocRedlineModeControls } from './DocRedlineModeControls';
+import { DocRedlineNavigation } from './DocRedlineNavigation';
+import { annotationMode, modeLabel, type PreviewMode } from './redline-mode';
+import { getAdjacentNavigationId, getNavigationPosition, type RedlineNavigationItem } from './redline-navigation';
 import styles from './DocRedlinePreview.module.css';
 
 export type DocRedlineChangeKind = 'ux-writing' | 'flow' | 'gap' | 'edge-case' | 'component' | 'flow-diagram';
@@ -73,6 +77,10 @@ export interface DocRedlineChange {
   initialBefore?: string;
   initialQuote?: string;
   status?: 'active' | 'dismissed' | 'edited';
+  sectionIndex?: number;
+  sectionHeading?: string;
+  sectionStartHeadingOrdinal?: number;
+  sectionEndHeadingOrdinalExclusive?: number;
 }
 
 /** Mirrors apps/daemon/src/docs-review.ts's `DocNote` — cùng lý do như
@@ -94,6 +102,10 @@ export interface DocRedlineNote {
   finding: string;
   suggestion: string;
   status?: 'dismissed' | 'edited';
+  sectionIndex?: number;
+  sectionHeading?: string;
+  sectionStartHeadingOrdinal?: number;
+  sectionEndHeadingOrdinalExclusive?: number;
 }
 
 /** Nội dung một rule đang hiện trong popover. `html` đã qua
@@ -261,6 +273,10 @@ export function parseDocChangesFile(raw: string): { changes: DocRedlineChange[];
       initialBefore: typeof c.initialBefore === 'string' ? c.initialBefore : before,
       initialQuote: typeof c.initialQuote === 'string' ? c.initialQuote : quote,
       status: c.status === 'dismissed' || c.status === 'edited' || c.status === 'active' ? c.status : undefined,
+      sectionIndex: typeof c.sectionIndex === 'number' && Number.isInteger(c.sectionIndex) && c.sectionIndex >= 0 ? c.sectionIndex : undefined,
+      sectionHeading: typeof c.sectionHeading === 'string' ? c.sectionHeading : undefined,
+      sectionStartHeadingOrdinal: typeof c.sectionStartHeadingOrdinal === 'number' && Number.isInteger(c.sectionStartHeadingOrdinal) && c.sectionStartHeadingOrdinal >= 0 ? c.sectionStartHeadingOrdinal : undefined,
+      sectionEndHeadingOrdinalExclusive: typeof c.sectionEndHeadingOrdinalExclusive === 'number' && Number.isInteger(c.sectionEndHeadingOrdinalExclusive) && c.sectionEndHeadingOrdinalExclusive >= 0 ? c.sectionEndHeadingOrdinalExclusive : undefined,
     });
   }
   const events = !Array.isArray(parsed) && Array.isArray((parsed as { events?: unknown }).events)
@@ -310,6 +326,10 @@ export function parseDocNotes(raw: string): DocRedlineNote[] | null {
       finding: n.finding,
       suggestion: typeof n.suggestion === 'string' ? n.suggestion : '',
       status: n.status === 'dismissed' ? 'dismissed' : n.status === 'edited' ? 'edited' : undefined,
+      sectionIndex: typeof n.sectionIndex === 'number' && Number.isInteger(n.sectionIndex) && n.sectionIndex >= 0 ? n.sectionIndex : undefined,
+      sectionHeading: typeof n.sectionHeading === 'string' ? n.sectionHeading : undefined,
+      sectionStartHeadingOrdinal: typeof n.sectionStartHeadingOrdinal === 'number' && Number.isInteger(n.sectionStartHeadingOrdinal) && n.sectionStartHeadingOrdinal >= 0 ? n.sectionStartHeadingOrdinal : undefined,
+      sectionEndHeadingOrdinalExclusive: typeof n.sectionEndHeadingOrdinalExclusive === 'number' && Number.isInteger(n.sectionEndHeadingOrdinalExclusive) && n.sectionEndHeadingOrdinalExclusive >= 0 ? n.sectionEndHeadingOrdinalExclusive : undefined,
     });
   }
   return out;
@@ -656,6 +676,26 @@ const REF_ID_PREFIX = 'ref:';
 const HL_REF_INLINE_STYLE = 'background-color:transparent;color:inherit;border-bottom:1px dotted rgba(59,130,246,.85);cursor:pointer';
 const EMPTY_SET: ReadonlySet<string> = new Set<string>();
 
+function annotationScope(annotation: {
+  sectionIndex?: number;
+  sectionHeading?: string;
+  sectionStartHeadingOrdinal?: number;
+  sectionEndHeadingOrdinalExclusive?: number;
+}): HighlightScope | undefined {
+  if (
+    annotation.sectionIndex == null
+    && annotation.sectionHeading == null
+    && annotation.sectionStartHeadingOrdinal == null
+    && annotation.sectionEndHeadingOrdinalExclusive == null
+  ) return undefined;
+  return {
+    sectionIndex: annotation.sectionIndex,
+    sectionHeading: annotation.sectionHeading,
+    sectionStartHeadingOrdinal: annotation.sectionStartHeadingOrdinal,
+    sectionEndHeadingOrdinalExclusive: annotation.sectionEndHeadingOrdinalExclusive,
+  };
+}
+
 /** Nhãn dễ hiểu + lời giải thích của một tiêu chí. Chip hiện `label`, rê chuột
  *  hiện `summary`, bấm vào mở popover hiện `detail`. Ba mức dài dần cho cùng
  *  một ý: liếc qua → hiểu đại khái → đọc đủ. */
@@ -873,7 +913,9 @@ export function DocRedlinePreview({
   // reload sẽ xoá snapshot, tránh áp lại một bản tài liệu đã cũ.
   const [undoableIds, setUndoableIds] = useState<Set<string>>(new Set());
   const undoTextRef = useRef<Map<string, string>>(new Map());
+  const [previewMode, setPreviewMode] = useState<PreviewMode>('changes');
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const pendingSelectionRef = useRef<{ id: string; source: 'document' | 'rail' } | null>(null);
   const docColRef = useRef<HTMLDivElement | null>(null);
   // Mọi <mark> của một change: một quote trải trên nhiều text node (ví dụ băng
   // qua <strong>, hoặc hai ô bảng liền nhau) bọc thành nhiều <mark> cùng
@@ -893,6 +935,13 @@ export function DocRedlinePreview({
   // cửa sổ để người đọc biết mình đang được chỉ tới cái gì).
   const [refModal, setRefModal] = useState<{ markId: string; label: string } | null>(null);
   const modalDocRef = useRef<HTMLDivElement | null>(null);
+
+  function changePreviewMode(mode: PreviewMode) {
+    if (mode === previewMode) return;
+    pendingSelectionRef.current = null;
+    setSelectedId(null);
+    setPreviewMode(mode);
+  }
   // Bật/tắt tô màu THEO TỪNG LOẠI. Một công tắc chung là chưa đủ: việc thật của
   // người review là "cho tôi xem riêng chỗ bị xoá" hay "ẩn mấy chỗ thêm chữ đi",
   // chứ không phải bật/tắt toàn bộ màu. Mặc định bật hết — đó là lý do màn hình
@@ -1109,6 +1158,7 @@ export function DocRedlinePreview({
     // bôi trong CÙNG một lượt, vì lượt sau luôn dò trên HTML đã có mark của
     // lượt trước và một đoạn nằm sát chỗ đã bôi sẽ trượt.
     const requests = changes.flatMap((c) => {
+      if (previewMode !== 'changes') return [];
       if (c.status === 'dismissed') return [];
       // B2 (wp3b.yaml): sơ đồ mermaid đã được neo bằng HOST MARK riêng (xem
       // effect chèn host bên dưới — khớp theo NGUYÊN VĂN mã mermaid, không
@@ -1129,7 +1179,7 @@ export function DocRedlinePreview({
       const on = add ? paint.add : paint.edit;
       const className = !on ? styles.hlOff ?? '' : add ? styles.hlAdd ?? '' : styles.hl ?? '';
       const inlineStyle = !on ? HL_OFF_INLINE_STYLE : add ? HL_ADD_INLINE_STYLE : HL_INLINE_STYLE;
-      return quoteSegments(raw).map((text) => ({ id: c.id, text, className, inlineStyle }));
+      return quoteSegments(raw).map((text) => ({ id: c.id, text, className, inlineStyle, scope: annotationScope(c) }));
     });
     const changePass = injectHighlights(html, requests, styles.hl ?? '', HL_INLINE_STYLE);
 
@@ -1138,6 +1188,7 @@ export function DocRedlinePreview({
     // tiền tố `note:` để không đụng id của change — cả hai loại mark dùng
     // chung `data-change-id`, chung cơ chế click/cuộn.
     const noteRequests = notes.flatMap((n) => {
+      if (previewMode !== 'notes') return [];
       if (n.status === 'dismissed') return [];
       const raw = (n.anchor ?? '').trim();
       if (!raw) return [];
@@ -1146,6 +1197,7 @@ export function DocRedlinePreview({
         text,
         className: paint.note ? styles.hlNote ?? '' : styles.hlOff ?? '',
         inlineStyle: paint.note ? NOTE_HL_INLINE_STYLE : HL_OFF_INLINE_STYLE,
+        scope: annotationScope(n),
       }));
     });
     const notePass = injectHighlights(changePass.html, noteRequests, styles.hlNote ?? '', NOTE_HL_INLINE_STYLE);
@@ -1154,6 +1206,7 @@ export function DocRedlinePreview({
     // liệu (đoạn đã bị xoá) — chạy trước thì hai lượt kia phải dò qua chữ không
     // thuộc bản đã sửa và có thể khớp bừa vào đó.
     const delRequests = changes.flatMap((c) => {
+      if (previewMode !== 'changes') return [];
       if (c.status === 'dismissed') return [];
       if (changeOp(c) !== 'del') return [];
       // `anchor` là nguyên văn mã nguồn markdown, y như `quote`, nên phải cắt
@@ -1161,7 +1214,7 @@ export function DocRedlinePreview({
       // và segment đầu là chỗ gần nhất với vị trí đoạn bị xoá.
       const seg = quoteSegments((c.anchor ?? '').trim())[0];
       if (!seg || !c.before) return [];
-      return [{ id: c.id, anchor: seg, text: c.before }];
+      return [{ id: c.id, anchor: seg, text: c.before, scope: annotationScope(c) }];
     });
     // Chỗ XOÁ giữ nguyên gạch ngang kể cả khi tắt tô màu: gạch ngang không
     // phải trang trí mà là thứ DUY NHẤT phân biệt "chữ đã bị bỏ" với "chữ đang
@@ -1179,7 +1232,7 @@ export function DocRedlinePreview({
     // trước. injectHighlights bỏ qua request có id đã khớp, nên thứ tự này cũng
     // là thứ tự ưu tiên.
     const refRequests = [
-      ...changes.flatMap((c) =>
+      ...(previewMode === 'changes' ? changes : []).flatMap((c) =>
         (c.doc_refs ?? []).flatMap((ref, i) =>
           quoteSegments(ref.trim()).slice(0, 1).map((text) => ({
             id: `${REF_ID_PREFIX}${c.id}:${i}`,
@@ -1189,7 +1242,7 @@ export function DocRedlinePreview({
           })),
         ),
       ),
-      ...notes.flatMap((n) =>
+      ...(previewMode === 'notes' ? notes : []).flatMap((n) =>
         (n.doc_refs ?? []).flatMap((ref, i) =>
           quoteSegments(ref.trim()).slice(0, 1).map((text) => ({
             id: `${REF_ID_PREFIX}${NOTE_ID_PREFIX}${n.id}:${i}`,
@@ -1210,8 +1263,12 @@ export function DocRedlinePreview({
         ...delPass.matched,
         ...refPass.matched,
       ]),
+      // `doc_refs` are evidence links, not changed/commented content. Keep
+      // their inline dotted marks (and matched ids for jump/modal behavior),
+      // but never promote their containing list item/table to a tinted block.
+      blocks: [...changePass.blocks, ...notePass.blocks, ...delPass.blocks],
     };
-  }, [editedText, projectId, file.name, changes, notes, paint]);
+  }, [editedText, projectId, file.name, changes, notes, paint, previewMode]);
 
   const docHtml = docRender?.html ?? null;
   const anchored = docRender?.matched ?? EMPTY_SET;
@@ -1278,18 +1335,48 @@ export function DocRedlinePreview({
     const mermaidHostClass = (styles.mermaidHost ?? '').trim();
     const codes = Array.from(container.querySelectorAll<HTMLElement>('pre > code.language-mermaid'));
     const mounts: Array<{ host: HTMLElement; changeId: string | null; code: string }> = [];
+    const mutations: Array<{ parent: HTMLElement; pre: HTMLElement; host: HTMLElement; details: HTMLDetailsElement }> = [];
+    const consumedOwners = new Set<string>();
+    const headings = Array.from(container.querySelectorAll<HTMLElement>('article h1, article h2, article h3, article h4, article h5, article h6'));
+    const diagramOwners = previewMode === 'changes'
+      ? changes.filter((c) => c.kind === 'flow-diagram' && c.status !== 'dismissed')
+      : [];
+
+    const headingOrdinalFor = (element: HTMLElement): number => {
+      let ordinal = -1;
+      for (let i = 0; i < headings.length; i += 1) {
+        const heading = headings[i]!;
+        if (heading.compareDocumentPosition(element) & Node.DOCUMENT_POSITION_FOLLOWING) ordinal = i;
+        else break;
+      }
+      return ordinal;
+    };
+
+    const ownerContainsHeading = (owner: DocRedlineChange, ordinal: number): boolean => {
+      const start = owner.sectionStartHeadingOrdinal;
+      const end = owner.sectionEndHeadingOrdinalExclusive;
+      if (start != null || end != null) {
+        return (start == null || ordinal >= start) && (end == null || ordinal < end);
+      }
+      if (owner.sectionHeading == null) return true;
+      const currentHeading = ordinal >= 0 ? headings[ordinal]?.textContent?.trim() ?? '' : '';
+      const expectedHeading = owner.sectionHeading.trim().replace(/^#{1,6}\s*/, '');
+      return currentHeading.localeCompare(expectedHeading, 'vi', { sensitivity: 'base' }) === 0;
+    };
+
     for (const codeEl of codes) {
       const pre = codeEl.parentElement;
       const parent = pre?.parentElement;
       if (!pre || !parent) continue;
-      if (mermaidHostClass && pre.previousElementSibling?.classList.contains(mermaidHostClass)) continue;
       const rawCode = codeEl.textContent ?? '';
       if (!rawCode.trim()) continue;
-      const owner = changes.find(
-        (c) => c.kind === 'flow-diagram' && c.status !== 'dismissed'
-          && extractMermaidFenceBody(c.quote)?.trim() === rawCode.trim(),
+      const ordinal = headingOrdinalFor(pre);
+      const matchingOwners = diagramOwners.filter(
+        (c) => !consumedOwners.has(c.id) && extractMermaidFenceBody(c.quote)?.trim() === rawCode.trim(),
       );
-      const host = document.createElement('mark');
+      const owner = matchingOwners.find((candidate) => ownerContainsHeading(candidate, ordinal));
+      if (owner) consumedOwners.add(owner.id);
+      const host = document.createElement(owner ? 'mark' : 'div');
       // B1 (wp3b.yaml): CHỈ host có owner mới được sơn/bấm được — một sơ đồ
       // KHÔNG thuộc change nào (ví dụ ảnh minh hoạ có sẵn trong tài liệu, không
       // qua rà soát) không phải là một vùng bôi, nên không được ăn theo class
@@ -1318,6 +1405,7 @@ export function DocRedlinePreview({
       parent.insertBefore(details, pre);
       details.appendChild(pre);
       mounts.push({ host, changeId: owner?.id ?? null, code: rawCode });
+      mutations.push({ parent, pre, host, details });
     }
     setDiagramMounts(mounts);
     // N1 (wp3b.yaml): `loading` PHẢI có trong deps, không chỉ `docHtml`. Cột
@@ -1333,20 +1421,23 @@ export function DocRedlinePreview({
     // `docColRef.current` mới thực sự khác null, nên host chẳng bao giờ được
     // chèn. Thêm `loading` buộc effect chạy lại đúng lượt nó chuyển
     // true → false, bất kể `docHtml` có đổi ký tự nào hay không.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [docHtml, loading]);
+    return () => {
+      for (const { parent, pre, host, details } of mutations) {
+        if (details.parentElement === parent) parent.insertBefore(pre, details);
+        details.remove();
+        host.remove();
+      }
+    };
+  }, [docHtml, loading, previewMode, changes]);
 
   // (d, review WP3b): effect RIÊNG chỉ đồng bộ class + style nội tuyến của
   // host ĐÃ CHÈN theo `paint.edit` — KHÔNG gộp vào effect chèn host phía
-  // trên. Effect trên theo dõi `[docHtml, loading]`; một tài liệu CHỈ có
+  // trên. Một tài liệu CHỈ có
   // change sơ đồ giữ `docHtml` NGUYÊN VĂN qua mọi lượt bật/tắt paint (B2:
   // sơ đồ không còn đóng góp mark chữ vào docHtml — xem N1 phía trên), nên
-  // nếu thêm `paint` vào deps của effect đó, nó chạy lại nhưng
-  // `pre.previousElementSibling` đã LÀ host cũ (docHtml không đổi ⇒ React
-  // không dựng lại DOM), guard "đã có host" của effect đó sẽ bỏ qua toàn bộ
-  // — xoá mất host khỏi `diagramMounts` (mất luôn sơ đồ đang hiện) thay vì
-  // chỉ đổi màu. Effect này chỉ SỬA host đã tồn tại trong `diagramMounts`,
-  // không tạo/xoá gì, nên an toàn để chạy lại theo `paint.edit`.
+  // lượt bật/tắt paint không cần dựng lại host. Effect này chỉ SỬA host đã
+  // tồn tại trong `diagramMounts`, không tạo/xoá gì, nên an toàn để chạy lại
+  // theo `paint.edit`.
   useEffect(() => {
     const mermaidHostClass = (styles.mermaidHost ?? '').trim();
     for (const m of diagramMounts) {
@@ -1382,7 +1473,36 @@ export function DocRedlinePreview({
       });
     }
     marksByChangeRef.current = marksByChange;
-  }, [docHtml, changesState]);
+  }, [docHtml, changesState, previewMode, diagramMounts]);
+
+  // Block descriptors do not alter the HTML structure. They identify the
+  // owning p/li/table/heading so additions and multi-cell/list matches can be
+  // tinted as one safe block without ever wrapping a mark across block tags.
+  useEffect(() => {
+    const container = docColRef.current;
+    if (!container || !docRender) return;
+    const blocks = Array.from(container.querySelectorAll<HTMLElement>('p, li, table, h1, h2, h3, h4, h5, h6'));
+    const tintClasses = [styles.blockTintAdd, styles.blockTintFull].filter((name): name is string => !!name);
+    const clearBlockTint = () => {
+      for (const block of blocks) {
+        delete block.dataset.redlineBlock;
+        delete block.dataset.redlineOwner;
+        if (tintClasses.length > 0) block.classList.remove(...tintClasses);
+      }
+    };
+    clearBlockTint();
+    for (const target of docRender.blocks as HighlightBlockTarget[]) {
+      const block = blocks[target.blockIndex];
+      if (!block) continue;
+      const owner = changes.find((change) => change.id === target.id);
+      const operation = owner ? changeOp(owner) : previewMode === 'notes' ? 'note' : 'edit';
+      block.dataset.redlineBlock = operation;
+      block.dataset.redlineOwner = target.id;
+      if (operation === 'add') block.classList.add(styles.blockTintAdd ?? '');
+      if (target.kind === 'table' || target.kind === 'list-item') block.classList.add(styles.blockTintFull ?? '');
+    }
+    return clearBlockTint;
+  }, [docHtml, docRender, changes, previewMode]);
 
   // MỘT listener trên CỘT tài liệu, không phải một listener trên mỗi <mark>.
   //
@@ -1440,6 +1560,13 @@ export function DocRedlinePreview({
   /** Bấm một mục trong rail: cuộn tài liệu tới vùng bôi đầu tiên của change đó
    *  và nháy sáng mọi mark của nó. */
   function selectFromList(id: string) {
+    const ownerMode = annotationMode(id);
+    if (ownerMode !== previewMode) {
+      pendingSelectionRef.current = { id, source: 'rail' };
+      setSelectedId(null);
+      setPreviewMode(ownerMode);
+      return;
+    }
     setSelectedId(id);
     // Sơ đồ mermaid: cuộn tới HOST, không đi qua marksByChangeRef (xem
     // hostMarksFor ngay trên — đúng vế (2) của B2 trong wp3b.yaml).
@@ -1471,6 +1598,13 @@ export function DocRedlinePreview({
         // note tự nó đã chứa dấu hai chấm (`note:n1`).
         id.slice(REF_ID_PREFIX.length).replace(/:\d+$/, '')
       : id;
+    const ownerMode = annotationMode(ownerId);
+    if (ownerMode !== previewMode) {
+      pendingSelectionRef.current = { id: ownerId, source: 'document' };
+      setSelectedId(null);
+      setPreviewMode(ownerMode);
+      return;
+    }
     setSelectedId(ownerId);
     if (!panelOpenRef.current) {
       // Panel đang ẩn: mở ra rồi mới cuộn. Rail VẪN Ở TRONG DOM khi ẩn (chỉ
@@ -1489,6 +1623,22 @@ export function DocRedlinePreview({
     // thì không nhảy. `behavior: 'auto'` cùng lý do như trên.
     item?.scrollIntoView({ block: 'nearest', behavior: 'auto' });
   }
+
+  // Cross-mode selection is deliberately two-phase: switching mode rebuilds
+  // docHtml and the mark/card maps. Only a later effect may consume the
+  // pending id, so scroll never races the DOM that owns the destination.
+  useEffect(() => {
+    const pending = pendingSelectionRef.current;
+    if (!pending || annotationMode(pending.id) !== previewMode) return;
+    const marks = marksByChangeRef.current.get(pending.id);
+    const item = itemsByChangeRef.current.get(pending.id);
+    if ((!marks || marks.length === 0) && !item) return;
+    pendingSelectionRef.current = null;
+    if (pending.source === 'rail') selectFromList(pending.id);
+    else selectFromDoc(pending.id);
+    // docHtml is the commit boundary for the mode-specific mark tree.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [docHtml, previewMode]);
 
   /** Mở cửa sổ xem đoạn được VIỆN DẪN.
    *
@@ -1761,6 +1911,25 @@ export function DocRedlinePreview({
   const isAnchored = (c: DocRedlineChange) =>
     c.kind === 'flow-diagram' ? diagramMounts.some((m) => m.changeId === c.id) : anchored.has(c.id);
 
+  const navigationItems = useMemo<RedlineNavigationItem[]>(() => {
+    if (previewMode === 'notes') {
+      return notes.map((note) => ({
+        id: `${NOTE_ID_PREFIX}${note.id}`,
+        anchored: anchored.has(`${NOTE_ID_PREFIX}${note.id}`),
+        dismissed: note.status === 'dismissed',
+      }));
+    }
+    return changes
+      .filter((change) => change.kind !== 'flow-diagram' || kindFilter.diagram)
+      .filter((change) => !isComponentTableChange(change) || kindFilter.compTable)
+      .map((change) => ({ id: change.id, anchored: isAnchored(change), dismissed: change.status === 'dismissed' }));
+  }, [previewMode, notes, changes, anchored, diagramMounts, kindFilter]);
+  const navigationPosition = getNavigationPosition(navigationItems, selectedId);
+  function navigate(direction: 'previous' | 'next') {
+    const id = getAdjacentNavigationId(navigationItems, selectedId, direction);
+    if (id) selectFromList(id);
+  }
+
   // Số thứ tự map LỖI ↔ VÙNG BÔI: chỗ sửa đánh 1..N theo thứ tự rail, nhận xét
   // đánh N1..Nk (namespace riêng để không lẫn với chỗ sửa). Cùng một map dùng
   // cho badge trên thẻ, con số trên vùng bôi, và cột STT trong phụ lục in.
@@ -1793,10 +1962,13 @@ export function DocRedlinePreview({
             {changesState.status === 'ok' ? (
               <div className={styles.strip}>
                 <span>
-                  {opCounts.edit} sửa · {opCounts.add} thêm · {opCounts.del} xoá · {notes.filter((n) => n.status !== 'dismissed').length} nhận xét · {changes.filter((c) => c.status === 'dismissed').length + notes.filter((n) => n.status === 'dismissed').length} đã bỏ ·{' '}
+                  {previewMode === 'changes'
+                    ? `${opCounts.edit} sửa · ${opCounts.add} thêm · ${opCounts.del} xoá${notes.length === 0 ? ' · 0 nhận xét' : ''}`
+                    : `${activeNoteCount} nhận xét`}{' · '}
+                  {(previewMode === 'changes' ? changes : notes).filter((item) => item.status === 'dismissed').length} đã bỏ ·{' '}
                   {markCount} vùng bôi
-                  {diagramCount > 0 ? ` · ${diagramCount} sơ đồ` : ''}
-                  {compTableCount > 0 ? ` · ${compTableCount} bảng` : ''}
+                  {previewMode === 'changes' && diagramCount > 0 ? ` · ${diagramCount} sơ đồ` : ''}
+                  {previewMode === 'changes' && compTableCount > 0 ? ` · ${compTableCount} bảng` : ''}
                 </span>
                 <button
                   type="button"
@@ -1820,16 +1992,19 @@ export function DocRedlinePreview({
                 >
                   Xuất PDF
                 </button>
-                <HighlightFilters
-                  paint={paint}
-                  onChange={setPaintKind}
-                  counts={{ add: opCounts.add, edit: opCounts.edit, del: opCounts.del, note: notes.filter((n) => n.status !== 'dismissed').length }}
-                />
+                {previewMode === 'changes' ? (
+                  <HighlightFilters
+                    paint={paint}
+                    onChange={setPaintKind}
+                    counts={{ add: opCounts.add, edit: opCounts.edit, del: opCounts.del, note: 0 }}
+                    includeNote={notes.length === 0}
+                  />
+                ) : null}
                 {/* Hai chip lọc MỚI của WP3 — chỉ hiện khi có ÍT NHẤT một
                     change tương ứng, cùng khuôn .chip/.chipSwatch với bốn chip
                     màu ở trên nhưng lọc THEO KIND (ẩn/hiện mục rail), không
                     lọc màu vùng bôi (xem kindFilter). */}
-                {diagramCount > 0 || compTableCount > 0 ? (
+                {previewMode === 'changes' && (diagramCount > 0 || compTableCount > 0) ? (
                   <div className={styles.filters} role="group" aria-label="Lọc theo loại">
                     {diagramCount > 0 ? (
                       <label className={`${styles.chip} ${kindFilter.diagram ? '' : styles.chipOff ?? ''}`}>
@@ -1956,7 +2131,21 @@ export function DocRedlinePreview({
             ) : null}
             <div className={`${styles.grid} ${panelOpen ? '' : styles.gridFull ?? ''}`}>
               <div className={styles.docCol} ref={docColRef}>
-                <div className={styles.docToolbarWp3 ?? ''}>
+                <div className={`${styles.docToolbarWp3 ?? ''} ${styles.modeToolbar ?? ''}`}>
+                  <DocRedlineModeControls
+                    mode={previewMode}
+                    changeCount={activeChangeCount}
+                    noteCount={activeNoteCount}
+                    onModeChange={changePreviewMode}
+                    placement="document"
+                  />
+                  <DocRedlineNavigation
+                    mode={previewMode}
+                    current={navigationPosition.current}
+                    total={navigationPosition.total}
+                    onPrevious={() => navigate('previous')}
+                    onNext={() => navigate('next')}
+                  />
                   <button
                     type="button"
                     className={styles.panelToggleBtn ?? ''}
@@ -1969,7 +2158,13 @@ export function DocRedlinePreview({
                 </div>
                 {/* Safe by contract: renderMarkdownToSafeHtml escapes raw HTML
                     and rejects unsafe link protocols. */}
-                <article className="markdown-rendered" dangerouslySetInnerHTML={{ __html: docHtml ?? '' }} />
+                <article
+                  id="doc-redline-document-tabpanel"
+                  role="tabpanel"
+                  aria-labelledby={`doc-redline-document-${previewMode}-tab`}
+                  className="markdown-rendered"
+                  dangerouslySetInnerHTML={{ __html: docHtml ?? '' }}
+                />
                 {/* Sơ đồ mermaid sống, portal vào các host đã chèn trong
                     docHtml (xem effect dựng diagramMounts ở trên). */}
                 {diagramMounts.map((m, i) =>
@@ -2014,11 +2209,26 @@ export function DocRedlinePreview({
                 hidden={!panelOpen}
                 aria-hidden={!panelOpen}
               >
-                {changes.length === 0 && notes.length === 0 ? (
-                  <p className={styles.empty}>Không có chỗ sửa nào.</p>
+                <div className={styles.railToolbar ?? ''}>
+                  <DocRedlineModeControls
+                    mode={previewMode}
+                    changeCount={activeChangeCount}
+                    noteCount={activeNoteCount}
+                    onModeChange={changePreviewMode}
+                    placement="rail"
+                  />
+                </div>
+                <div
+                  id="doc-redline-rail-tabpanel"
+                  role="tabpanel"
+                  aria-labelledby={`doc-redline-rail-${previewMode}-tab`}
+                  className={styles.railPanel ?? ''}
+                >
+                {(previewMode === 'changes' ? changes.length : notes.length) === 0 ? (
+                  <p className={styles.empty}>{previewMode === 'changes' ? 'Không có thay đổi nào.' : 'Không có nhận xét nào.'}</p>
                 ) : (
                   <>
-                    {changes.map((c, changeIdx) => {
+                    {previewMode === 'changes' ? changes.map((c, changeIdx) => {
                     // Chip "Sơ đồ"/"Bảng thành phần" tắt: ẩn MỤC khỏi rail
                     // nhưng KHÔNG bỏ khỏi mảng `changes` — giữ số thứ tự
                     // (STT/idxById) ổn định khi bật lại, đúng như bốn chip màu
@@ -2092,8 +2302,8 @@ export function DocRedlinePreview({
                         </p>
                       </div>
                     );
-                  })}
-                    {notes.length > 0 ? (
+                  }) : null}
+                    {previewMode === 'notes' && notes.length > 0 ? (
                       <>
                         <h3 className={styles.railHeading}>Nhận xét (không sửa trực tiếp)</h3>
                         {notes.map((n, noteIdx) => {
@@ -2157,6 +2367,7 @@ export function DocRedlinePreview({
                     ) : null}
                   </>
                 )}
+                </div>
               </div>
             </div>
             {/* Tab dọc mỏng ở mép phải — chỉ hiện khi panel ẩn, bấm mở lại. */}
@@ -2189,15 +2400,16 @@ export function DocRedlinePreview({
                 <p><strong>{file.name.split('/').pop()?.replace(/\.md$/i, '') ?? 'Tài liệu'}</strong></p>
                 <p>{file.name}</p>
                 <p>{new Date().toLocaleString('vi-VN')}</p>
-                <p>{opCounts.edit + opCounts.add + opCounts.del} chỗ sửa còn hiệu lực · {notes.filter((n) => n.status !== 'dismissed').length} nhận xét còn hiệu lực · {changes.filter((c) => c.status === 'dismissed').length + notes.filter((n) => n.status === 'dismissed').length} đã bỏ</p>
+                <p><strong>Chế độ: {modeLabel(previewMode)}</strong></p>
+                <p>{previewMode === 'changes' ? `${activeChangeCount} chỗ sửa còn hiệu lực` : `${activeNoteCount} nhận xét còn hiệu lực`}</p>
               </section>
               {/* Safe by contract: renderMarkdownToSafeHtml escapes raw HTML. */}
               <article className="markdown-rendered" dangerouslySetInnerHTML={{ __html: docHtml ?? '' }} />
               <section className={styles.printAppendix}>
-                <h2>Phụ lục — các chỗ review</h2>
+                <h2>Phụ lục — {modeLabel(previewMode).toLocaleLowerCase('vi')}</h2>
                 <table><thead><tr><th>STT</th><th>Loại / rule</th><th>Mức độ</th><th>Thay đổi / nhận xét</th><th>Lý do</th></tr></thead><tbody>
-                  {changes.map((c, i) => <tr key={`print-${c.id}`} className={c.status === 'dismissed' ? styles.printDismissed : undefined}><td>{i + 1}</td><td>{KIND_LABEL[c.kind]}{c.rule_id ? ` — ${ruleChipMeta(c.rule_id).label}` : ''}</td><td>{SEV_LABEL[c.severity]}</td><td>{c.before ?? '—'} → {c.quote ?? '—'}{c.status === 'dismissed' ? ' (Đã bỏ)' : ''}</td><td>{c.reason}</td></tr>)}
-                  {notes.map((n, i) => <tr key={`print-${NOTE_ID_PREFIX}${n.id}`} className={n.status === 'dismissed' ? styles.printDismissed : undefined}><td>N{i + 1}</td><td>Nhận xét — {KIND_LABEL[n.kind]}{n.rule_id ? ` — ${ruleChipMeta(n.rule_id).label}` : ''}</td><td>{SEV_LABEL[n.severity]}</td><td>{n.finding}{n.status === 'dismissed' ? ' (Đã bỏ)' : ''}</td><td>{n.suggestion}</td></tr>)}
+                  {previewMode === 'changes' ? changes.map((c, i) => <tr key={`print-${c.id}`} className={c.status === 'dismissed' ? styles.printDismissed : undefined}><td>{i + 1}</td><td>{KIND_LABEL[c.kind]}{c.rule_id ? ` — ${ruleChipMeta(c.rule_id).label}` : ''}</td><td>{SEV_LABEL[c.severity]}</td><td>{c.before ?? '—'} → {c.quote ?? '—'}{c.status === 'dismissed' ? ' (Đã bỏ)' : ''}</td><td>{c.reason}</td></tr>) : null}
+                  {previewMode === 'notes' ? notes.map((n, i) => <tr key={`print-${NOTE_ID_PREFIX}${n.id}`} className={n.status === 'dismissed' ? styles.printDismissed : undefined}><td>N{i + 1}</td><td>Nhận xét — {KIND_LABEL[n.kind]}{n.rule_id ? ` — ${ruleChipMeta(n.rule_id).label}` : ''}</td><td>{SEV_LABEL[n.severity]}</td><td>{n.finding}{n.status === 'dismissed' ? ' (Đã bỏ)' : ''}</td><td>{n.suggestion}</td></tr>) : null}
                 </tbody></table>
               </section>
             </div>,
@@ -2222,7 +2434,7 @@ export function DocRedlinePreview({
                 {refModal.label ? <span className={styles.modalQuote}>“{refLabel(refModal.label)}”</span> : null}
               </div>
               <div className={styles.modalActions}>
-                <HighlightFilters paint={paint} onChange={setPaintKind} />
+                {previewMode === 'changes' ? <HighlightFilters paint={paint} onChange={setPaintKind} includeNote={notes.length === 0} /> : null}
                 <button type="button" className={styles.modalClose} onClick={() => setRefModal(null)}>
                   Đóng
                 </button>
@@ -2261,17 +2473,19 @@ function HighlightFilters({
   paint,
   onChange,
   counts,
+  includeNote = true,
 }: {
   paint: PaintFlags;
   onChange: (kind: PaintKind, next: boolean) => void;
   counts?: Partial<Record<PaintKind, number>>;
+  includeNote?: boolean;
 }) {
   return (
     <div className={styles.filters} role="group" aria-label="Hiện tô màu theo loại">
       {/* Không có dòng này thì bốn chip màu đọc như một chú thích tĩnh — người
           dùng không có lý do nào để thử bấm vào chúng. */}
       <span className={styles.filtersHint}>Bấm để ẩn/hiện:</span>
-      {PAINT_ITEMS.map(({ kind, label, swatch }) => {
+      {PAINT_ITEMS.filter(({ kind }) => includeNote || kind !== 'note').map(({ kind, label, swatch }) => {
         const on = paint[kind];
         const n = counts?.[kind];
         return (

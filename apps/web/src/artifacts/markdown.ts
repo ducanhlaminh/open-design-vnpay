@@ -150,6 +150,11 @@ function alignAttr(align: Align): string {
   return align === null ? '' : ` style="text-align:${align}"`;
 }
 
+function fencedCodeMarker(line: string): '```' | '~~~' | null {
+  const match = /^\s*(```|~~~)/.exec(line);
+  return (match?.[1] as '```' | '~~~' | undefined) ?? null;
+}
+
 export function renderMarkdownToSafeHtml(markdown: string): string {
   // Intentionally small markdown subset for conservative preview rendering.
   // Supported: headings, paragraphs, blockquotes, ul/ol lists, fenced code,
@@ -169,15 +174,16 @@ export function renderMarkdownToSafeHtml(markdown: string): string {
       continue;
     }
 
-    if (/^```/.test(line)) {
-      // Keep the fence info string (```mermaid, ```json…) as a class so viewers
+    const fenceMarker = fencedCodeMarker(line);
+    if (fenceMarker !== null) {
+      // Keep the fence info string (```mermaid, ~~~json…) as a class so viewers
       // can pick a renderer; whitelist chars so it never breaks out of the attr.
-      const lang = (line.replace(/^```/, '').trim().split(/\s+/)[0] ?? '').toLowerCase().replace(/[^a-z0-9_+.-]/g, '');
+      const lang = (line.replace(/^\s*(```|~~~)/, '').trim().split(/\s+/)[0] ?? '').toLowerCase().replace(/[^a-z0-9_+.-]/g, '');
       i += 1;
       const code: string[] = [];
       while (i < lines.length) {
         const codeLine = lines[i];
-        if (codeLine === undefined || /^```/.test(codeLine)) break;
+        if (codeLine === undefined || fencedCodeMarker(codeLine) === fenceMarker) break;
         code.push(codeLine);
         i += 1;
       }
@@ -266,7 +272,7 @@ export function renderMarkdownToSafeHtml(markdown: string): string {
       const paraLine = lines[i];
       if (paraLine === undefined || /^\s*$/.test(paraLine)) break;
       if (
-        /^```/.test(paraLine) ||
+        fencedCodeMarker(paraLine) !== null ||
         headingLevel(paraLine) > 0 ||
         /^>\s?/.test(paraLine) ||
         /^\s*[-*]\s+/.test(paraLine) ||

@@ -100,6 +100,114 @@ describe('quoteSegments', () => {
 });
 
 describe('injectHighlights', () => {
+  it('giới hạn anchor trong section để bỏ qua text trùng ở TOC', () => {
+    const html = [
+      '<nav><p>Thanh toán bằng mã QR</p></nav>',
+      '<h2>2. Thanh toán</h2>',
+      '<p>Thanh toán bằng mã QR tại quầy.</p>',
+      '<h2>3. Hoàn tiền</h2>',
+      '<p>Thanh toán bằng mã QR đã hoàn tất.</p>',
+    ].join('');
+    const out = injectHighlights(
+      html,
+      [
+        {
+          id: 'scoped-body',
+          text: 'Thanh toán bằng mã QR',
+          scope: {
+            sectionIndex: 0,
+            sectionHeading: '## 2. Thanh toán',
+            sectionStartHeadingOrdinal: 0,
+            sectionEndHeadingOrdinalExclusive: 1,
+          },
+        },
+      ],
+      'hl',
+    );
+    expect(out.matched).toEqual(new Set(['scoped-body']));
+    expect(out.html.indexOf('<mark')).toBeGreaterThan(out.html.indexOf('<h2>2. Thanh toán</h2>'));
+    expect(out.html.indexOf('<mark')).toBeLessThan(out.html.indexOf('<h2>3. Hoàn tiền</h2>'));
+  });
+
+  it('dùng heading ordinal thật để phân biệt hai heading trùng nhau', () => {
+    const html = [
+      '<h2>Chi tiết giao dịch</h2><p>Mã tham chiếu của giao dịch đầu.</p>',
+      '<h2>Chi tiết giao dịch</h2><p>Mã tham chiếu của giao dịch sau.</p>',
+    ].join('');
+    const out = injectHighlights(
+      html,
+      [
+        {
+          id: 'duplicate-heading',
+          text: 'Mã tham chiếu',
+          scope: {
+            sectionIndex: 0,
+            sectionHeading: '## Chi tiết giao dịch',
+            sectionStartHeadingOrdinal: 1,
+          },
+        },
+      ],
+      'hl',
+    );
+    expect(out.matched).toEqual(new Set(['duplicate-heading']));
+    expect(out.html).toContain(
+      '<p>Mã tham chiếu của giao dịch đầu.</p><h2>Chi tiết giao dịch</h2><p><mark class="hl" data-change-id="duplicate-heading">Mã tham chiếu</mark>',
+    );
+  });
+
+  it('không diễn giải legacy sectionIndex thành heading ordinal', () => {
+    const html = [
+      '<h2>Một</h2><p>Neo trùng.</p>',
+      '<h2>Hai</h2><p>Neo trùng.</p>',
+    ].join('');
+    const out = injectHighlights(html, [{
+      id: 'legacy-index-only',
+      text: 'Neo trùng.',
+      scope: { sectionIndex: 1 },
+    }], 'hl');
+
+    expect(out.html).toContain('<h2>Một</h2><p><mark class="hl" data-change-id="legacy-index-only">');
+    expect(out.html).not.toContain('<h2>Hai</h2><p><mark');
+  });
+
+  it('match target dưới #B khi daemon gộp #A/#B/#C vào cùng một slice', () => {
+    const html = [
+      '<nav><p>Target cần sửa</p></nav>',
+      '<h1>A</h1><p>a1</p>',
+      '<h1>B</h1><p>Target cần sửa nằm dưới B.</p>',
+      '<h1>C</h1><p>c1</p>',
+      '<h1>D</h1><p>Target cần sửa ngoài slice.</p>',
+    ].join('');
+    const out = injectHighlights(html, [{
+      id: 'merged-slice',
+      text: 'Target cần sửa nằm dưới B.',
+      scope: {
+        sectionIndex: 0,
+        sectionHeading: '# A',
+        sectionStartHeadingOrdinal: 0,
+        sectionEndHeadingOrdinalExclusive: 3,
+      },
+    }], 'hl');
+
+    expect(out.matched).toEqual(new Set(['merged-slice']));
+    expect(out.html).toContain('<h1>B</h1><p><mark class="hl" data-change-id="merged-slice">');
+  });
+
+  it('áp range preamble và last-section bằng omitted boundary', () => {
+    const html = '<p>Mở đầu duy nhất.</p><h1>A</h1><p>a1</p><h1>B</h1><p>Đích cuối.</p>';
+    const preamble = injectHighlights(html, [{
+      id: 'pre', text: 'Mở đầu duy nhất.',
+      scope: { sectionIndex: 0, sectionHeading: '', sectionEndHeadingOrdinalExclusive: 0 },
+    }], 'hl');
+    const last = injectHighlights(html, [{
+      id: 'last', text: 'Đích cuối.',
+      scope: { sectionIndex: 2, sectionHeading: '# B', sectionStartHeadingOrdinal: 1 },
+    }], 'hl');
+
+    expect(preamble.matched).toEqual(new Set(['pre']));
+    expect(last.matched).toEqual(new Set(['last']));
+  });
+
   it('chèn mark vào chuỗi HTML, không đụng nội dung bên trong thẻ', () => {
     const html = '<p>Người dùng nhập OTP.</p><img src="Người dùng nhập OTP.png">';
     const out = injectHighlights(html, [{ id: 'c1', text: 'Người dùng nhập OTP.' }], 'hl', 'background:red');
@@ -155,9 +263,63 @@ describe('injectHighlights', () => {
     // ngược với mọi call site cũ.
     expect(out.html).toContain('<mark class="hl-edit" data-change-id="e1" style="background:amber">');
   });
+
+  it('trả block descriptors cho paragraph, list và table mà không bọc mark xuyên block', () => {
+    const html = [
+      '<h3>Tiêu đề được bổ sung</h3>',
+      '<p>Đoạn văn được bổ sung đầy đủ.</p>',
+      '<ul><li>Mục danh sách được bổ sung.</li></ul>',
+      '<table><tbody><tr><td>Ô bảng được bổ sung.</td></tr></tbody></table>',
+    ].join('');
+    const out = injectHighlights(
+      html,
+      [
+        { id: 'h1', text: 'Tiêu đề được bổ sung' },
+        { id: 'p1', text: 'Đoạn văn được bổ sung' },
+        { id: 'l1', text: 'Mục danh sách được bổ sung' },
+        { id: 't1', text: 'Ô bảng được bổ sung' },
+      ],
+      'hl',
+    );
+    expect(out.blocks).toEqual([
+      { id: 'h1', blockIndex: 0, tagName: 'h3', kind: 'heading' },
+      { id: 'p1', blockIndex: 1, tagName: 'p', kind: 'paragraph' },
+      { id: 'l1', blockIndex: 2, tagName: 'li', kind: 'list-item' },
+      { id: 't1', blockIndex: 3, tagName: 'table', kind: 'table' },
+    ]);
+    expect(out.html).not.toMatch(/<mark[^>]*>[^<]*<\/(?:p|li|td|table)>/);
+  });
 });
 
 describe('injectDeletedRuns', () => {
+  it('áp dụng section scope cho anchor của đoạn xoá', () => {
+    const html = '<p>Đoạn neo còn sống.</p><h2>Mục đúng</h2><p>Đoạn neo còn sống.</p>';
+    const out = injectDeletedRuns(
+      html,
+      [
+        {
+          id: 'scoped-del',
+          anchor: 'Đoạn neo còn sống.',
+          text: 'Nội dung đã xoá.',
+          scope: {
+            sectionIndex: 0,
+            sectionHeading: '## Mục đúng',
+            sectionStartHeadingOrdinal: 0,
+          },
+        },
+      ],
+      'hl-del',
+    );
+    expect(out.matched).toEqual(new Set(['scoped-del']));
+    expect(out.html).toBe(
+      '<p>Đoạn neo còn sống.</p><h2>Mục đúng</h2><p>Đoạn neo còn sống.' +
+        '<mark class="hl-del" data-change-id="scoped-del" data-op="del"><del>Nội dung đã xoá.</del></mark></p>',
+    );
+    expect(out.blocks).toEqual([
+      { id: 'scoped-del', blockIndex: 2, tagName: 'p', kind: 'paragraph' },
+    ]);
+  });
+
   it('chèn đoạn đã xoá NGAY SAU anchor, và KHÔNG bôi chính anchor', () => {
     const html = '<p>Người dùng nhập mã OTP. Hệ thống xác thực.</p>';
     const out = injectDeletedRuns(
