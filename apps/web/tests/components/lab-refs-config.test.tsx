@@ -77,7 +77,7 @@ describe('LabRefsSection', () => {
     const { calls } = stubFetch({ getResponse: REFS_WITH_DATA });
     render(<LabRefsSection projectId="proj-1" />);
 
-    const textarea = await screen.findByPlaceholderText(/Dán link page Figma/);
+    const textarea = await screen.findByPlaceholderText(/Dán link frame của màn/);
     await waitFor(() => expect((textarea as HTMLTextAreaElement).value).toBe(REFS_WITH_DATA.pages[0]!.url));
 
     const getCall = calls.find((c) => c.method === 'GET');
@@ -88,7 +88,7 @@ describe('LabRefsSection', () => {
     const { calls } = stubFetch({ getResponse: EMPTY_REFS, putResponse: { refs: REFS_WITH_DATA, warnings: ['1 link bị bỏ qua vì trùng.'] } });
     render(<LabRefsSection projectId="proj-1" />);
 
-    const textarea = await screen.findByPlaceholderText(/Dán link page Figma/);
+    const textarea = await screen.findByPlaceholderText(/Dán link frame của màn/);
     fireEvent.change(textarea, { target: { value: 'https://www.figma.com/design/ABC/Concepts?node-id=1-1' } });
 
     fireEvent.click(screen.getByRole('button', { name: /Quét & lưu/ }));
@@ -113,7 +113,7 @@ describe('LabRefsSection', () => {
     });
     render(<LabRefsSection projectId="proj-1" />);
 
-    const textarea = await screen.findByPlaceholderText(/Dán link page Figma/);
+    const textarea = await screen.findByPlaceholderText(/Dán link frame của màn/);
     fireEvent.change(textarea, { target: { value: 'https://www.figma.com/design/ABC/Concepts?node-id=1-1' } });
     fireEvent.click(screen.getByRole('button', { name: /Quét & lưu/ }));
 

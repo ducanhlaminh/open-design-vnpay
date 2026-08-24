@@ -602,8 +602,11 @@ export interface BuildMapBriefOptions {
   };
   /** WP-lab-refs-daemon: concept đã quét được (server.ts đã `readLabRefs`
    *  trước khi gọi) — `null`/rỗng (chưa quét link tham khảo nào cho dự án
-   *  này) → brief Y HỆT hành vi trước WP này (không dòng nào về concept). */
-  concepts?: { id: string; name: string; png: string }[] | null;
+   *  này) → brief Y HỆT hành vi trước WP này (không dòng nào về concept).
+   *  WP-lab-refs-v2: `structure` — đường dẫn `refs/<slug>.structure.json`
+   *  (cây bố cục) của concept, LUÔN có khi concept có — chỉ optional ở đây vì
+   *  registry cũ (quét trước WP này) có thể thiếu field. */
+  concepts?: { id: string; name: string; png: string; structure?: string }[] | null;
 }
 
 /** Message kickoff cho phiên agent duy nhất của stage `lab-map`. Thuần —
@@ -631,11 +634,13 @@ export function buildMapBrief(opts: BuildMapBriefOptions): string {
       : '- Định hướng người dùng: (không có)';
   // WP-lab-refs-daemon: concept tham khảo — chỉ có dòng khi server.ts đã đọc
   // được ≥1 concept từ `refs/refs.json` (null/rỗng → không dòng nào, brief Y
-  // HỆT trước WP này).
+  // HỆT trước WP này). WP-lab-refs-v2: nhắc thêm structure.json (cây bố cục)
+  // — nguồn CẤU TRÚC thật để agent lab-map/lab-compose đối chiếu thay vì chỉ
+  // nhìn ảnh đoán bố cục.
   const concepts = opts.concepts ?? null;
   const conceptsLine =
     concepts && concepts.length > 0
-      ? `- Concept tham khảo: refs/refs.json — ${concepts.length} concept (ảnh refs/*.png, Read được)`
+      ? `- Concept tham khảo: refs/refs.json — ${concepts.length} concept (ảnh refs/*.png, Read được; mỗi concept có structure.json (cây bố cục) — Read khi cần đối chiếu)`
       : null;
 
   return renderLabBrief({

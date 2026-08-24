@@ -555,7 +555,7 @@ describe('buildComposeBrief', () => {
     expect(withMapNoRefs).not.toContain('SÁT CẤU TRÚC');
   });
 
-  it('one reference per scoped screen with a reference → one "Reference <key>" input line each, with image + url', () => {
+  it('one reference per scoped screen with a reference → one "Reference <key>" input line each, with image + structure + url', () => {
     const brief = buildComposeBrief({
       ...baseOpts,
       scopeHint: null,
@@ -564,11 +564,19 @@ describe('buildComposeBrief', () => {
         mainPath: [],
         scoped: ['doc__6.1.1', 'doc__6.2.1'],
         references: [
-          { key: 'doc__6.1.1', conceptName: 'Trang chủ', png: 'refs/F-1-2.png', url: 'https://www.figma.com/design/F/?node-id=1-2' },
+          {
+            key: 'doc__6.1.1',
+            conceptName: 'Trang chủ',
+            png: 'refs/F-1-2.png',
+            structure: 'refs/F-1-2.structure.json',
+            url: 'https://www.figma.com/design/F/?node-id=1-2',
+          },
         ],
       },
     });
-    expect(brief).toContain('- Reference doc__6.1.1: ảnh `refs/F-1-2.png` + https://www.figma.com/design/F/?node-id=1-2 — SÁT CẤU TRÚC (xem luật reference trong skill)');
+    expect(brief).toContain(
+      '- Reference doc__6.1.1: ảnh `refs/F-1-2.png` + cấu trúc `refs/F-1-2.structure.json` + https://www.figma.com/design/F/?node-id=1-2 — BỐ CỤC THEO CẤU TRÚC NÀY (khối, thứ tự, tỷ lệ); comp từ DS/kit, nội dung thật từ docs',
+    );
     // No reference for doc__6.2.1 → no line for it.
     expect(brief).not.toContain('Reference doc__6.2.1');
   });
@@ -581,11 +589,18 @@ describe('buildComposeBrief', () => {
         screens: [],
         mainPath: [],
         scoped: ['doc__6.1.1'],
-        references: [{ key: 'doc__6.1.1', png: 'refs/F-1-2.png', url: 'https://www.figma.com/design/F/?node-id=1-2' }],
+        references: [
+          {
+            key: 'doc__6.1.1',
+            png: 'refs/F-1-2.png',
+            structure: 'refs/F-1-2.structure.json',
+            url: 'https://www.figma.com/design/F/?node-id=1-2',
+          },
+        ],
       },
     });
     expect(brief).toContain(
-      '- Màn có reference: bố cục THEO reference (cấu trúc khối, thứ tự, tỷ lệ) — comp từ DS/kit, style theo tokens, nội dung thật từ docs; màn không reference: sáng tác như cũ.',
+      '- Màn có reference: bố cục THEO structure.json của reference (khối, thứ tự, tỷ lệ) — comp từ DS/kit, style theo tokens, nội dung thật từ docs; màn không reference: sáng tác như cũ.',
     );
   });
 });

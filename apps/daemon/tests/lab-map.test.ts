@@ -15,6 +15,10 @@
 // renderScreenMapMd (only rendered when ≥1 screen has a reference — keeps
 // screen-map.md BYTE-IDENTICAL for projects without refs, per must_not), and
 // buildMapBrief's optional `concepts` param (null/empty → brief Y HỆT cũ).
+//
+// WP-lab-refs-v2 (2026-08-24 — .tmp/pipeline/wp-lab-refs-v2-daemon.yaml): +
+// `concepts[].structure` (optional, cây bố cục) and buildMapBrief's
+// conceptsLine wording nhắc `structure.json` khi có concepts.
 
 import { describe, expect, it } from 'vitest';
 
@@ -683,11 +687,13 @@ describe('buildMapBrief', () => {
     const brief = buildMapBrief({
       ...baseOpts,
       concepts: [
-        { id: 'F:1:2', name: 'Màn A', png: 'refs/F-1-2.png' },
-        { id: 'F:1:3', name: 'Màn B', png: 'refs/F-1-3.png' },
+        { id: 'F:1:2', name: 'Màn A', png: 'refs/F-1-2.png', structure: 'refs/F-1-2.structure.json' },
+        { id: 'F:1:3', name: 'Màn B', png: 'refs/F-1-3.png', structure: 'refs/F-1-3.structure.json' },
       ],
     });
-    expect(brief).toContain('Concept tham khảo: refs/refs.json — 2 concept (ảnh refs/*.png, Read được)');
+    expect(brief).toContain(
+      'Concept tham khảo: refs/refs.json — 2 concept (ảnh refs/*.png, Read được; mỗi concept có structure.json (cây bố cục) — Read khi cần đối chiếu)',
+    );
     expect(brief).toContain('Map mỗi màn ↔ một concept khớp nhất');
     expect(brief).toContain('field `reference`');
   });

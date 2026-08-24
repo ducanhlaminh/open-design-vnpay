@@ -64,9 +64,30 @@
   min-width: 0;
 }
 
+.pageTitleRow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
 .pageText strong {
   font-size: 13px;
   overflow-wrap: anywhere;
+}
+
+/* Badge loại node (Page/Frame/Section/Component/Instance) + kích thước —
+   WP-lab-refs-v2, xem pageBadgeText trong LabRefsSection.tsx. */
+.pageBadge {
+  flex: 0 0 auto;
+  padding: 1px 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-subtle);
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.6;
+  white-space: nowrap;
 }
 
 .pageText small {
@@ -125,6 +146,15 @@
   margin: 0;
   padding: 0 0 0 16px;
   color: var(--text-muted);
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+
+/* Cảnh báo "N concept chưa có ảnh" — cùng tông với .loadError (đỏ, dễ thấy)
+   nhưng đặt riêng ngay trên lưới concept thay vì đầu section. */
+.missingImages {
+  margin: 0;
+  color: var(--red);
   font-size: 12.5px;
   line-height: 1.4;
 }

@@ -430,18 +430,26 @@ export async function fetchNodeSubtrees(
  *  call like {@link fetchProperties}. A node Figma could not render (locked,
  *  deleted mid-batch, etc.) comes back `null` in the `images` map and is
  *  simply omitted here — caller treats a missing entry as "ảnh lỗi", not a
- *  hard failure (fail-soft, per the decided plan). */
+ *  hard failure (fail-soft, per the decided plan).
+ *
+ *  WP-lab-refs-v2 (`.tmp/pipeline/wp-lab-refs-v2-daemon.yaml`): optional
+ *  `opts.scale` (default 2, UNCHANGED for every existing call site) — lets
+ *  `lab-refs.ts`'s `fetchImagesWithRetry` retry a batch at scale 1 after a
+ *  scale-2 throw (root cause of the 24/08 "40/40 png:''" incident: a
+ *  transient Figma error at scale 2 for the whole batch). */
 export async function fetchNodeImages(
   token: string,
   fileKey: string,
   nodeIds: readonly string[],
   deps: FigmaRestDeps = {},
+  opts: { scale?: 1 | 2 } = {},
 ): Promise<Map<string, string>> {
+  const scale = opts.scale ?? 2;
   const result = new Map<string, string>();
   for (let start = 0; start < nodeIds.length; start += NODES_BATCH_SIZE) {
     const batch = nodeIds.slice(start, start + NODES_BATCH_SIZE);
     const body = record(await figmaGet(
-      `/v1/images/${encodeURIComponent(fileKey)}?ids=${encodeURIComponent(batch.join(','))}&format=png&scale=2`,
+      `/v1/images/${encodeURIComponent(fileKey)}?ids=${encodeURIComponent(batch.join(','))}&format=png&scale=${scale}`,
       token,
       deps,
     ));

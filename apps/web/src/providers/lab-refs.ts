@@ -11,6 +11,12 @@
 // KHÔNG throw — caller tự quyết định hiện lỗi ở đâu (rail fail-soft, section
 // hiện detail).
 
+// Nhánh loại node cho một page/link đã quét — chỉ có ở link "Copy link to
+// selection" (frame/section/component/component_set/instance); link "Copy
+// link to page" luôn là 'page'. WP-lab-refs-daemon (song song) là nguồn.
+export const LAB_REFS_PAGE_KINDS = ['page', 'frame', 'section', 'component', 'component_set', 'instance'] as const;
+export type LabRefsPageKind = (typeof LAB_REFS_PAGE_KINDS)[number];
+
 export interface LabRefsPage {
   url: string;
   fileKey: string;
@@ -18,6 +24,12 @@ export interface LabRefsPage {
   name?: string;
   ok: boolean;
   detail?: string;
+  /** Loại node Figma của link — thiếu ở refs.json cũ (trước WP-lab-refs-v2),
+   *  section khi đó không hiện badge. */
+  kind?: LabRefsPageKind;
+  /** Kích thước dạng "390x1359" — daemon chỉ điền cho link selection
+   *  (frame/section/component/…), không có ở link page. */
+  size?: string;
 }
 
 export interface LabRefsConcept {
@@ -30,6 +42,9 @@ export interface LabRefsConcept {
   png: string;
   width?: number;
   height?: number;
+  /** Rel path tới structure.json của concept (WP-lab-refs-v2) — web KHÔNG
+   *  render cây này, field chỉ cần không làm vỡ type khi daemon gửi lên. */
+  structure?: string;
 }
 
 export interface LabRefsFile {
@@ -37,6 +52,12 @@ export interface LabRefsFile {
   scannedAt?: string;
   pages: LabRefsPage[];
   concepts: LabRefsConcept[];
+  /** Warnings của lượt quét GẦN NHẤT, được daemon LƯU trong refs.json — khác
+   *  với `PutLabRefsResponse.warnings` (chỉ có ngay sau một lượt PUT thành
+   *  công). Nhờ field này mà mở lại modal vẫn thấy warnings cũ mà không cần
+   *  bấm "Quét & lưu" lại (sự cố 24/08: 40/40 ảnh lỗi nhưng modal mở lại
+   *  trống trơn vì warnings chưa từng được lưu). */
+  warnings?: string[];
 }
 
 export interface LabRefsError {
@@ -56,6 +77,10 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
+function isLabRefsPageKind(value: unknown): value is LabRefsPageKind {
+  return typeof value === 'string' && (LAB_REFS_PAGE_KINDS as readonly string[]).includes(value);
+}
+
 function parseLabRefsPage(value: unknown): LabRefsPage | null {
   if (!isObject(value)) return null;
   const { url, fileKey, nodeId } = value;
@@ -67,6 +92,8 @@ function parseLabRefsPage(value: unknown): LabRefsPage | null {
     ...(typeof value.name === 'string' ? { name: value.name } : {}),
     ok: value.ok === true,
     ...(typeof value.detail === 'string' ? { detail: value.detail } : {}),
+    ...(isLabRefsPageKind(value.kind) ? { kind: value.kind } : {}),
+    ...(typeof value.size === 'string' ? { size: value.size } : {}),
   };
 }
 
@@ -90,6 +117,7 @@ function parseLabRefsConcept(value: unknown): LabRefsConcept | null {
     png,
     ...(typeof value.width === 'number' ? { width: value.width } : {}),
     ...(typeof value.height === 'number' ? { height: value.height } : {}),
+    ...(typeof value.structure === 'string' ? { structure: value.structure } : {}),
   };
 }
 
@@ -109,11 +137,15 @@ function parseLabRefsFile(value: unknown): LabRefsFile {
         return parsed ? [parsed] : [];
       })
     : [];
+  const warnings = Array.isArray(source.warnings)
+    ? source.warnings.filter((w): w is string => typeof w === 'string')
+    : [];
   return {
     schemaVersion: 1,
     ...(typeof source.scannedAt === 'string' ? { scannedAt: source.scannedAt } : {}),
     pages,
     concepts,
+    ...(warnings.length > 0 ? { warnings } : {}),
   };
 }
 

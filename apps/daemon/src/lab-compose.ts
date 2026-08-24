@@ -179,8 +179,12 @@ export interface BuildComposeBriefOptions {
      *  reference concept ĐÃ RÁP SẴN cho các màn scoped có `reference`
      *  (server.ts's `runLabCompose` tra lại `refs/refs.json` hiện tại theo
      *  `reference.conceptId` — xem `summarizeScreenMapForCompose`'s
-     *  `references`). Rỗng/absent → không dòng nào (hành vi CŨ). */
-    references?: { key: string; conceptName?: string; png: string; url: string }[];
+     *  `references`). Rỗng/absent → không dòng nào (hành vi CŨ).
+     *  WP-lab-refs-v2 (.tmp/pipeline/wp-lab-refs-v2-daemon.yaml): `structure`
+     *  — đường dẫn `refs/<slug>.structure.json` (cây bố cục) tra CÙNG lúc với
+     *  `png` (theo `conceptId`) — nguồn CẤU TRÚC thật cho agent, không còn
+     *  chỉ "nhìn ảnh đoán". */
+    references?: { key: string; conceptName?: string; png: string; structure?: string; url: string }[];
   } | null;
 }
 
@@ -282,12 +286,17 @@ export function buildComposeBrief(opts: BuildComposeBriefOptions): string {
   // chắn không bị cắt — cái giá là `structureRuleLine` (dòng #4 khi có
   // reference) rơi khỏi 3 dòng hiển thị; luật đó vẫn còn trong system prompt
   // của skill, brief chỉ là nhắc lại, không phải nguồn duy nhất.
+  // WP-lab-refs-v2 (.tmp/pipeline/wp-lab-refs-v2-daemon.yaml): reference giờ
+  // mang thêm `structure` (cây bố cục thật) — agent BỐ CỤC THEO CẤU TRÚC ĐÓ
+  // thay vì nhìn ảnh đoán khối/thứ tự/tỷ lệ; agent chỉ còn lo screen-flow +
+  // chọn đúng comp DS đạt usecase (đã có sẵn từ lab-map/materials).
   const references = map?.references ?? [];
   const referenceLines = references.map(
-    (r) => `- Reference ${r.key}: ảnh \`${r.png}\` + ${r.url} — SÁT CẤU TRÚC (xem luật reference trong skill)`,
+    (r) =>
+      `- Reference ${r.key}: ảnh \`${r.png}\` + cấu trúc \`${r.structure ?? ''}\` + ${r.url} — BỐ CỤC THEO CẤU TRÚC NÀY (khối, thứ tự, tỷ lệ); comp từ DS/kit, nội dung thật từ docs`,
   );
   const referenceReminderLine =
-    '- Màn có reference: bố cục THEO reference (cấu trúc khối, thứ tự, tỷ lệ) — comp từ DS/kit, style theo tokens, nội dung thật từ docs; màn không reference: sáng tác như cũ.';
+    '- Màn có reference: bố cục THEO structure.json của reference (khối, thứ tự, tỷ lệ) — comp từ DS/kit, style theo tokens, nội dung thật từ docs; màn không reference: sáng tác như cũ.';
 
   return renderLabBrief({
     title: `# Sáng tác màn · ${opts.appFeature}`,

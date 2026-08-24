@@ -20380,12 +20380,18 @@ export async function startServer({
         const rawReferences = mapSummary?.references ?? [];
         const labRefs = rawReferences.length > 0 ? await readLabRefs(labCwd) : null;
         const conceptById = new Map((labRefs?.concepts ?? []).map((c) => [c.id, c] as const));
+        // WP-lab-refs-v2 (.tmp/pipeline/wp-lab-refs-v2-daemon.yaml): `structure`
+        // tra CÙNG lúc với `png` (theo conceptId hiện tại, KHÔNG có field cũ
+        // tương ứng trên `reference` — structure.json chỉ tồn tại từ WP này
+        // trở đi) để `buildComposeBrief` in dòng "Reference <key>" trỏ vào cây
+        // bố cục thật, không chỉ ảnh.
         const references = rawReferences
           .map(({ key, reference }) => {
             const concept = conceptById.get(reference.conceptId);
             const png = concept?.png || reference.png || '';
+            const structure = concept?.structure || '';
             const url = `https://www.figma.com/design/${reference.fileKey}/?node-id=${reference.nodeId.replace(':', '-')}`;
-            return { key, ...(concept?.name ? { conceptName: concept.name } : {}), png, url };
+            return { key, ...(concept?.name ? { conceptName: concept.name } : {}), png, ...(structure ? { structure } : {}), url };
           })
           .filter((r) => r.png.length > 0);
 
@@ -21007,7 +21013,7 @@ export async function startServer({
         // cấu hình của PipelinesView, PUT .../ds-lab/lab-refs) — fail-soft
         // (readLabRefs không throw); rỗng → buildMapBrief bỏ qua, hành vi CŨ.
         const labRefs = await readLabRefs(labCwd);
-        const concepts = labRefs.concepts.map((c) => ({ id: c.id, name: c.name, png: c.png }));
+        const concepts = labRefs.concepts.map((c) => ({ id: c.id, name: c.name, png: c.png, structure: c.structure }));
 
         const appFeature = (project.name && String(project.name).trim()) || projectId;
         const brief = buildMapBrief({
