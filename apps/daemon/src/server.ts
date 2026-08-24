@@ -180,6 +180,7 @@ import { fetchClaudeUsage } from './claude-usage.js';
 import { renderHtmlToPdf } from './bas/drawio-render.js';
 import { finalizeFlowUx, prepareFlowUxInputs, type FlowIndexEntry } from './flow-ux/index.js';
 import { serveDrawioViewerJs } from './flow-ux/viewer-asset.js';
+import { ensureProposedMermaidHighlight } from './flow-ux/mermaid-highlight.js';
 import { loadCritiqueConfigFromEnv } from './critique/config.js';
 import { reconcileStaleRuns } from './critique/persistence.js';
 import { runOrchestrator } from './critique/orchestrator.js';
@@ -650,6 +651,9 @@ import {
 // nháp riêng cho agent tự chèn, xem docblock đầu docs-review-enrich.ts).
 import {
   replaceDiagramInSlice,
+  // WP-drreview-drawio-preview mục C: nhánh MỚI (cùng vòng lặp flow, TRƯỚC
+  // continue) cho flow kind=drawio — xem docblock ở chỗ gọi.
+  replaceDrawioInSlice,
   mapScreensToSections,
   parseCatalogue,
   renderCompositionDraft,
@@ -18685,6 +18689,52 @@ export async function startServer({
                   const asIsRel = flow.files?.asIs;
                   const proposedRel = flow.files?.proposed;
                   const reviewRelPath = flow.files?.review;
+                  // WP-drreview-drawio-preview mục C: nhánh draw.io — TRƯỚC
+                  // gate mermaid (không .mmd thì continue ngay dưới) để khỏi
+                  // rơi vào continue oan. Khác mermaid (mã nhúng để so khớp
+                  // NỘI DUNG), replaceDrawioInSlice chỉ cần path .drawio
+                  // NGUỒN (`flow.diagram`, ghi bởi flow-ux/index.ts mục A của
+                  // WP này) để suy `stem` so khớp ẢNH/dòng nguồn cũ trong
+                  // slice — daemon KHÔNG đọc/render XML server-side (bas chỉ
+                  // có export_view của Confluence, không renderer local, xem
+                  // "Đã tự chốt" trong wp-drreview-drawio-preview.yaml). Tách
+                  // HẲN khỏi thân mermaid bên dưới — nhánh đó giữ NGUYÊN từng
+                  // byte hành vi (must_not).
+                  if (proposedRel && proposedRel.endsWith('.drawio') && reviewRelPath && flow.diagram) {
+                    const proposedDrawioAbs = path.join(cwd, proposedRel);
+                    const reviewDrawioAbs = path.join(cwd, reviewRelPath);
+                    const [proposedDrawioExists, reviewDrawioExists] = await Promise.all([
+                      fs.promises.stat(proposedDrawioAbs).then(() => true).catch(() => false),
+                      fs.promises.stat(reviewDrawioAbs).then(() => true).catch(() => false),
+                    ]);
+                    if (!proposedDrawioExists || !reviewDrawioExists) {
+                      console.debug(
+                        `[docs-review] enrich skipped: flow "${flow.id}" (drawio) của trang "${pg.mdPath}": thiếu file (proposed=${proposedDrawioExists}, ux-review=${reviewDrawioExists})`,
+                      );
+                      continue;
+                    }
+                    const uxReviewDrawioRaw = await fs.promises.readFile(reviewDrawioAbs, 'utf8').catch(() => null);
+                    const uxReviewDrawio = uxReviewDrawioRaw
+                      ? (JSON.parse(uxReviewDrawioRaw) as { verdict?: string; summary?: string })
+                      : {};
+                    for (const sec of sections) {
+                      const secSliceAbs = path.join(cwd, sectionSlicePath(reviewRel, sec.index));
+                      const sliceText = await fs.promises.readFile(secSliceAbs, 'utf8').catch(() => null);
+                      if (sliceText == null) continue;
+                      const replaced = replaceDrawioInSlice(sliceText, {
+                        diagramRel: flow.diagram,
+                        flowId: flow.id,
+                        uxReview: uxReviewDrawio,
+                      });
+                      if (!replaced) continue;
+                      await fs.promises.writeFile(secSliceAbs, replaced.text, 'utf8');
+                      sysChanges.push(...stampSectionProvenance([replaced.change], sec));
+                      diagramFlowIdBySection.set(sec.index, flow.id);
+                      pageChangedFlowIds.push(flow.id);
+                      break; // một sơ đồ chỉ nằm trong đúng một section của trang
+                    }
+                    continue;
+                  }
                   if (
                     !asIsRel ||
                     !proposedRel ||
@@ -18720,12 +18770,20 @@ export async function startServer({
                   const uxReview = uxReviewRaw
                     ? (JSON.parse(uxReviewRaw) as { verdict?: string; summary?: string })
                     : {};
+                  // WP-drreview-mmd-color-badge: bù màu 3 classDef od-added/
+                  // od-modified/od-removed khi proposed.mmd trên đĩa CHƯA có
+                  // (dự án chạy dr-flow TRƯỚC WP này, hoặc agent quên tô) —
+                  // để dr-review chạy LẠI trên dự án cũ vẫn tự bù màu, không
+                  // bắt chạy lại dr-flow. finalizeFlowUx cũng gọi hàm này nên
+                  // dr-flow chạy MỚI đã ghi sẵn màu vào đĩa; gọi lại đây là
+                  // no-op (trả nguyên văn) trong trường hợp đó.
+                  const proposedForSplice = ensureProposedMermaidHighlight(asIsMmd, proposedMmd);
 
                   for (const sec of sections) {
                     const secSliceAbs = path.join(cwd, sectionSlicePath(reviewRel, sec.index));
                     const sliceText = await fs.promises.readFile(secSliceAbs, 'utf8').catch(() => null);
                     if (sliceText == null) continue;
-                    const replaced = replaceDiagramInSlice(sliceText, { asIsMmd, proposedMmd, flowId: flow.id, uxReview });
+                    const replaced = replaceDiagramInSlice(sliceText, { asIsMmd, proposedMmd: proposedForSplice, flowId: flow.id, uxReview });
                     if (!replaced) continue;
                     await fs.promises.writeFile(secSliceAbs, replaced.text, 'utf8');
                     sysChanges.push(...stampSectionProvenance([replaced.change], sec));

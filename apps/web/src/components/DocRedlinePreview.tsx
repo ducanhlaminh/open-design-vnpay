@@ -22,6 +22,7 @@
 // đó phụ thuộc ref đã gắn chưa và React có dựng lại nút hay không, cả hai đều
 // đã thực sự làm vùng bôi biến mất.
 import { useEffect, useMemo, useRef, useState } from 'react';
+import type { Dispatch, SetStateAction } from 'react';
 import { createPortal } from 'react-dom';
 import type {
   DocReviewAnnotationEvent,
@@ -37,6 +38,7 @@ import { injectDeletedRuns, injectHighlights, quoteSegments, type HighlightBlock
 import { wordDiff } from '../runtime/word-diff';
 import { Icon } from './Icon';
 import { MermaidDiagram } from './MermaidDiagram';
+import { DrawioViewer } from './DrawioViewer';
 import { DocRedlineModeControls } from './DocRedlineModeControls';
 import { DocRedlineNavigation } from './DocRedlineNavigation';
 import { createRedlineDocumentIndex } from './redline-document';
@@ -913,6 +915,120 @@ function writeStoredPanelOpen(open: boolean): void {
   }
 }
 
+// ── WP-drreview-drawio-preview mục D — sơ đồ draw.io trong cột tài liệu ─────
+// Marker daemon chèn (replaceDrawioInSlice, docs-review-enrich.ts):
+// `*flow-diagram-drawio — sơ đồ ĐỀ XUẤT sau rà soát UX (nguồn gốc: …; đề
+// xuất: flows/<flowId>/proposed.drawio)*` — renderMarkdownToSafeHtml giữ
+// `*…*` thành `<em>`. `flowId` (và do đó `changeId`) parse THẲNG từ text
+// marker, không đối chiếu `changes` như mermaid — daemon LUÔN sinh marker
+// kèm đúng một system change, không có sơ đồ "mồ côi" ở đây.
+const DRAWIO_MARKER_RE = /^flow-diagram-drawio\s*—/;
+const DRAWIO_FLOWID_RE = /flows\/([^/]+)\/proposed\.drawio/;
+
+/** Portal vào host `<mark data-change-id>` đã chèn ở effect scan `<em>` (xem
+ *  ngay trên): fetch `flows/<flowId>/proposed.drawio` MỘT LẦN, render bằng
+ *  `<DrawioViewer>` trong khung cao cố định. Toggle/badge/chú giải TÁI DÙNG
+ *  đúng markup + state `diagramView` của mermaid (WP-drreview-mmd-color-badge)
+ *  — cùng `changeId` nên "chọn card ↔ highlight" (marksFor) chạy được ngay,
+ *  không cần viết lại. daemon KHÔNG render draw.io server-side (xem "Đã tự
+ *  chốt" trong wp-drreview-drawio-preview.yaml) nên XML thật CHỈ có ở đây,
+ *  khác mermaid (mã nhúng sẵn trong tài liệu). Fetch lỗi (reject hoặc `null`)
+ *  → giữ dòng marker chữ, chỉ thêm một dòng báo nhỏ — không crash. */
+function DrawioDiagramHost({
+  projectId,
+  workflowPrefix,
+  flowId,
+  changeId,
+  diagramView,
+  setDiagramView,
+}: {
+  projectId: string;
+  workflowPrefix: string;
+  flowId: string;
+  changeId: string;
+  diagramView: Record<string, 'proposed' | 'original'>;
+  setDiagramView: Dispatch<SetStateAction<Record<string, 'proposed' | 'original'>>>;
+}) {
+  const drawioPath = `${workflowPrefix}/flows/${flowId}/proposed.drawio`;
+  const [state, setState] = useState<
+    { status: 'loading' } | { status: 'ready'; xml: string; pageCount: number } | { status: 'error' }
+  >({ status: 'loading' });
+
+  useEffect(() => {
+    let cancelled = false;
+    setState({ status: 'loading' });
+    fetchProjectFileText(projectId, drawioPath)
+      .then((raw) => {
+        if (cancelled) return;
+        if (raw == null) {
+          setState({ status: 'error' });
+          return;
+        }
+        // 1 trang → luôn 0 (không có gì để so sánh, cả hai nhánh toggle cùng
+        // trỏ một trang) — pageCount đếm số thẻ `<diagram` trong XML.
+        const pageCount = (raw.match(/<diagram\b/g) ?? []).length || 1;
+        setState({ status: 'ready', xml: raw, pageCount });
+      })
+      .catch(() => {
+        if (!cancelled) setState({ status: 'error' });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, drawioPath]);
+
+  if (state.status === 'loading') return null; // giữ nguyên dòng marker chữ, chưa có gì thêm
+  if (state.status === 'error') {
+    return <p className={styles.drawioError ?? ''}>Không tải được sơ đồ đề xuất</p>;
+  }
+
+  const view = diagramView[changeId] ?? 'proposed';
+  const page = view === 'original' ? 0 : Math.max(state.pageCount - 1, 0);
+
+  return (
+    <>
+      <div className={styles.diagramToggle ?? ''} role="group" aria-label="Xem sơ đồ gốc hay đề xuất">
+        {/* Tái dùng nguyên markup badge/chú giải của mermaid
+            (WP-drreview-mmd-color-badge) — sơ đồ draw.io được thay cũng luôn
+            có màu (patch.ts tô CHANGE_STYLE khi finalizeFlowUx sinh
+            proposed.drawio), cùng 3 màu thêm/sửa/bỏ. */}
+        <span className={styles.diagramBadge ?? ''}>Sơ đồ đề xuất</span>
+        <span className={styles.diagramLegend ?? ''} aria-label="Chú giải màu thay đổi">
+          <span className={`${styles.legendDot ?? ''} ${styles.legendDotAdded ?? ''}`} aria-hidden="true" />
+          thêm
+          <span className={`${styles.legendDot ?? ''} ${styles.legendDotModified ?? ''}`} aria-hidden="true" />
+          sửa
+          <span className={`${styles.legendDot ?? ''} ${styles.legendDotRemoved ?? ''}`} aria-hidden="true" />
+          bỏ
+        </span>
+        <button
+          type="button"
+          className={view !== 'original' ? styles.diagramToggleOn ?? '' : undefined}
+          onClick={(ev) => {
+            ev.stopPropagation();
+            setDiagramView((prev) => ({ ...prev, [changeId]: 'proposed' }));
+          }}
+        >
+          ◉ Đề xuất
+        </button>
+        <button
+          type="button"
+          className={view === 'original' ? styles.diagramToggleOn ?? '' : undefined}
+          onClick={(ev) => {
+            ev.stopPropagation();
+            setDiagramView((prev) => ({ ...prev, [changeId]: 'original' }));
+          }}
+        >
+          ○ Gốc
+        </button>
+      </div>
+      <div className={styles.drawioFrame ?? ''}>
+        <DrawioViewer xml={state.xml} page={page} />
+      </div>
+    </>
+  );
+}
+
 export function DocRedlinePreview({
   projectId,
   file,
@@ -926,6 +1042,11 @@ export function DocRedlinePreview({
   // cáo WP3.
   defaultPanelOpen = true,
 }: { projectId: string; file: ProjectFile; defaultPanelOpen?: boolean }) {
+  // `file.name` có dạng `<stage>/review/docs/…/x.md` (xem popover rule ở
+  // dưới) — phần trước `/review/` là thư mục stage, dùng để dựng đường dẫn
+  // `flows/<flowId>/proposed.drawio` cho host sơ đồ draw.io (mục D
+  // wp-drreview-drawio-preview.yaml).
+  const workflowPrefix = file.name.split('/review/')[0] ?? '';
   const [editedText, setEditedText] = useState<string | null>(null);
   const [changesState, setChangesState] = useState<ChangesState>({ status: 'loading' });
   const [notesState, setNotes] = useState<DocRedlineNote[]>(NO_NOTES);
@@ -1402,11 +1523,21 @@ export function DocRedlinePreview({
   // 'proposed' (mặc định) render `quote`; 'original' render `before` — CHỈ đổi
   // những gì đang hiện, không ghi gì ra tài liệu (khác hẳn dismiss).
   const [diagramView, setDiagramView] = useState<Record<string, 'proposed' | 'original'>>({});
+  // Host của change `flow-diagram` sinh từ .drawio (mục D wp-drreview-drawio-
+  // preview.yaml) — KHÁC mermaid: marker chữ không mang mã nguồn, XML thật
+  // phải fetch riêng (xem DrawioDiagramHost). Không có khái niệm "mồ côi" như
+  // mermaid: một marker LUÔN sinh từ đúng một system change (replaceDrawioInSlice),
+  // nên `changeId` luôn parse được thẳng từ text marker, không cần đối chiếu
+  // `changes`.
+  const [drawioMounts, setDrawioMounts] = useState<
+    Array<{ host: HTMLElement; changeId: string; flowId: string }>
+  >([]);
 
   useEffect(() => {
     const container = docColRef.current;
     if (!container) {
       setDiagramMounts([]);
+      setDrawioMounts([]);
       return;
     }
     const mermaidHostClass = (styles.mermaidHost ?? '').trim();
@@ -1485,6 +1616,37 @@ export function DocRedlinePreview({
       mutations.push({ parent, pre, host, details });
     }
     setDiagramMounts(mounts);
+
+    // Sơ đồ draw.io (mục D wp-drreview-drawio-preview.yaml) — daemon chỉ để
+    // lại MỘT dòng caption marker (renderMarkdownToSafeHtml giữ `*…*` thành
+    // <em>, xem replaceDrawioInSlice trong docs-review-enrich.ts), không có
+    // mã nguồn nhúng như mermaid nên không gập <pre> xuống <details> — chỉ
+    // chèn một host <mark> NGAY SAU đoạn chứa marker (giữ nguyên dòng chữ đó)
+    // để DrawioDiagramHost portal toggle/badge/DrawioViewer vào.
+    const drawioHostClass = (styles.drawioHost ?? '').trim();
+    const drawioMountsNext: Array<{ host: HTMLElement; changeId: string; flowId: string }> = [];
+    const drawioMutations: Array<{ host: HTMLElement }> = [];
+    const emEls = Array.from(container.querySelectorAll<HTMLElement>('em'));
+    for (const em of emEls) {
+      const text = (em.textContent ?? '').trim();
+      if (!DRAWIO_MARKER_RE.test(text)) continue;
+      const flowIdMatch = DRAWIO_FLOWID_RE.exec(text);
+      if (!flowIdMatch) continue;
+      const flowId = flowIdMatch[1]!;
+      const changeId = `sys-flow-diagram-${flowId}`;
+      const block = em.closest('p') ?? em.parentElement;
+      const parent = block?.parentElement;
+      if (!block || !parent) continue;
+      const host = document.createElement('mark');
+      const on = paint.edit;
+      host.className = `${drawioHostClass} ${on ? styles.hl ?? '' : styles.hlOff ?? ''}`.trim();
+      host.setAttribute('style', on ? HL_INLINE_STYLE : HL_OFF_INLINE_STYLE);
+      host.dataset.changeId = changeId;
+      parent.insertBefore(host, block.nextSibling);
+      drawioMountsNext.push({ host, changeId, flowId });
+      drawioMutations.push({ host });
+    }
+    setDrawioMounts(drawioMountsNext);
     // N1 (wp3b.yaml): `loading` PHẢI có trong deps, không chỉ `docHtml`. Cột
     // tài liệu (nên cả `docColRef.current`) chỉ THỰC SỰ có mặt trong DOM khi
     // `!loading` (xem nhánh `{loading ? … : <div className={styles.wrap}>…}`
@@ -1504,6 +1666,7 @@ export function DocRedlinePreview({
         details.remove();
         host.remove();
       }
+      for (const { host } of drawioMutations) host.remove();
     };
   }, [docHtml, loading, previewMode, changes, hiddenAnnotationIds]);
 
@@ -1524,6 +1687,18 @@ export function DocRedlinePreview({
       m.host.setAttribute('style', on ? HL_INLINE_STYLE : HL_OFF_INLINE_STYLE);
     }
   }, [diagramMounts, paint.edit]);
+
+  // Cùng lý do như effect ngay trên, cho host draw.io (mục D wp-drreview-
+  // drawio-preview.yaml) — tách effect riêng vì `drawioMounts` là state khác,
+  // không phải để đổi hành vi effect mermaid ở trên (giữ NGUYÊN).
+  useEffect(() => {
+    const drawioHostClass = (styles.drawioHost ?? '').trim();
+    for (const m of drawioMounts) {
+      const on = paint.edit;
+      m.host.className = `${drawioHostClass} ${on ? styles.hl ?? '' : styles.hlOff ?? ''}`.trim();
+      m.host.setAttribute('style', on ? HL_INLINE_STYLE : HL_OFF_INLINE_STYLE);
+    }
+  }, [drawioMounts, paint.edit]);
 
   /** Mã mermaid ĐANG hiện cho một host: `before` khi người dùng bật "○ Gốc",
    *  ngược lại (mặc định) là `quote` — đúng đoạn đã dựng sẵn trong `code`. */
@@ -1618,17 +1793,21 @@ export function DocRedlinePreview({
    *  DOM sống loại bỏ hẳn cửa sổ đó: không có bản đồ nào để lệch.
    *
    *  `opts.hostOnly` (B2, wp3b.yaml — trước đây là `hostMarksFor` riêng): lọc
-   *  thêm class `mermaidHost` — cần cho sơ đồ mermaid, vì một mark chữ nào đó
-   *  lỡ khớp trùng nhãn (ví dụ `doc_refs` của change khác trỏ vào đúng đoạn
-   *  chữ trong khối mermaid) sẽ không đảm bảo phần tử ĐẦU TIÊN trả về luôn là
-   *  host. Không truyền `opts` → hành vi y hệt bản đồ cũ (mọi mark cùng id,
+   *  thêm class `mermaidHost` (mermaid) hoặc `drawioHost` (draw.io, mục D
+   *  wp-drreview-drawio-preview.yaml — cùng `kind: 'flow-diagram'` nhưng host
+   *  riêng, xem docblock DrawioDiagramHost) — cần cho sơ đồ, vì một mark chữ
+   *  nào đó lỡ khớp trùng nhãn (ví dụ `doc_refs` của change khác trỏ vào đúng
+   *  đoạn chữ trong khối sơ đồ) sẽ không đảm bảo phần tử ĐẦU TIÊN trả về luôn
+   *  là host. Không truyền `opts` → hành vi y hệt bản đồ cũ (mọi mark cùng id,
    *  không lọc host). */
   function marksFor(id: string, opts?: { hostOnly?: boolean }): HTMLElement[] {
     const container = docColRef.current;
     if (!container) return [];
-    const hostClass = opts?.hostOnly ? (styles.mermaidHost ?? '').trim() : '';
+    const hostClasses = opts?.hostOnly
+      ? [(styles.mermaidHost ?? '').trim(), (styles.drawioHost ?? '').trim()].filter(Boolean)
+      : [];
     return Array.from(container.querySelectorAll<HTMLElement>('mark[data-change-id]')).filter(
-      (el) => el.dataset.changeId === id && (!opts?.hostOnly || !hostClass || el.classList.contains(hostClass)),
+      (el) => el.dataset.changeId === id && (!opts?.hostOnly || hostClasses.length === 0 || hostClasses.some((c) => el.classList.contains(c))),
     );
   }
 
@@ -1984,10 +2163,13 @@ export function DocRedlinePreview({
 
   // B2 (wp3b.yaml), vế (1): sơ đồ mermaid không còn đóng góp vào `anchored`
   // (bỏ segment chữ khỏi injectHighlights — xem `requests` phía trên), nên
-  // phải tự xét riêng: có HOST khớp được với change này (diagramMounts) thì
-  // coi là neo được, dù `anchored.has(c.id)` giờ luôn false với loại này.
+  // phải tự xét riêng: có HOST khớp được với change này (diagramMounts —
+  // mermaid, hoặc drawioMounts — draw.io, mục D wp-drreview-drawio-preview.yaml)
+  // thì coi là neo được, dù `anchored.has(c.id)` giờ luôn false với loại này.
   const isAnchored = (c: DocRedlineChange) =>
-    c.kind === 'flow-diagram' ? diagramMounts.some((m) => m.changeId === c.id) : anchored.has(c.id);
+    c.kind === 'flow-diagram'
+      ? diagramMounts.some((m) => m.changeId === c.id) || drawioMounts.some((m) => m.changeId === c.id)
+      : anchored.has(c.id);
 
   const navigationItems = useMemo<RedlineNavigationItem[]>(() => {
     if (previewMode === 'notes') {
@@ -2002,7 +2184,7 @@ export function DocRedlinePreview({
       .filter((change) => change.kind !== 'flow-diagram' || kindFilter.diagram)
       .filter((change) => !isComponentTableChange(change) || kindFilter.compTable)
       .map((change) => ({ id: change.id, anchored: isAnchored(change), dismissed: change.status === 'dismissed' }));
-  }, [previewMode, notes, changes, anchored, diagramMounts, kindFilter, hiddenAnnotationIds]);
+  }, [previewMode, notes, changes, anchored, diagramMounts, drawioMounts, kindFilter, hiddenAnnotationIds]);
   const navigationPosition = getNavigationPosition(navigationItems, selectedId);
   function navigate(direction: 'previous' | 'next') {
     const id = getAdjacentNavigationId(navigationItems, selectedId, direction);
@@ -2251,6 +2433,20 @@ export function DocRedlinePreview({
                     <>
                       {m.changeId ? (
                         <div className={styles.diagramToggle ?? ''} role="group" aria-label="Xem sơ đồ gốc hay đề xuất">
+                          {/* WP-drreview-mmd-color-badge: badge "Sơ đồ đề
+                              xuất" + chú giải 3 màu ở ĐẦU hàng — sơ đồ được
+                              thay luôn có màu (daemon bù khi agent quên tô,
+                              xem mermaid-highlight.ts), người xem cần biết
+                              đây là bản có so sánh, không phải nguyên bản. */}
+                          <span className={styles.diagramBadge ?? ''}>Sơ đồ đề xuất</span>
+                          <span className={styles.diagramLegend ?? ''} aria-label="Chú giải màu thay đổi">
+                            <span className={`${styles.legendDot ?? ''} ${styles.legendDotAdded ?? ''}`} aria-hidden="true" />
+                            thêm
+                            <span className={`${styles.legendDot ?? ''} ${styles.legendDotModified ?? ''}`} aria-hidden="true" />
+                            sửa
+                            <span className={`${styles.legendDot ?? ''} ${styles.legendDotRemoved ?? ''}`} aria-hidden="true" />
+                            bỏ
+                          </span>
                           <button
                             type="button"
                             className={diagramView[m.changeId] !== 'original' ? styles.diagramToggleOn ?? '' : undefined}
@@ -2272,11 +2468,36 @@ export function DocRedlinePreview({
                             ○ Gốc
                           </button>
                         </div>
-                      ) : null}
+                      ) : (
+                        // Sơ đồ mồ côi (không change nào sở hữu, xem B1
+                        // wp3b.yaml) — không có gì để so sánh, không toggle,
+                        // không chú giải, chỉ một badge mờ báo "Nguyên bản".
+                        <div className={styles.diagramBadgeRow ?? ''}>
+                          <span className={styles.diagramBadgeOriginal ?? ''}>Nguyên bản</span>
+                        </div>
+                      )}
                       <MermaidDiagram code={activeDiagramCode(m)} initialFit="width" />
                     </>,
                     m.host,
                     `diagram-${i}`,
+                  ),
+                )}
+                {/* Sơ đồ draw.io sống, portal vào host chèn NGAY SAU đoạn
+                    marker (xem effect dựng drawioMounts + docblock
+                    DrawioDiagramHost ở trên). */}
+                {drawioMounts.map((m, i) =>
+                  createPortal(
+                    <DrawioDiagramHost
+                      key={m.changeId}
+                      projectId={projectId}
+                      workflowPrefix={workflowPrefix}
+                      flowId={m.flowId}
+                      changeId={m.changeId}
+                      diagramView={diagramView}
+                      setDiagramView={setDiagramView}
+                    />,
+                    m.host,
+                    `drawio-${i}`,
                   ),
                 )}
               </div>

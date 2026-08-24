@@ -1467,6 +1467,37 @@
   outline: 2px solid var(--accent, #0066b3) !important;
   outline-offset: -1px;
 }
+
+/* ── WP-drreview-drawio-preview mục D — sơ đồ draw.io trong cột tài liệu ────
+   Host chèn NGAY SAU đoạn marker (không gập/di chuyển gì như mermaid — không
+   có mã nguồn nhúng để gập, xem DrawioDiagramHost trong DocRedlinePreview.tsx).
+   Class RIÊNG (không dùng lại .mermaidHost) vì khung viewer cần cao cố định,
+   khác khối mã mermaid co theo nội dung. */
+.drawioHost {
+  display: block;
+  margin: 10px 0;
+  padding: 10px;
+  border-radius: 8px;
+}
+.drawioHost.hlActive {
+  background: transparent !important;
+  color: inherit;
+  box-shadow: none;
+  outline: 2px solid var(--accent, #0066b3) !important;
+  outline-offset: -1px;
+}
+.drawioFrame {
+  height: 420px;
+  position: relative;
+  border: 1px solid var(--border, #e1e5eb);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.drawioError {
+  margin: 6px 0 0;
+  font-size: 11.5px;
+  color: var(--text-soft, #6b7280);
+}
 .diagramToggle {
   display: flex;
   gap: 6px;
@@ -1485,6 +1516,71 @@
   border-color: var(--accent, #0066b3) !important;
   color: var(--accent, #0066b3) !important;
   font-weight: 700;
+}
+
+/* ── WP-drreview-mmd-color-badge — badge "Sơ đồ đề xuất"/"Nguyên bản" + chú
+   giải 3 màu, ở ĐẦU hàng .diagramToggle. Sơ đồ được thay luôn có màu (daemon
+   bù khi agent dr-flow quên tô, xem apps/daemon/src/flow-ux/mermaid-highlight.ts)
+   nên badge accent nổi bật hợp lý; "Nguyên bản" xám mờ vì không có gì để so
+   sánh. `.legendDot*` khớp CHÍNH XÁC 3 classDef daemon bù để chú giải luôn
+   đúng màu thật trên sơ đồ (không phải màu suy diễn ở phía web). */
+.diagramBadge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: 11px;
+  font-weight: 700;
+  background: color-mix(in srgb, var(--accent, #0066b3) 14%, transparent);
+  color: var(--accent, #0066b3);
+}
+.diagramBadgeOriginal {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: 11px;
+  font-weight: 500;
+  background: var(--bg-muted, #eef0f2);
+  color: var(--text-soft, #6b7280);
+  opacity: 0.85;
+}
+.diagramBadgeRow {
+  display: flex;
+  margin-bottom: 8px;
+}
+.diagramLegend {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10.5px;
+  color: var(--text-soft, #6b7280);
+  opacity: 0.85;
+}
+.legendDot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  border: 1px solid transparent;
+  margin-left: 6px;
+}
+.legendDot:first-child {
+  margin-left: 0;
+}
+/* Màu cố định — khớp CHANGE_STYLE (draw.io, patch.ts) và 3 classDef mermaid
+   (mermaid-highlight.ts), KHÔNG đổi theo theme. */
+.legendDotAdded {
+  background: #d5e8d4;
+  border-color: #82b366;
+}
+.legendDotModified {
+  background: #fff2cc;
+  border-color: #d6b656;
+}
+.legendDotRemoved {
+  background: #f8cecc;
+  border-color: #b85450;
 }
 
 /* ── WP3 — panel chú giải ẩn/hiện ───────────────────────────────────────────

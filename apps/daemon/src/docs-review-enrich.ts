@@ -149,6 +149,161 @@ export function replaceDiagramInSlice(
   return { text, change };
 }
 
+/* ── 1b. Sơ đồ draw.io (WP-drreview-drawio-preview) ─────────────────────────
+ * Khác mermaid (mã nhúng thẳng trong tài liệu, so khớp được bằng NỘI DUNG),
+ * một sơ đồ draw.io chỉ để lại ẢNH (attachments/<stem>-p<N>.png hoặc
+ * <stem>.png, xem bas-client.ts:expandDrawioPagesInExportView) + một dòng
+ * "nguồn sơ đồ" trỏ tới <stem>.drawio — không có mã nguồn để so khớp trong
+ * markdown. daemon KHÔNG render draw.io server-side (bas chỉ có export_view
+ * của Confluence, không có renderer local — xem "Đã tự chốt" trong
+ * wp-drreview-drawio-preview.yaml), nên slice chỉ mang một dòng caption
+ * marker; web (DocRedlinePreview.tsx) tự fetch flows/<flowId>/proposed.drawio
+ * và render bằng DrawioViewer khi gặp đúng marker này. */
+
+/** Khớp `<stem>` CẢ dạng thô lẫn dạng đã `encodeURIComponent` — bas-client.ts
+ *  ghi tên PNG per-page KHÔNG encode (`path.basename(abs)` thô, xem
+ *  bas-client.ts:1042) nhưng html-to-markdown có thể tự percent-encode
+ *  khoảng trắng/dấu tiếng Việt khi dựng `![…](…)`; kiểm CẢ HAI dạng để không
+ *  lệch tuỳ converter (xem "Sự thật đã xác minh" trong yaml). */
+function drawioTargetPattern(stem: string, suffix: string): RegExp {
+  const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const variants = Array.from(new Set([stem, encodeURIComponent(stem)])).map(escapeRe);
+  return new RegExp(`(?:${variants.join('|')})${suffix}`, 'i');
+}
+
+const DRAWIO_IMG_LINE_RE = /!\[[^\]]*\]\([^)]*\)|<img\b[^>]*>/i;
+
+/** Tìm khối "ảnh sơ đồ draw.io" cũ trong `sliceText`. Ưu tiên khớp THEO STEM:
+ *  RUN LIÊN TỤC các dòng ảnh khớp `<stem>` (đích chứa `<stem>-p<số>.png` hoặc
+ *  `<stem>.png`) cộng dòng "nguồn sơ đồ" đi kèm (chứa `<stem>.drawio`) nếu có
+ *  ngay sau, cho phép dòng trống xen giữa. `start`/`end` là DÒNG ảnh khớp
+ *  ĐẦU/dòng cuối của khối đã gộp — `end` chỉ nới thêm khi gặp một dòng
+ *  ảnh/nguồn khớp khác (blank ở giữa không tự nới `end`, chỉ được "nuốt" vào
+ *  khối vì nằm giữa hai mốc đã nới).
+ *
+ *  FALLBACK (review sau lần ship đầu — sơ đồ 1-TRANG giữ TÊN GỐC Confluence
+ *  gán cho ảnh preview, KHÔNG phải `<stem>.png`: xem bas-client.ts
+ *  `expandDrawioPagesInExportView`, nhánh `pages.length <= 1` gọi
+ *  `appendAfterImage(out, meta.previewName, refHtml)` — ảnh giữ NGUYÊN
+ *  `meta.previewName`, chỉ dòng NGUỒN mới mang tên `<stem>.drawio`, nên
+ *  matcher theo stem ở TRÊN trượt hoàn toàn với trường hợp này): khi KHÔNG có
+ *  ảnh nào khớp stem, tìm dòng NGUỒN (khớp `<stem>.drawio`, tái dùng
+ *  `srcTargetRe`) rồi gom RUN LIÊN TỤC các dòng ẢNH BẤT KỲ (không cần khớp
+ *  stem — dòng nguồn do CHÍNH ingest sinh nên định danh đúng sơ đồ hơn tên
+ *  ảnh) NẰM NGAY TRÊN nó, cho phép dòng trống xen giữa, dừng khi gặp dòng
+ *  không phải ảnh/không trống. Không có ảnh nào ngay trên → khối chỉ còn
+ *  dòng nguồn (vẫn thay được — phòng thủ trường hợp ảnh bị xoá tay).
+ *  Nhánh khớp-theo-stem LUÔN được thử trước; fallback chỉ chạy khi nhánh đó
+ *  không tìm thấy ảnh nào.
+ *
+ *  Trả `null` khi CẢ HAI đều không tìm thấy — section này không chứa sơ đồ
+ *  này (trang/section khác của cùng dự án dr-flow, hoặc slice không dùng
+ *  draw.io) — gọi phía server.ts hiểu đây là bỏ qua, không phải lỗi. */
+function findDrawioImageBlock(sliceText: string, stem: string): { start: number; end: number } | null {
+  const imgTargetRe = drawioTargetPattern(stem, '(?:-p\\d+)?\\.png');
+  const srcTargetRe = drawioTargetPattern(stem, '\\.drawio');
+  const lines = sliceText.split(/\r?\n/);
+  const isImgMatch = (line: string) => DRAWIO_IMG_LINE_RE.test(line) && imgTargetRe.test(line);
+  const isSrcMatch = (line: string) => srcTargetRe.test(line);
+  const isAnyImgLine = (line: string) => DRAWIO_IMG_LINE_RE.test(line);
+
+  const imgIdx: number[] = [];
+  lines.forEach((line, i) => {
+    if (isImgMatch(line)) imgIdx.push(i);
+  });
+
+  if (imgIdx.length > 0) {
+    const start = imgIdx[0]!;
+    let end = imgIdx[imgIdx.length - 1]!;
+    let i = end + 1;
+    while (i < lines.length) {
+      const line = lines[i] ?? '';
+      if (line.trim() === '') {
+        i += 1;
+        continue;
+      }
+      if (isImgMatch(line) || isSrcMatch(line)) {
+        end = i;
+        i += 1;
+        continue;
+      }
+      break;
+    }
+    return { start, end };
+  }
+
+  // Fallback: không có ảnh nào khớp stem — định vị qua dòng NGUỒN (đích thật
+  // của sơ đồ này, do ingest sinh) rồi lùi lên gom ảnh BẤT KỲ liền kề.
+  const srcIdx = lines.findIndex((line) => isSrcMatch(line));
+  if (srcIdx === -1) return null;
+  let start = srcIdx;
+  let i = srcIdx - 1;
+  while (i >= 0) {
+    const line = lines[i] ?? '';
+    if (line.trim() === '') {
+      i -= 1;
+      continue;
+    }
+    if (isAnyImgLine(line)) {
+      start = i;
+      i -= 1;
+      continue;
+    }
+    break;
+  }
+  return { start, end: srcIdx };
+}
+
+/** Thay khối ảnh + dòng nguồn draw.io cũ (xem {@link findDrawioImageBlock})
+ *  bằng MỘT dòng caption marker — xem docblock mục "1b" ở trên cho lý do
+ *  không có mã nguồn để nhúng thẳng như mermaid.
+ *
+ *  `opts.diagramRel` là đường dẫn TƯƠNG ĐỐI tới file `.drawio` NGUỒN
+ *  (`FlowIndexEntry.diagram`, ghi bởi flow-ux/index.ts mục A của WP này) —
+ *  basename của nó (GIỮ NGUYÊN tiền tố số Confluence gắn, xem
+ *  bas-client.ts:diagramFileStem) là `stem` dùng để so khớp ảnh/dòng nguồn cũ.
+ *
+ *  Trả `null` khi {@link findDrawioImageBlock} không tìm thấy dòng ảnh nào
+ *  khớp — section này không chứa sơ đồ này, không phải lỗi. */
+export function replaceDrawioInSlice(
+  sliceText: string,
+  opts: {
+    diagramRel: string;
+    flowId: string;
+    uxReview: { verdict?: string; summary?: string };
+  },
+): { text: string; change: DocChange } | null {
+  const diagramBase = opts.diagramRel.split(/[\\/]/).pop() ?? opts.diagramRel;
+  const stem = diagramBase.replace(/\.drawio$/i, '');
+  const block = findDrawioImageBlock(sliceText, stem);
+  if (!block) return null;
+  const { start, end } = block;
+  const eol = sliceText.includes('\r\n') ? '\r\n' : '\n';
+  const lines = sliceText.split(/\r?\n/);
+  const beforeBlock = lines.slice(start, end + 1).join(eol);
+
+  const markerLine = `*flow-diagram-drawio — sơ đồ ĐỀ XUẤT sau rà soát UX (nguồn gốc: ${diagramBase}; đề xuất: flows/${opts.flowId}/proposed.drawio)*`;
+
+  const newLines = [...lines.slice(0, start), markerLine, ...lines.slice(end + 1)];
+  const text = newLines.join(eol);
+
+  const verdict = opts.uxReview.verdict;
+  const severity: DocChangeSeverity = verdict === 'needs-improvement' || verdict === 'fail' ? 'major' : 'minor';
+  const reason = (opts.uxReview.summary ?? '').trim().slice(0, 160) || 'Thay sơ đồ luồng bằng bản đề xuất sau rà soát UX.';
+
+  const change: DocChange = {
+    id: `sys-flow-diagram-${opts.flowId}`,
+    kind: 'flow-diagram',
+    severity,
+    rule_id: `flows/${opts.flowId}/ux-review.json`,
+    origin: 'system',
+    before: beforeBlock,
+    quote: markerLine,
+    reason,
+  };
+  return { text, change };
+}
+
 /* ── 2. Ánh xạ màn → section ─────────────────────────────────────────────── */
 
 const HEADING_LINE_RE = /^#{1,6}\s/;

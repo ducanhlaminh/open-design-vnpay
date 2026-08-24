@@ -23,6 +23,11 @@ import { applyPatch, parsePatchDoc, type PatchOp } from './patch.js';
 import { drawioPageToFlowchart, mermaidToFlowchart, resolveScreenCells, type FlowchartDoc } from './to-flowchart.js';
 import { svgForImgEmbedding } from '../bas/svg-xml.js';
 import { findEmbeddedMermaid, isMermaidFlowchart, looksLikeMermaid, replaceCreateViewerCalls } from './mermaid-detect.js';
+// WP-drreview-mmd-color-badge: bù màu proposed.mmd khi agent quên tô — xem
+// docblock ensureProposedMermaidHighlight. Import vòng (mermaid-highlight.ts
+// tái dùng parseMermaidEdgesLoose export ở file này) an toàn ở ESM vì cả hai
+// phía chỉ gọi hàm nhau BÊN TRONG thân hàm, không ở top-level module.
+import { ensureProposedMermaidHighlight } from './mermaid-highlight.js';
 
 export type FlowKind = 'drawio' | 'mermaid' | 'text';
 
@@ -79,6 +84,13 @@ export interface FlowIndexEntry {
   /** Mapping màn (`screens.json`) daemon không dùng được — sự cố #5d13309f:
    *  trước đây bị loại thẳng tay, không một cảnh báo. Chỉ ghi khi có. */
   screensDropped?: { cell: string; key: string; reason: string }[];
+  /** Diagram nguồn (`.drawio`/`.mmd` dưới docs) — chỉ có ở `FlowInput.diagram`,
+   *  KHÔNG được persist trước WP-drreview-drawio-preview. docs-review-enrich
+   *  cần field này để splice sơ đồ .drawio vào lát review (đối chiếu tên file
+   *  đính kèm trong markdown gốc, xem replaceDrawioInSlice). Optional để index
+   *  cũ (đã ghi trước WP này) vẫn parse hợp lệ — enrich coi thiếu field này là
+   *  "bỏ qua splice drawio", giống hệt hành vi trước khi có WP. */
+  diagram?: string;
 }
 
 const DOC_ROOTS = ['docs-feature', 'docs'];
@@ -555,7 +567,7 @@ function screensOf(doc: FlowchartDoc | null, names: Record<string, string>): { k
 
 /** Một cạnh mermaid parse tối giản — chỉ `from`/`to`/`label?`, đủ để
  *  {@link findUnlabeledParallelEdges} so cặp (from, to) giữa hai bản sơ đồ. */
-interface LooseMermaidEdge {
+export interface LooseMermaidEdge {
   from: string;
   to: string;
   label?: string;
@@ -588,7 +600,7 @@ const PLAIN_ARROW_RE = /^(.+?)\s*-->\s*(.+)$/;
  *  một đoạn `proposed.mmd`/`as-is.mmd` bất kỳ (có hay không dòng mở đầu) đều
  *  phải parse được. Bỏ qua dòng chú thích (`%%`), khai báo style (`classDef`,
  *  `class`) và dòng mở đầu (`flowchart`/`graph`) — chúng không phải cạnh. */
-function parseMermaidEdgesLoose(code: string): LooseMermaidEdge[] {
+export function parseMermaidEdgesLoose(code: string): LooseMermaidEdge[] {
   const edges: LooseMermaidEdge[] = [];
   const lines = code.replace(/\r\n?/g, '\n').split('\n');
 
@@ -732,7 +744,19 @@ export async function finalizeFlowUx(cwd: string): Promise<FinalizeResult> {
   for (const input of inputs) {
     covered.add(input.id);
     const dir = path.join(flowsDir, input.id);
-    const entry: FlowIndexEntry = { id: input.id, title: input.title, source: input.source, kind: input.kind, screens: [], files: {} };
+    // WP-drreview-drawio-preview mục A: persist `diagram` (path .drawio/.mmd
+    // nguồn, có sẵn ở FlowInput từ prepareFlowUxInputs) vào index.json — trước
+    // WP này bị bỏ rơi hoàn toàn dù đã có trên FlowInput, nên
+    // docs-review-enrich không có cách nào đối chiếu tên file .drawio gốc.
+    const entry: FlowIndexEntry = {
+      id: input.id,
+      title: input.title,
+      source: input.source,
+      kind: input.kind,
+      screens: [],
+      files: {},
+      ...(input.diagram ? { diagram: input.diagram } : {}),
+    };
     const screensFile = (await readJson<ScreensFile>(path.join(dir, 'screens.json'))) ?? {};
     const cellScreens = screensFile.cells ?? {};
     const names = screensFile.names ?? {};
@@ -805,6 +829,20 @@ export async function finalizeFlowUx(cwd: string): Promise<FinalizeResult> {
       if (proposed != null && looksLikeMermaid(proposed)) {
         entry.hasProposal = true;
         entry.files!.proposed = `flows/${input.id}/proposed.mmd`;
+        // WP-drreview-mmd-color-badge: bù màu 3 classDef od-added/od-modified/
+        // od-removed khi agent quên tô (xem docblock ensureProposedMermaidHighlight)
+        // — ghi đè proposed.mmd NGAY tại đây để mọi caller khác đọc file này
+        // sau finalize (kể cả docs-review-enrich của một dự án cũ chưa chạy
+        // lại dr-flow) đều thấy bản đã có màu. Ghi thất bại chỉ console.warn
+        // (fail-soft) — entry vẫn set hasProposal như trước.
+        const ensuredProposed = ensureProposedMermaidHighlight(code, proposed);
+        if (ensuredProposed !== proposed) {
+          try {
+            await fs.promises.writeFile(path.join(dir, 'proposed.mmd'), ensuredProposed, 'utf8');
+          } catch (writeError) {
+            console.warn(`[flow-ux] ${input.id}: không ghi được proposed.mmd đã bù màu:`, writeError);
+          }
+        }
         // WP-dr-review-readability mục D: cảnh báo (KHÔNG fail) khi nhánh đề
         // xuất thêm một đường mới nhưng vẫn giữ nguyên cạnh cũ bị thay thế,
         // không nhãn — xem docblock findUnlabeledParallelEdges.
