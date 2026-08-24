@@ -28,6 +28,10 @@ import {
   pageOutlinePath,
   systemChangesPath,
   renderPageOutline,
+  dedupeNotes,
+  headingLevel,
+  isParentHeadingSection,
+  clipQuote,
   type DocChange,
   type DocNote,
   type DocPageResult,
@@ -1707,4 +1711,160 @@ describe('WP8a — validateChanges opts.locateIn, mergeChangeReports sectionsTot
     assert.match(summaryMd, /Trang A.*s07 "Mở đầu"/);
     assert.match(summaryMd, /Đã sửa \(10\/12 section\)/);
   });
+});
+
+/* ── WP-dr-review-readability mục B: dedupeNotes ──────────────────────────── */
+
+test('dedupeNotes: 3 note y hệt nhau (cùng kind/rule_id/finding/suggestion) → gộp còn 1, droppedCount 2, giữ anchor của note ĐẦU', () => {
+  const notes: DocNote[] = [
+    {
+      id: 'n1',
+      kind: 'component',
+      severity: 'major',
+      rule_id: 'comp/PAGE__6.1.1.screen.json',
+      anchor: 'Trường Họ và tên',
+      finding: 'Dùng Text Field State=Default',
+      suggestion: 'Dùng Text Field',
+    },
+    {
+      id: 'n2',
+      kind: 'component',
+      severity: 'major',
+      rule_id: 'comp/PAGE__6.1.1.screen.json',
+      anchor: 'Trường Số điện thoại',
+      finding: 'Dùng Text Field State=Default',
+      suggestion: 'Dùng Text Field',
+    },
+    {
+      id: 'n3',
+      kind: 'component',
+      severity: 'major',
+      rule_id: 'comp/PAGE__6.1.1.screen.json',
+      anchor: 'Trường Email',
+      finding: 'Dùng Text Field State=Default',
+      suggestion: 'Dùng Text Field',
+    },
+  ];
+  const { notes: out, droppedCount } = dedupeNotes(notes);
+  assert.equal(out.length, 1);
+  assert.equal(droppedCount, 2);
+  assert.equal(out[0]!.id, 'n1');
+  assert.equal(out[0]!.anchor, 'Trường Họ và tên');
+});
+
+test('dedupeNotes: khác `finding` thì KHÔNG gộp', () => {
+  const notes: DocNote[] = [
+    { id: 'n1', kind: 'component', severity: 'major', anchor: 'A', finding: 'Dùng Text Field State=Default', suggestion: 'Dùng Text Field' },
+    { id: 'n2', kind: 'component', severity: 'major', anchor: 'B', finding: 'Dùng Button State=Ghost', suggestion: 'Dùng Button' },
+  ];
+  const { notes: out, droppedCount } = dedupeNotes(notes);
+  assert.equal(out.length, 2);
+  assert.equal(droppedCount, 0);
+});
+
+test('dedupeNotes: `rule_id` vắng mặt (undefined) và `rule_id` rỗng (\'\') coi như NHAU', () => {
+  const notes: DocNote[] = [
+    { id: 'n1', kind: 'gap', severity: 'minor', anchor: 'A', finding: 'Thiếu mô tả', suggestion: 'Bổ sung' },
+    { id: 'n2', kind: 'gap', severity: 'minor', rule_id: '', anchor: 'B', finding: 'Thiếu mô tả', suggestion: 'Bổ sung' },
+  ];
+  const { notes: out, droppedCount } = dedupeNotes(notes);
+  assert.equal(out.length, 1);
+  assert.equal(droppedCount, 1);
+});
+
+/* ── WP-dr-review-readability mục C: headingLevel / isParentHeadingSection ── */
+
+test('headingLevel: đếm số `#` dẫn đầu; rỗng/không phải heading => 0', () => {
+  assert.equal(headingLevel('# Một'), 1);
+  assert.equal(headingLevel('### Ba'), 3);
+  assert.equal(headingLevel('###### Sáu'), 6);
+  assert.equal(headingLevel(''), 0);
+  assert.equal(headingLevel('Không phải heading'), 0);
+});
+
+test('isParentHeadingSection: heading rỗng + section kế tiếp SÂU HƠN => true (MỤC CHA)', () => {
+  const md = ['## 6.1 Nhóm cha', '### 6.1.1 Con', 'Nội dung con.'].join('\n');
+  const sections = splitSections(md, { minLines: 1 });
+  assert.equal(sections.length, 2);
+  assert.equal(sections[0]!.bodyLines, 0);
+  assert.equal(isParentHeadingSection(sections, 0), true);
+});
+
+test('isParentHeadingSection: heading rỗng + section kế tiếp CÙNG cấp => false (rỗng thật, không phải mục cha)', () => {
+  const md = ['## 6.1 A', '## 6.2 B', 'Nội dung B.'].join('\n');
+  const sections = splitSections(md, { minLines: 1 });
+  assert.equal(sections.length, 2);
+  assert.equal(sections[0]!.bodyLines, 0);
+  assert.equal(isParentHeadingSection(sections, 0), false);
+});
+
+test('isParentHeadingSection: heading rỗng nằm CUỐI trang (không có section kế tiếp) => false', () => {
+  const sections = splitSections('## 6.9 Cuối cùng', { minLines: 1 });
+  assert.equal(sections.length, 1);
+  assert.equal(sections[0]!.bodyLines, 0);
+  assert.equal(isParentHeadingSection(sections, 0), false);
+});
+
+test('isParentHeadingSection: section có bodyLines > 0 => false (không xét section có nội dung)', () => {
+  const md = ['## 6.1 Nhóm cha', '### 6.1.1 Con', 'Nội dung con.'].join('\n');
+  const sections = splitSections(md, { minLines: 1 });
+  assert.ok(sections[1]!.bodyLines > 0);
+  assert.equal(isParentHeadingSection(sections, 1), false);
+});
+
+test('renderPageOutline: heading CHA rỗng gắn cờ "MỤC CHA — nội dung ở mục con" thay vì "RỖNG — chỉ có tiêu đề"', () => {
+  const md = ['## 6.1 Nhóm cha', '### 6.1.1 Con', 'Nội dung con.'].join('\n');
+  const sections = splitSections(md, { minLines: 1 });
+  const out = renderPageOutline({
+    page: 'Trang X',
+    mdPath: 'docs/x.md',
+    reviewRel: 'review/docs/x.md',
+    totalLines: md.split('\n').length,
+    sections,
+  });
+  assert.match(out, /MỤC CHA — nội dung ở mục con/);
+  assert.doesNotMatch(out, /RỖNG — chỉ có tiêu đề/);
+});
+
+/* ── WP-dr-review-readability mục E: clipQuote / validateChanges / mergeChangeReports ── */
+
+test('clipQuote: gộp whitespace thành một dấu cách, cắt ranh giới từ (mặc định 80 ký tự)', () => {
+  assert.equal(clipQuote('  nhiều    khoảng   trắng  '), 'nhiều khoảng trắng');
+  const long = Array.from({ length: 30 }, (_, i) => `tu${i}`).join(' ');
+  const result = clipQuote(long, 20);
+  assert.ok(result.length <= 21, `phải ≤ 21 ký tự (20 + '…'), nhận được ${result.length}`);
+  assert.ok(result.endsWith('…'));
+});
+
+test('validateChanges: dòng dài 300 ký tự không có change bao phủ → lỗi chứa bản CẮT ~80 ký tự + "…", KHÔNG chứa nguyên văn 300 ký tự', () => {
+  const longLine = 'a'.repeat(300);
+  const original = 'Dòng gốc bình thường.';
+  const revised = `Dòng gốc bình thường.\n${longLine}`;
+  const errors = validateChanges(original, revised, []);
+  const match = errors.find((e) => e.includes('Dòng đã đổi/thêm nhưng không có change.quote'));
+  assert.ok(match, 'phải có lỗi dòng thêm không khai báo');
+  assert.ok(match!.includes(`${'a'.repeat(80)}…`), 'thông báo phải chứa bản đã cắt ở ranh giới 80 ký tự');
+  assert.ok(!match!.includes(longLine), 'thông báo KHÔNG được chứa nguyên văn 300 ký tự');
+});
+
+test('mergeChangeReports: sectionsFailed có error dài 1.000 ký tự → dòng summary "Section không đạt" ngắn (≤ ~300 ký tự), không dump nguyên văn', () => {
+  const longErr = `Lỗi rất dài: ${'x'.repeat(1000)}`;
+  const results: DocPageResult[] = [
+    {
+      slug: 'a',
+      page: 'Trang A',
+      docPath: 'docs/a.md',
+      reviewPath: 'review/docs/a.md',
+      status: 'succeeded',
+      changes: [],
+      notes: [],
+      sectionsTotal: 2,
+      sectionsFailed: [{ index: 0, heading: '## 1. X', errors: [longErr] }],
+    },
+  ];
+  const { summaryMd } = mergeChangeReports(results);
+  const line = summaryMd.split('\n').find((l) => l.includes('Trang A') && l.includes('s00'));
+  assert.ok(line, 'phải có dòng section không đạt cho Trang A s00');
+  assert.ok(line!.length <= 300, `dòng summary phải ngắn, nhận được ${line!.length} ký tự`);
+  assert.ok(!line!.includes('x'.repeat(1000)), 'dòng summary KHÔNG được dump nguyên văn lỗi 1.000 ký tự');
 });

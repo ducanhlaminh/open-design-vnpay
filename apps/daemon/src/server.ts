@@ -607,6 +607,8 @@ import {
   parseNotesFile,
   validateNotes,
   partitionNotesByAnchor,
+  dedupeNotes,
+  isParentHeadingSection,
   validateRuleIds,
   findReviewMarkers,
   collectCriteriaAnchors,
@@ -18381,6 +18383,13 @@ export async function startServer({
           // bảng cấu thành cần chèn, màn không định vị được…). Chuỗi rỗng =
           // section này không dính flows/comp gì — kickoff y hệt trước WP2.
           enrichKickoff: string = '',
+          // Mảng ĐẦY ĐỦ các section của TRANG (không chỉ `sec` của riêng lượt
+          // này) — cần để phân biệt heading rỗng THẬT (gap) với heading rỗng
+          // là MỤC CHA của các mục con sâu hơn (xem isParentHeadingSection,
+          // docs-review.ts). `sections` gốc sống trong scope của `runOnePage`
+          // (destructure từ `unit`), không phải của hàm này — nên phải truyền
+          // vào thay vì đọc closure.
+          pageSections: DocPageSection[] = [],
         ): Promise<{ ok: boolean; canceled: boolean; error?: string }> => {
           const conversationId = task.id;
           task.status = 'running';
@@ -18403,9 +18412,18 @@ export async function startServer({
               ? ` Section này nhúng ${sec.imageRefs.length} ảnh: ${sec.imageRefs.map((r) => `"${r}"`).join(', ')}. ` +
                 `BẮT BUỘC mở TỪNG ảnh bằng Read (chúng là file thật nằm cạnh bản clone) trước khi kết luận bất cứ điều gì về component, biến thể, trạng thái hay layout. Không mở ảnh thì KHÔNG được tạo change/note nhóm component.`
               : ' Section này không nhúng ảnh nào.';
+          // Heading rỗng KHÔNG luôn là gap: một heading CHA thuần gom nhóm (vd
+          // "6.1", "6.2") rỗng vì nội dung thật nằm ở các mục con ngay dưới
+          // nó (6.1.1, 6.1.2…) — đo trên một dự án thật, 5 note "Nặng" bị ghi
+          // oan cho đúng ca này. Chỉ heading LÁ rỗng mới là gap thật.
+          const secIdxInPage = pageSections.findIndex((s) => s.index === sec.index);
+          const isParentHeading =
+            sec.bodyLines === 0 && secIdxInPage >= 0 && isParentHeadingSection(pageSections, secIdxInPage);
           const emptyLine =
             sec.bodyLines === 0
-              ? ` LƯU Ý: heading này KHÔNG CÓ NỘI DUNG (chỉ có dòng tiêu đề). Đó là một gap mức major — ghi một note vào "${secNotesRel}", KHÔNG tự bịa nội dung/sơ đồ vào tài liệu.`
+              ? isParentHeading
+                ? ` LƯU Ý: heading này là MỤC CHA — nội dung nằm ở các mục con ngay dưới (xem mục lục). KHÔNG coi đây là gap, KHÔNG ghi note "heading rỗng" cho nó.`
+                : ` LƯU Ý: heading này KHÔNG CÓ NỘI DUNG (chỉ có dòng tiêu đề). Đó là một gap mức major — ghi một note vào "${secNotesRel}", KHÔNG tự bịa nội dung/sơ đồ vào tài liệu.`
               : '';
           const outlineRel = pageOutlinePath(reviewRel);
           const kickoff =
@@ -18771,6 +18789,7 @@ export async function startServer({
                     sec,
                     tasks[taskIndexBySection[idx]![si]!]!,
                     enrichKickoffBySection.get(sec.index) ?? '',
+                    sections,
                   );
                 });
               }),
@@ -19062,6 +19081,19 @@ export async function startServer({
           } else {
             // Đạt: ghi file gộp cấp TRANG (đúng shape DocRedlinePreview đang
             // đọc), rồi xoá mọi file tạm theo section.
+            //
+            // dedupeNotes TRƯỚC KHI ghi + trước khi `notes` được dùng cho
+            // đếm/summary bên dưới (results[idx].notes ở cuối hàm đọc CHÍNH
+            // biến này) — hai section khác nhau của cùng trang có thể ghi hai
+            // note giống hệt nhau cho cùng một component (skill chỉ gộp được
+            // trong phạm vi MỘT section, xem docs-spec-review/SKILL.md Bước 1
+            // nhóm 5). Đo trên một dự án thật: 44/57 note của một trang là
+            // note trùng nhau.
+            const dedupedNotes = dedupeNotes(notes);
+            notes = dedupedNotes.notes;
+            if (dedupedNotes.droppedCount > 0) {
+              warnings.push(`Đã gộp ${dedupedNotes.droppedCount} note trùng lặp.`);
+            }
             await fs.promises.writeFile(
               path.join(cwd, reviewRel.replace(/\.md$/i, '.changes.json')),
               JSON.stringify(changes, null, 2),

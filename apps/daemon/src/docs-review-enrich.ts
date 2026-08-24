@@ -380,6 +380,98 @@ export function parseCatalogue(componentsMd: string): Map<string, { name: string
   return map;
 }
 
+/* ── 3b. Cắt chữ không dump nguyên guide, không cắt giữa từ (WP-dr-review-readability) ── */
+
+/** Cắt `s` về tối đa `max` ký tự tại RANH GIỚI TỪ — không bao giờ cắt giữa một
+ *  từ. `s` ngắn hơn hoặc bằng `max` → trả nguyên văn, không thêm gì. Dài hơn
+ *  → tìm khoảng trắng CUỐI CÙNG trong `s.slice(0, max)`, cắt tại đó (bỏ
+ *  khoảng trắng thừa) rồi thêm `…`; không có khoảng trắng nào trong phạm vi đó
+ *  (một "từ" dài hơn cả `max`, ví dụ một URL/mã dài liền không dấu cách) →
+ *  đành cắt CỨNG đúng tại `max` rồi thêm `…` — đây là trường hợp duy nhất được
+ *  phép cắt giữa từ, vì không có ranh giới nào khác để lùi về.
+ *
+ *  Bằng chứng cần hàm này: cột "Mô tả component" của bảng "Cấu thành màn
+ *  hình" (dự án dich-vu-mua-sim) trước đây `.slice(0, 160)` thẳng tay, cắt
+ *  ngay giữa một từ tiếng Anh của guide dump (vd "...Contain a label descri" —
+ *  đứt giữa "description"). */
+export function truncateAtWordBoundary(s: string, max: number): string {
+  if (s.length <= max) return s;
+  const window = s.slice(0, max);
+  let cut = -1;
+  for (let i = window.length - 1; i >= 0; i -= 1) {
+    if (/\s/.test(window[i]!)) {
+      cut = i;
+      break;
+    }
+  }
+  if (cut === -1) return `${window}…`;
+  return `${window.slice(0, cut).trimEnd()}…`;
+}
+
+/** Các nhãn section mở đầu một khối guide tiếng Anh (`components-guide.md`
+ *  AI sinh, hoặc mô tả Figma dump nguyên "Description/Usage/Variants…") — gặp
+ *  nhãn nào trong số này thì {@link shortComponentDesc} CẮT BỎ từ đó trở đi,
+ *  vì phần sau nó không phải mô tả một câu mà là tài liệu chi tiết (ví dụ,
+ *  danh sách biến thể, thuộc tính) không phù hợp cho MỘT Ô BẢNG. Khớp cả dạng
+ *  bọc `**đậm**` (markdown) lẫn dạng trần, không phân biệt hoa/thường. */
+const COMPONENT_DESC_SECTION_LABELS = [
+  'Usage',
+  'Variants',
+  'Properties',
+  'Anatomy',
+  'Behavior',
+  'Content',
+  'When to use',
+  'States',
+];
+const COMPONENT_DESC_SECTION_RE = new RegExp(
+  `\\*{0,2}(?:${COMPONENT_DESC_SECTION_LABELS.map((l) => l.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})\\s*:\\*{0,2}`,
+  'i',
+);
+
+/** Rút một mô tả component (`criteria/components.md` hoặc
+ *  `components-guide.md` AI sinh) về ĐÚNG MỘT câu ngắn cho cột "Mô tả
+ *  component" của bảng "Cấu thành màn hình" — xem {@link renderCompositionDraft}.
+ *
+ *  Bằng chứng cần hàm này (dự án dich-vu-mua-sim, run thật): cột này trước
+ *  đây chép cả `description` — dump nguyên khối "Description: … Usage: …
+ *  Variants: …" tiếng Anh, LẶP Y HỆT ở mọi hàng của cùng component, có chỗ
+ *  còn bị cắt cứng giữa một từ. Pipeline (không LLM, không dịch — daemon chỉ
+ *  cắt tất định, ưu tiên mô tả tiếng Việt AI sinh có sẵn):
+ *   (a) gộp mọi whitespace (khoảng trắng, tab, xuống dòng) thành một dấu cách,
+ *       trim hai đầu;
+ *   (b) bỏ nhãn dẫn đầu `Description:`/`Mô tả:` nếu có — nó không phải một
+ *       phần của câu, chỉ là tiêu đề section;
+ *   (c) cắt bỏ mọi thứ TỪ nhãn section đầu tiên trở đi trong số các nhãn dump
+ *       phổ biến ({@link COMPONENT_DESC_SECTION_RE}) — phần đó là tài liệu
+ *       chi tiết, không phải câu mô tả;
+ *   (d) lấy CÂU ĐẦU TIÊN — cắt tại dấu `.`/`!`/`?` đầu tiên có khoảng trắng
+ *       hoặc hết chuỗi ngay sau nó; KHÔNG coi dấu `.` là kết câu khi ký tự
+ *       liền sau là CHỮ SỐ (tránh cắt oan số mục "2.1");
+ *   (e) {@link truncateAtWordBoundary} về `max` ký tự — chốt chặn cuối cùng
+ *       cho một mô tả tiếng Việt ngắn nhưng vẫn dài hơn một ô bảng nên chứa. */
+export function shortComponentDesc(desc: string, max = 160): string {
+  let text = desc.replace(/\s+/g, ' ').trim();
+  text = text.replace(/^(?:Description|Mô tả)\s*:\s*/i, '');
+
+  const sectionMatch = COMPONENT_DESC_SECTION_RE.exec(text);
+  if (sectionMatch) text = text.slice(0, sectionMatch.index).trim();
+
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i]!;
+    if (ch !== '.' && ch !== '!' && ch !== '?') continue;
+    const nextChar = text[i + 1];
+    const isSentenceEnd = nextChar === undefined || /\s/.test(nextChar);
+    const nextIsDigit = nextChar !== undefined && /[0-9]/.test(nextChar);
+    if (isSentenceEnd && !nextIsDigit) {
+      text = text.slice(0, i + 1).trim();
+      break;
+    }
+  }
+
+  return truncateAtWordBoundary(text, max);
+}
+
 /* ── 4. Nháp bảng "Cấu thành màn hình" ───────────────────────────────────── */
 
 /** Tiền tố dòng tiêu đề đậm của bảng "Cấu thành màn hình" — dùng chung giữa
@@ -429,14 +521,15 @@ export function renderCompositionDraft(
   screen.elements.forEach((el, i) => {
     const componentDs = el.ds?.component ? escapeCell(el.ds.component) : '— (DS không có)';
     const variant = el.ds?.variant ? escapeCell(el.ds.variant) : '—';
-    const whyTrunc = (el.why ?? '').trim().slice(0, 120);
+    const whyTrunc = truncateAtWordBoundary((el.why ?? '').trim(), 120);
     const roleText = whyTrunc ? `${el.role} — ${whyTrunc}` : el.role;
     const catEntry = el.ds?.anchor ? catalogue.get(el.ds.anchor) : undefined;
     // Hậu tố " (AI sinh)" (WP19a) khi mô tả đến từ guide fallback thay vì
     // Figma — chỉ gắn SAU escape, không phải nội dung do agent/Figma cung
-    // cấp nên không cần escape riêng.
+    // cấp nên không cần escape riêng. Mô tả tự nó đi qua shortComponentDesc
+    // trước (xem docblock ở mục 3b) — MỘT câu ngắn, không dump nguyên guide.
     const desc = catEntry?.description
-      ? `${escapeCell(catEntry.description)}${catEntry.fromGuide ? ' (AI sinh)' : ''}`
+      ? `${escapeCell(shortComponentDesc(catEntry.description))}${catEntry.fromGuide ? ' (AI sinh)' : ''}`
       : '—';
     const navTos = (screen.nav ?? [])
       .filter((n) => n.el === el.id)

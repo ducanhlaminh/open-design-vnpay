@@ -16,6 +16,8 @@ import {
   reconcileCompositionTable,
   isCompositionOwnedChange,
   findToolOutputNoise,
+  truncateAtWordBoundary,
+  shortComponentDesc,
 } from '../src/docs-review-enrich.js';
 import { splitSections, validateChanges } from '../src/docs-review.js';
 import { SCREEN_COMPONENTS_SCHEMA_VERSION, type ScreenComponentsDoc, type RoleMapDoc } from '../src/screen-components.js';
@@ -940,4 +942,121 @@ test('Hồi quy WP8d: đảo thứ tự (như 2a) — chèn bảng TRƯỚC rồ
   assert.ok(imageIdx > 0 && titleIdx > 0 && fieldTableIdx > 0);
   assert.ok(titleIdx > imageIdx, 'bảng vẫn nằm ngay sau ảnh mockup sau khi sơ đồ đã được thay');
   assert.ok(titleIdx < fieldTableIdx, 'bảng vẫn nằm trước bảng field sau khi sơ đồ đã được thay');
+});
+
+/* ── WP-dr-review-readability mục A: truncateAtWordBoundary / shortComponentDesc ── */
+
+test('truncateAtWordBoundary: chuỗi ngắn hơn hoặc bằng max giữ NGUYÊN VĂN, không thêm gì', () => {
+  assert.equal(truncateAtWordBoundary('ngắn', 100), 'ngắn');
+  assert.equal(truncateAtWordBoundary('đúng bằng max', 'đúng bằng max'.length), 'đúng bằng max');
+});
+
+test('truncateAtWordBoundary: cắt tại ranh giới từ CUỐI CÙNG trong phạm vi max, thêm "…", không cắt giữa từ', () => {
+  const s = `${'A'.repeat(50)} ${'B'.repeat(50)} ${'C'.repeat(50)}`; // 50+1+50+1+50 = 152 ký tự
+  const result = truncateAtWordBoundary(s, 60);
+  // window = 60 ký tự đầu = 50 chữ A + 1 dấu cách + 9 chữ B đầu — ranh giới từ
+  // CUỐI CÙNG trong phạm vi đó là dấu cách sau khối A, nên phải cắt Ở ĐÓ, bỏ
+  // luôn 9 chữ B dở dang (không được phép cắt giữa từ "BBB...").
+  assert.equal(result, `${'A'.repeat(50)}…`);
+});
+
+test('truncateAtWordBoundary: một "từ" dài hơn cả max (không khoảng trắng nào trong phạm vi) → đành cắt CỨNG tại max', () => {
+  const s = 'X'.repeat(50);
+  const result = truncateAtWordBoundary(s, 20);
+  assert.equal(result, `${'X'.repeat(20)}…`);
+});
+
+test('shortComponentDesc: dump "Description: … Usage: … Variants: …" → chỉ còn CÂU ĐẦU của phần description, không dump Usage/Variants', () => {
+  const dump =
+    'Description: Trường nhập liệu cơ bản dùng để thu thập thông tin từ người dùng. ' +
+    'Usage: Use this component when you need a single line of text input from the user, typically inside a form. ' +
+    'Variants: Default, Error, Disabled, Focused, Filled. ' +
+    'Properties: label, placeholder, helperText, errorMessage.';
+  const result = shortComponentDesc(dump);
+  assert.equal(result, 'Trường nhập liệu cơ bản dùng để thu thập thông tin từ người dùng.');
+  assert.ok(!result.includes('Usage:'));
+  assert.ok(!result.includes('Variants:'));
+  assert.ok(!result.includes('Properties:'));
+});
+
+test('shortComponentDesc: mô tả tiếng Việt ngắn (không có nhãn section nào) giữ NGUYÊN VĂN', () => {
+  const desc = 'Icon dùng để hiển thị trạng thái đã chọn.';
+  assert.equal(shortComponentDesc(desc), desc);
+});
+
+test('shortComponentDesc: "2.1" (số mục) KHÔNG bị coi là kết câu — chỉ cắt ở dấu chấm cuối câu thật', () => {
+  const desc = 'Áp dụng từ phiên bản 2.1 trở đi.';
+  assert.equal(shortComponentDesc(desc), desc);
+});
+
+test('shortComponentDesc: mô tả >160 ký tự (không dấu câu) bị cắt ĐÚNG ranh giới từ, có "…"', () => {
+  const words = Array.from({ length: 40 }, (_, i) => `tukhoa${i}`);
+  const longDesc = words.join(' ');
+  assert.ok(longDesc.length > 160);
+  const result = shortComponentDesc(longDesc);
+  assert.ok(result.endsWith('…'));
+  const content = result.slice(0, -1);
+  assert.ok(longDesc.startsWith(content), 'phần giữ lại phải là một tiền tố nguyên văn của mô tả gốc');
+  const boundaryChar = longDesc[content.length];
+  assert.ok(
+    boundaryChar === undefined || boundaryChar === ' ',
+    'phải cắt tại ranh giới từ (ký tự ngay sau phần giữ lại phải là khoảng trắng), không cắt giữa một từ',
+  );
+});
+
+test('renderCompositionDraft: mô tả dump dài (Description/Usage/Variants) → ô "Mô tả component" ngắn (≤ ~165 ký tự), KHÔNG chứa "Usage:"', () => {
+  const dumpDesc =
+    'Description: Trường nhập liệu cơ bản dùng để thu thập thông tin từ người dùng. ' +
+    'Usage: Use this component when you need a single line of text input from the user, typically inside a form. ' +
+    'Variants: Default, Error, Disabled, Focused, Filled. Properties: label, placeholder, helperText, errorMessage.';
+  const catalogue = new Map([['figma-297be0fb5f', { name: 'Button', description: dumpDesc }]]);
+  const screenNames = new Map([['PAGE__6.2.1', 'Màn hình chọn Quốc gia & Khu vực']]);
+  const md = renderCompositionDraft(SCREEN_DOC, catalogue, ROLE_MAP_DOC, screenNames);
+  const rowLines = md.split('\n').filter((l) => l.startsWith('| 1 '));
+  assert.ok(rowLines[0]);
+  assert.ok(!rowLines[0]!.includes('Usage:'));
+  assert.ok(!rowLines[0]!.includes('Variants:'));
+  const cells = rowLines[0]!.split('|').map((c) => c.trim());
+  const descCell = cells[6]!.replace(/\\\|/g, '|');
+  assert.ok(descCell.length <= 165, `ô mô tả phải ngắn, nhận được ${descCell.length} ký tự: "${descCell}"`);
+});
+
+test('renderCompositionDraft: mô tả dump dài + fromGuide=true → vẫn ngắn gọn và hậu tố " (AI sinh)" vẫn gắn ở cuối', () => {
+  const dumpDesc = 'Mô tả: Trường nhập liệu. Usage: dùng khi cần nhập một dòng văn bản kèm nhãn rõ ràng cho người dùng.';
+  const catalogue = new Map([['figma-297be0fb5f', { name: 'Text Field', description: dumpDesc, fromGuide: true }]]);
+  const screenNames = new Map([['PAGE__6.2.1', 'Màn hình chọn Quốc gia & Khu vực']]);
+  const md = renderCompositionDraft(SCREEN_DOC, catalogue, ROLE_MAP_DOC, screenNames);
+  const rowLines = md.split('\n').filter((l) => l.startsWith('| 1 '));
+  assert.ok(rowLines[0]!.includes('Trường nhập liệu. (AI sinh)'));
+  assert.ok(!rowLines[0]!.includes('Usage:'));
+});
+
+test('renderCompositionDraft: el.why dài (~130 ký tự) trong cột "Vai trò / dùng để" bị cắt ĐÚNG ranh giới từ, không đứt giữa từ', () => {
+  const words = Array.from({ length: 24 }, (_, i) => `lydo${i}`);
+  const longWhy = words.join(' ');
+  assert.ok(longWhy.length > 120);
+  const doc: ScreenComponentsDoc = {
+    ...SCREEN_DOC,
+    elements: [
+      {
+        id: 'x1',
+        label: 'Phần tử dài',
+        role: 'text',
+        ds: null,
+        confidence: 'high',
+        provenance: 'text',
+        why: longWhy,
+      },
+    ],
+    nav: [],
+  };
+  const md = renderCompositionDraft(doc, new Map(), null, new Map());
+  const rowLines = md.split('\n').filter((l) => l.startsWith('| 1 '));
+  const cells = rowLines[0]!.split('|').map((c) => c.trim());
+  const roleCell = cells[5]!;
+  const whyPart = roleCell.split(' — ')[1] ?? '';
+  assert.ok(whyPart.includes('…'), `cột vai trò phải bị cắt, nhận được "${roleCell}"`);
+  const roleWords = whyPart.replace('…', '').trim().split(/\s+/).filter(Boolean);
+  const originalWords = new Set(longWhy.split(' '));
+  for (const w of roleWords) assert.ok(originalWords.has(w), `từ "${w}" bị cắt giữa chừng trong cột vai trò`);
 });

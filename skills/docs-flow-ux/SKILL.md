@@ -229,8 +229,19 @@ class L_Timeout od-modified
 ```
 
 - Node mới đặt id `OD_…`; node đề nghị bỏ GIỮ LẠI và gán `od-removed`.
-- Cạnh mới nối bằng cú pháp thường; không xoá cạnh cũ — nếu muốn đổi hướng thì
-  thêm cạnh mới và đánh dấu node liên quan `od-modified`.
+- Cạnh mới nối bằng cú pháp thường.
+- **Nhánh đề xuất THAY THẾ một đường đi cũ thì phải xử lý cạnh cũ** — chọn một
+  trong hai, không được bỏ lửng: hoặc **XOÁ** cạnh cũ khỏi `proposed.mmd`
+  (`proposed.mmd` là bản chép riêng — xoá ở đây KHÔNG phá `as-is.mmd`), hoặc
+  giữ lại để đối chiếu thì **BẮT BUỘC** gắn nhãn `-- "hiện trạng — bỏ nếu áp
+  dụng UX-0n" -->` lên cạnh cũ đó (thay số `UX-0n` bằng finding thật đề xuất
+  đổi hướng này).
+- **CẤM để một node nguồn có hai đường đi song song** — cạnh cũ KHÔNG nhãn
+  cộng với cạnh mới đi qua một node `OD_…` cùng xuất phát từ node đó. Sơ đồ
+  đọc thành hai luồng mâu thuẫn nhau thay vì một đề xuất thay thế rõ ràng (đo
+  trên một dự án thật: nhánh đề xuất thêm `J1 --> OD_InvoiceAndTotal --> K`
+  nhưng vẫn giữ nguyên `J1 --> K` không nhãn — daemon cảnh báo ca này, xem
+  `findUnlabeledParallelEdges`).
 - Cùng luật "chỉ sửa cục bộ", "luồng tốt thì không tạo file".
 - Phần thêm vào phải giữ đúng "Quy tắc vẽ Mermaid dễ đọc" bên dưới (TD, nhãn
   ngắn, không tạo thêm vòng lặp ngược).

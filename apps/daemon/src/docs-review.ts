@@ -16,6 +16,13 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
+// `truncateAtWordBoundary` sống ở docs-review-enrich.ts (mục 3b) — import
+// CHIỀU NÀY không tạo vòng: docs-review-enrich.ts chỉ `import type` từ file
+// này (xoá hẳn lúc build, không phải import runtime thật), nên docs-review.ts
+// import GIÁ TRỊ ngược lại từ đó là an toàn. Không định nghĩa lại logic cắt
+// ranh giới từ ở đây — một bản sao thứ hai chỉ tổ lệch nhau theo thời gian.
+import { truncateAtWordBoundary } from './docs-review-enrich.js';
+
 /** A doc page under `docs/` → one fan-out unit. */
 export interface DocPage {
   /** Page md path relative to the run cwd, e.g. docs/confluence/i-tai-khoan/1.md */
@@ -230,6 +237,37 @@ export function systemChangesPath(reviewRel: string): string {
   return reviewRel.replace(/\.md$/i, '.sys.changes.json');
 }
 
+/** Đếm số dấu `#` dẫn đầu một dòng heading NGUYÊN VĂN (`sec.heading`) — chuỗi
+ *  rỗng (phần mở đầu trước heading đầu tiên) hoặc không bắt đầu bằng `#` trả
+ *  về `0`. Dùng bởi {@link isParentHeadingSection} để so cấp heading giữa hai
+ *  section liền nhau. */
+export function headingLevel(heading: string): number {
+  const m = /^(#{1,6})\s/.exec(heading);
+  return m ? m[1]!.length : 0;
+}
+
+/** `sections[index]` là một heading RỖNG nhưng là MỤC CHA của các mục con
+ *  ngay dưới nó (nội dung nằm ở mục con, không phải một gap thật) — ĐÚNG khi
+ *  VÀ CHỈ KHI: section rỗng (`bodyLines === 0`), có heading thật (`level >
+ *  0`), có section kế tiếp, và heading của section kế tiếp SÂU HƠN (cấp `#`
+ *  nhiều hơn) heading của section này.
+ *
+ *  Bằng chứng cần hàm này (dự án dich-vu-mua-sim, run thật): 5 note "Nặng"
+ *  (gap `major`) bị ghi oan cho các heading CHA thuần tuý gom nhóm (`6.1`,
+ *  `6.2`, `6.3` — không có "nội dung" nào khác ngoài các mục con `6.1.1`,
+ *  `6.1.2`… đứng ngay dưới) — trong khi nội dung THẬT nằm đầy đủ ở các mục
+ *  con đó, không hề thiếu. Section rỗng nhưng section kế tiếp CÙNG cấp (hoặc
+ *  nông hơn) thì đây KHÔNG phải mục cha — heading đó thật sự rỗng (gap). */
+export function isParentHeadingSection(sections: readonly DocSection[], index: number): boolean {
+  const sec = sections[index];
+  if (!sec || sec.bodyLines !== 0) return false;
+  const level = headingLevel(sec.heading);
+  if (level === 0) return false;
+  const next = sections[index + 1];
+  if (!next) return false;
+  return headingLevel(next.heading) > level;
+}
+
 /** Nội dung file mục lục (xem {@link pageOutlinePath}). Chỉ chứa cấu trúc —
  *  heading nguyên văn + khoảng dòng + cờ rỗng/ảnh — không chép nội dung. */
 export function renderPageOutline(input: {
@@ -247,15 +285,21 @@ export function renderPageOutline(input: {
   lines.push('');
   lines.push('Chỉ đọc LÁT CẮT của bạn. Cần ngữ cảnh ngoài section (thuật ngữ, luồng nhắc ở phần khác): Read bản gốc với `offset`/`limit` theo khoảng dòng dưới đây — KHÔNG đọc cả trang, KHÔNG đọc bản clone cả trang.');
   lines.push('');
-  for (const sec of input.sections) {
+  input.sections.forEach((sec, idx) => {
     const nn = String(sec.index).padStart(2, '0');
     const heading = sec.heading || '(phần mở đầu, trước heading đầu tiên)';
     const flags: string[] = [];
-    if (sec.bodyLines === 0) flags.push('RỖNG — chỉ có tiêu đề');
+    if (sec.bodyLines === 0) {
+      flags.push(
+        isParentHeadingSection(input.sections, idx)
+          ? 'MỤC CHA — nội dung ở mục con'
+          : 'RỖNG — chỉ có tiêu đề',
+      );
+    }
     if (sec.imageRefs.length > 0) flags.push(`${sec.imageRefs.length} ảnh`);
     const range = `dòng ${sec.startLine}–${sec.endLine}`;
     lines.push(`- s${nn}  ${range}  ${heading}${flags.length ? `  [${flags.join('; ')}]` : ''}`);
-  }
+  });
   lines.push('');
   return lines.join('\n');
 }
@@ -643,6 +687,22 @@ export function fuzzyIncludes(haystack: string, needle: string): boolean {
   return new RegExp(pattern).test(nfc(haystack));
 }
 
+/** Cắt một đoạn trích tài liệu (`quote`/`before`/`anchor`/`doc_ref`) trước khi
+ *  nhúng nó vào một CHUỖI LỖI/CẢNH BÁO — gộp whitespace thành một dấu cách rồi
+ *  {@link truncateAtWordBoundary} về `max` ký tự (mặc định 80, đủ để người đọc
+ *  nhận ra CHỖ nào trong tài liệu mà không phải cuộn qua một khối trích dẫn).
+ *
+ *  Bằng chứng cần hàm này (dự án dich-vu-mua-sim): trước đây các lỗi
+ *  validateChanges/validateNotes nhúng NGUYÊN VĂN dòng/anchor vào thông báo —
+ *  một hàng bảng markdown dài cỡ 1.500 ký tự lọt thẳng vào `summary.md`, biến
+ *  mục "Section không đạt" thành một khối dump khó đọc thay vì một danh sách
+ *  lỗi. Hàm này KHÔNG đổi PHẦN CHỮ MÔ TẢ của thông báo, chỉ cắt phần trích
+ *  dẫn nhúng vào nó — logic đối chiếu (fuzzyIncludes…) vẫn dùng bản đầy đủ,
+ *  chỉ hiển thị mới đi qua đây. */
+export function clipQuote(s: string, max = 80): string {
+  return truncateAtWordBoundary(s.replace(/\s+/g, ' ').trim(), max);
+}
+
 /** Multiset of non-blank lines (trimmed) → count, in original order of first
  *  appearance (order doesn't matter for the multiset math, only for stable
  *  iteration when reporting). */
@@ -727,10 +787,10 @@ export function validateChanges(
       continue;
     }
     if (quote && !fuzzyIncludes(revised, quote)) {
-      errors.push(`Change "${change.id}" có quote không tìm thấy trong bản đã sửa: "${quote}"`);
+      errors.push(`Change "${change.id}" có quote không tìm thấy trong bản đã sửa: "${clipQuote(quote)}"`);
     }
     if (before && !fuzzyIncludes(original, before)) {
-      errors.push(`Change "${change.id}" có before không tìm thấy trong bản gốc: "${before}"`);
+      errors.push(`Change "${change.id}" có before không tìm thấy trong bản gốc: "${clipQuote(before)}"`);
     }
 
     // XOÁ THUẦN phải có neo — không có `quote` thì `anchor` là toạ độ DUY NHẤT
@@ -742,14 +802,14 @@ export function validateChanges(
       );
     }
     if (anchor && !fuzzyIncludes(locateIn, anchor)) {
-      errors.push(`Change "${change.id}" có anchor không tìm thấy trong bản đã sửa: "${anchor}"`);
+      errors.push(`Change "${change.id}" có anchor không tìm thấy trong bản đã sửa: "${clipQuote(anchor)}"`);
     }
 
     for (const raw of change.doc_refs ?? []) {
       const ref = (raw ?? '').trim();
       if (!ref) continue;
       if (!fuzzyIncludes(locateIn, ref)) {
-        errors.push(`Change "${change.id}" có doc_ref không tìm thấy trong bản đã sửa: "${ref}"`);
+        errors.push(`Change "${change.id}" có doc_ref không tìm thấy trong bản đã sửa: "${clipQuote(ref)}"`);
       }
     }
   }
@@ -774,7 +834,7 @@ export function validateChanges(
     if (count > before && !isCoveredByField(line, 'quote')) addedOrChanged.push(line);
   }
   for (const line of addedOrChanged) {
-    errors.push(`Dòng đã đổi/thêm nhưng không có change.quote nào khai báo: "${line}"`);
+    errors.push(`Dòng đã đổi/thêm nhưng không có change.quote nào khai báo: "${clipQuote(line)}"`);
   }
 
   const deleted: string[] = [];
@@ -783,7 +843,7 @@ export function validateChanges(
     if (count > after && !isCoveredByField(line, 'before')) deleted.push(line);
   }
   for (const line of deleted) {
-    errors.push(`Dòng đã bị xoá nhưng không có change.before nào khai báo: "${line}"`);
+    errors.push(`Dòng đã bị xoá nhưng không có change.before nào khai báo: "${clipQuote(line)}"`);
   }
 
   return errors;
@@ -861,7 +921,7 @@ export function validateNotes(original: string, notes: DocNote[]): string[] {
       continue;
     }
     if (!fuzzyIncludes(original, anchor)) {
-      errors.push(`Note "${note.id}" có anchor không tìm thấy trong bản gốc: "${anchor}"`);
+      errors.push(`Note "${note.id}" có anchor không tìm thấy trong bản gốc: "${clipQuote(anchor)}"`);
     }
     // doc_refs của NOTE đối chiếu với bản GỐC, không phải bản đã sửa: note theo
     // định nghĩa không sửa gì, nên tại mọi đoạn nó viện dẫn hai bản như nhau —
@@ -870,7 +930,7 @@ export function validateNotes(original: string, notes: DocNote[]): string[] {
       const ref = (raw ?? '').trim();
       if (!ref) continue;
       if (!fuzzyIncludes(original, ref)) {
-        errors.push(`Note "${note.id}" có doc_ref không tìm thấy trong bản gốc: "${ref}"`);
+        errors.push(`Note "${note.id}" có doc_ref không tìm thấy trong bản gốc: "${clipQuote(ref)}"`);
       }
     }
   }
@@ -900,7 +960,7 @@ export function partitionNotesByAnchor(
     }
     let next: DocNote = note;
     if (!fuzzyIncludes(original, anchor)) {
-      warnings.push(`Note "${note.id}" có anchor không tìm thấy trong bản gốc — giữ lại nhưng không bôi được vào tài liệu: "${anchor}"`);
+      warnings.push(`Note "${note.id}" có anchor không tìm thấy trong bản gốc — giữ lại nhưng không bôi được vào tài liệu: "${clipQuote(anchor)}"`);
       next = { ...next, anchor_unresolved: true };
     }
     if (note.doc_refs && note.doc_refs.length > 0) {
@@ -909,7 +969,7 @@ export function partitionNotesByAnchor(
         const ref = (raw ?? '').trim();
         if (!ref) continue;
         if (fuzzyIncludes(original, ref)) kept.push(raw);
-        else warnings.push(`Note "${note.id}" có doc_ref không tìm thấy trong bản gốc — đã bỏ tham chiếu: "${ref}"`);
+        else warnings.push(`Note "${note.id}" có doc_ref không tìm thấy trong bản gốc — đã bỏ tham chiếu: "${clipQuote(ref)}"`);
       }
       if (kept.length !== note.doc_refs.length) {
         const { doc_refs: _drop, ...rest } = next;
@@ -919,6 +979,42 @@ export function partitionNotesByAnchor(
     out.push(next);
   }
   return { notes: out, warnings, errors };
+}
+
+/** Gộp note TRÙNG NHAU ở cấp TRANG — daemon tự dedupe TẤT ĐỊNH (không LLM),
+ *  vì skill (Bước 1 nhóm 5, `skills/docs-spec-review/SKILL.md`) chỉ gộp được
+ *  trong phạm vi MỘT section; hai section khác nhau của cùng trang review
+ *  cùng một element/nhóm element (comp/<KEY>.screen.json không thuộc riêng
+ *  section nào) vẫn có thể ra hai note giống hệt nhau.
+ *
+ *  Bằng chứng cần hàm này (dự án dich-vu-mua-sim, run thật): 44/57 note của
+ *  một trang là note `component` TRÙNG NHAU, trong đó 8 note giống hệt từng
+ *  chữ "Dùng Text Field State=Default" — vì trước đây quy tắc là "một note
+ *  mỗi element" nên nhiều element cùng thiếu cùng một component sinh ra nhiều
+ *  bản sao của cùng một nhận xét.
+ *
+ *  Hai note được coi là TRÙNG khi cùng bộ bốn `(kind, rule_id ?? '',
+ *  finding.trim(), suggestion.trim())` — `rule_id` thiếu (`undefined`) và
+ *  `rule_id` rỗng (`''`) coi là NHƯ NHAU (cùng chuẩn hoá về `''`) vì cả hai
+ *  đều nghĩa là "không trace vào rule nào", không phải hai giá trị khác nhau.
+ *  Giữ note ĐẦU TIÊN của mỗi nhóm trùng (anchor/doc_refs của nó — note đầu
+ *  luôn ở vị trí sớm nhất trong tài liệu nên là lựa chọn ổn định), bỏ các bản
+ *  sau. Trả về `droppedCount` để caller (server.ts) ghi cảnh báo "Đã gộp N
+ *  note trùng lặp." vào summary — không âm thầm bớt số. */
+export function dedupeNotes(notes: DocNote[]): { notes: DocNote[]; droppedCount: number } {
+  const seen = new Set<string>();
+  const out: DocNote[] = [];
+  let droppedCount = 0;
+  for (const note of notes) {
+    const key = JSON.stringify([note.kind, note.rule_id ?? '', note.finding.trim(), note.suggestion.trim()]);
+    if (seen.has(key)) {
+      droppedCount += 1;
+      continue;
+    }
+    seen.add(key);
+    out.push(note);
+  }
+  return { notes: out, droppedCount };
 }
 
 /** Chuỗi chú giải BỊ CẤM trong bản clone. Xem {@link findReviewMarkers}. */
@@ -1187,7 +1283,11 @@ export function mergeChangeReports(results: DocPageResult[]): { index: unknown; 
       for (const f of r.sectionsFailed ?? []) {
         const nn = String(f.index).padStart(2, '0');
         const heading = f.heading.trim() || 'Mở đầu';
-        const errs = f.errors.slice(0, 3).join('; ');
+        // Cap mỗi lỗi ở 240 ký tự (ranh giới từ) TRƯỚC khi join — một dòng lỗi
+        // dump nguyên hàng bảng markdown ~1.500 ký tự từng biến mục này thành
+        // một khối khó đọc thay vì danh sách lỗi (xem clipQuote ở trên cho lý
+        // do chung; ở đây riêng vì lỗi cấp section có thể dài hơn 80 ký tự).
+        const errs = f.errors.slice(0, 3).map((e) => truncateAtWordBoundary(e, 240)).join('; ');
         summaryMd += `- **${r.page}** · s${nn} "${heading}": ${errs}\n`;
       }
     }

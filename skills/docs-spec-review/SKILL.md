@@ -192,14 +192,31 @@ theo đúng 5 nhóm:
    nào). Mở các file của màn **thuộc trang và section của bạn**, và với mỗi
    `element` mà tài liệu khai một kiểu khác đề xuất DS — `docType` có mà khác
    `ds.component`, hoặc `ds: null` kèm `why` (DS không có thứ tài liệu đòi) —
-   ghi **MỘT note** nhóm `component` ở Bước 4:
+   **GỘP** thành note theo đúng luật dưới đây, ở Bước 4. Đo trên một dự án
+   thật: ghi MỘT note MỖI element làm 44/57 note của một trang là note trùng
+   nhau, trong đó 8 note giống hệt từng chữ "Dùng Text Field State=Default" —
+   nên luật bây giờ là GỘP, không phải một note một element:
+
+   - **Nhóm theo đích đề xuất, không theo element.** Mọi element trong CÙNG
+     section có CÙNG đích đề xuất — cùng `ds.component` + `ds.variant`, hoặc
+     cùng `ds: null` với cùng hướng fallback — ghi thành **ĐÚNG MỘT note**.
+   - `anchor` = `label` của element **ĐẦU TIÊN** trong nhóm (nguyên văn, phải
+     tìm thấy trong bản GỐC).
+   - `finding` liệt kê MỌI trường/element bị ảnh hưởng trong nhóm — kể tên tối
+     đa 6, còn lại rút gọn thành "+N trường khác".
+   - `suggestion` ghi **một lần** cho cả nhóm.
+   - **KHÔNG ghi note component chỉ để LẶP LẠI thông tin đã nằm trong bảng
+     "Cấu thành màn hình" của cùng màn** (daemon đã tự chèn bảng đó — xem Bước
+     0/2). Note component chỉ tồn tại khi có **MÂU THUẪN thật** (`docType` ≠
+     `ds.component`, hoặc `ds: null` kèm `why`) mà bảng không chở được, hoặc
+     khi cần giải thích dài hơn một ô bảng cho phép.
 
    | Trường của note | Lấy từ |
    | --- | --- |
    | `kind` | luôn là `"component"` |
-   | `anchor` | `label` của element — nguyên văn, phải tìm thấy trong bản GỐC |
+   | `anchor` | `label` của element ĐẦU TIÊN trong nhóm |
    | `rule_id` | `criteria/components.md#<ds.anchor>` nếu có `ds`; không có thì bỏ trống |
-   | `finding` | tài liệu khai `docType` nhưng DS dùng `ds.component` (hoặc DS không có) — dựa trên `why` của element |
+   | `finding` | liệt kê các trường/element bị ảnh hưởng trong nhóm (tối đa 6, quá thì "+N trường khác") — dựa trên `why` của element |
    | `suggestion` | component/biến thể DS đề xuất (`ds.component` + `ds.variant`), hoặc `fallback` của vai trò trong `comp/_role-map.json` |
 
    Element có `docType` trùng `ds.component`, hoặc không có `docType` và có
@@ -387,11 +404,12 @@ tiêu chí nào.** Nhắm dưới 160 ký tự.
 vào tài liệu dưới dạng chú giải — cả hai đều sai. Ghi note khi bạn thấy:
 
 - văn bản yêu cầu dùng overlay/Modal/Drawer sai ngữ cảnh (sai `R-OVERLAY`);
-- mỗi element trong `comp/<SCREEN-KEY>.screen.json` (màn thuộc section của
-  bạn) mà tài liệu khai khác đề xuất DS — `docType` ≠ `ds.component`, hoặc
-  `ds: null` kèm `why` (tài liệu đòi thứ DS không có). Ánh xạ sang các trường
-  của note theo bảng ở Bước 1, nhóm 5; **đừng tự phán lại** từ tài liệu hay từ
-  ảnh;
+- mỗi NHÓM element (cùng đích đề xuất DS) trong `comp/<SCREEN-KEY>.screen.json`
+  (màn thuộc section của bạn) mà tài liệu khai khác đề xuất DS — `docType` ≠
+  `ds.component`, hoặc `ds: null` kèm `why` (tài liệu đòi thứ DS không có) —
+  **GỘP thành MỘT note cho cả nhóm**, đúng luật ở Bước 1 nhóm 5 (không ghi một
+  note mỗi element, không lặp lại thông tin đã có trong bảng "Cấu thành màn
+  hình"). **Đừng tự phán lại** từ tài liệu hay từ ảnh;
 - thiếu hẳn một màn hình hoặc một nhánh luồng mà tài liệu ngụ ý là phải có;
 - **sơ đồ rỗng** — heading tồn tại nhưng không có nội dung (kickoff sẽ nêu đích
   danh khi section của bạn rơi vào ca này).
@@ -425,8 +443,13 @@ Nội dung là một mảng `DocNote`:
   cả thứ không nhìn thấy trong tài liệu.
 - `suggestion`: nên làm gì. Viết đủ cụ thể để người đọc hành động được, đừng
   viết "cần xem lại".
-- **Heading rỗng là gap mức `major`** (`kind: "gap"`). Ghi note — **KHÔNG tự
-  bịa sơ đồ/nội dung vào tài liệu** để "lấp" nó.
+- **Heading rỗng là gap mức `major`** (`kind: "gap"`) — **CHỈ khi đó là heading
+  LÁ** (không có mục con nào sâu hơn ngay dưới nó). Một heading rỗng nhưng là
+  **MỤC CHA** của các mục con sâu hơn (kickoff nêu rõ khi section của bạn rơi
+  vào ca này — "LƯU Ý: heading này là MỤC CHA…") thì nội dung nằm ở mục con,
+  **KHÔNG phải gap, KHÔNG ghi note "heading rỗng"** cho nó — làm theo đúng
+  những gì kickoff nêu cho section của bạn. Với heading lá rỗng thật sự: ghi
+  note — **KHÔNG tự bịa sơ đồ/nội dung vào tài liệu** để "lấp" nó.
 
 Section không có nhận xét nào thì **không cần tạo file** — file thiếu được hiểu
 là mảng rỗng, không phải lỗi.

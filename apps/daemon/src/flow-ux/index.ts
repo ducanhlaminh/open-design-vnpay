@@ -511,6 +511,148 @@ function screensOf(doc: FlowchartDoc | null, names: Record<string, string>): { k
   return out;
 }
 
+/* ── cạnh song song không nhãn (WP-dr-review-readability, mục D) ─────────── */
+
+/** Một cạnh mermaid parse tối giản — chỉ `from`/`to`/`label?`, đủ để
+ *  {@link findUnlabeledParallelEdges} so cặp (from, to) giữa hai bản sơ đồ. */
+interface LooseMermaidEdge {
+  from: string;
+  to: string;
+  label?: string;
+}
+
+/** Lấy phần ID đứng đầu một token cạnh mermaid, bỏ phần hình dạng/nhãn node đi
+ *  kèm (`OD_X[Nhãn]`, `K{Quyết định}`, `Start([Bắt đầu])`) — chỉ id mới cần để
+ *  so cặp from/to giữa hai bản. */
+function looseMermaidNodeId(token: string): string {
+  const trimmed = token.trim();
+  const m = /^([A-Za-z0-9_-]+)/.exec(trimmed);
+  return m ? m[1]! : trimmed;
+}
+
+// Bốn dạng cú pháp cạnh mermaid mà proposed.mmd/as-is.mmd của dr-flow thực sự
+// dùng (xem skills/docs-flow-ux/SKILL.md mục 4b): `A --> B`, `A -- "nhãn" -->
+// B`, `A -- nhãn --> B`, `A -->|nhãn| B`. `(?!>)` sau `--` loại trừ trường hợp
+// "--" đó thực ra là hai ký tự đầu của chính "-->" (cạnh KHÔNG nhãn) — nếu
+// không có nó thì regex nhãn-thường có thể nuốt nhầm một cạnh trơn thành cạnh
+// có "nhãn" rỗng.
+const QUOTED_DASH_LABEL_RE = /^(.+?)\s*--(?!>)\s*"([^"]*)"\s*-->\s*(.+)$/;
+const BARE_DASH_LABEL_RE = /^(.+?)\s*--(?!>)\s*([^"\s][^\n]*?)\s*-->\s*(.+)$/;
+const PIPE_LABEL_RE = /^(.+?)\s*-->\s*\|([^|]*)\|\s*(.+)$/;
+const PLAIN_ARROW_RE = /^(.+?)\s*-->\s*(.+)$/;
+
+/** Parse cạnh mermaid TỐI GIẢN cho {@link findUnlabeledParallelEdges} — CỐ Ý
+ *  không gọi lại {@link mermaidToFlowchart}: hàm đó đòi dòng mở đầu
+ *  `flowchart`/`graph` và dựng lại toàn bộ cây node/shape, trong khi mục tiêu
+ *  ở đây chỉ là cặp (from, to, label?) của từng cạnh để so cạnh song song —
+ *  một đoạn `proposed.mmd`/`as-is.mmd` bất kỳ (có hay không dòng mở đầu) đều
+ *  phải parse được. Bỏ qua dòng chú thích (`%%`), khai báo style (`classDef`,
+ *  `class`) và dòng mở đầu (`flowchart`/`graph`) — chúng không phải cạnh. */
+function parseMermaidEdgesLoose(code: string): LooseMermaidEdge[] {
+  const edges: LooseMermaidEdge[] = [];
+  const lines = code.replace(/\r\n?/g, '\n').split('\n');
+
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line) continue;
+    if (line.startsWith('%%')) continue;
+    if (/^(flowchart|graph)\b/i.test(line)) continue;
+    if (/^classDef\b/i.test(line)) continue;
+    if (/^class\b/i.test(line)) continue;
+
+    // `exactOptionalPropertyTypes: true` cấm gán `label: undefined` tường
+    // minh lên một property optional — nên chỉ thêm key `label` khi nhãn
+    // thực sự không rỗng, thay vì luôn gán rồi để `undefined` lọt vào.
+    const quoted = QUOTED_DASH_LABEL_RE.exec(line);
+    if (quoted) {
+      const from = looseMermaidNodeId(quoted[1]!);
+      const to = looseMermaidNodeId(quoted[3]!);
+      const label = quoted[2]!.trim();
+      edges.push(label ? { from, to, label } : { from, to });
+      continue;
+    }
+    const bare = BARE_DASH_LABEL_RE.exec(line);
+    if (bare) {
+      const from = looseMermaidNodeId(bare[1]!);
+      const to = looseMermaidNodeId(bare[3]!);
+      const label = bare[2]!.trim();
+      edges.push(label ? { from, to, label } : { from, to });
+      continue;
+    }
+    const piped = PIPE_LABEL_RE.exec(line);
+    if (piped) {
+      const from = looseMermaidNodeId(piped[1]!);
+      const to = looseMermaidNodeId(piped[3]!);
+      const label = piped[2]!.trim();
+      edges.push(label ? { from, to, label } : { from, to });
+      continue;
+    }
+    const plain = PLAIN_ARROW_RE.exec(line);
+    if (plain) {
+      edges.push({ from: looseMermaidNodeId(plain[1]!), to: looseMermaidNodeId(plain[2]!) });
+      continue;
+    }
+  }
+  return edges;
+}
+
+/** Tìm cạnh SONG SONG KHÔNG NHÃN trong `proposedCode` so với `asIsCode` — sự
+ *  cố đo được trên dự án dich-vu-mua-sim: nhánh đề xuất thêm `J1 -->
+ *  OD_InvoiceAndTotal --> K` để THAY THẾ đường cũ, nhưng cạnh cũ `J1 --> K`
+ *  vẫn còn nguyên trong `proposed.mmd`, không nhãn gì phân biệt — sơ đồ đọc
+ *  thành hai luồng song song tự mâu thuẫn thay vì một đề xuất thay thế rõ
+ *  ràng (xem `skills/docs-flow-ux/SKILL.md` mục 4b, luật "xử lý cạnh cũ bị
+ *  thay thế").
+ *
+ *  Cảnh báo khi: một node nguồn `S` trong `proposedCode` có (i) ít nhất một
+ *  cạnh `S -> X` mà `X` là node MỚI (xuất hiện trong `proposedCode` nhưng
+ *  không có trong `asIsCode`), VÀ (ii) vẫn còn một cạnh `S -> T` khác (đúng
+ *  cặp from+to) đã CÓ MẶT trong `asIsCode` mà KHÔNG có nhãn ở `proposedCode`.
+ *  Cạnh cũ đã bị xoá khỏi `proposedCode`, hoặc đã được gắn nhãn (bất kỳ nhãn
+ *  nào, ví dụ "hiện trạng — bỏ nếu áp dụng UX-0n") thì KHÔNG cảnh báo.
+ *
+ *  Hàm THUẦN: chỉ parse hai chuỗi mermaid truyền vào, không đọc đĩa, không
+ *  gọi mạng — caller ({@link finalizeFlowUx}) tự đọc `as-is.mmd`/`proposed.mmd`
+ *  rồi truyền nội dung vào đây. */
+export function findUnlabeledParallelEdges(asIsCode: string, proposedCode: string): string[] {
+  const asIsEdges = parseMermaidEdgesLoose(asIsCode);
+  const proposedEdges = parseMermaidEdgesLoose(proposedCode);
+
+  const asIsIds = new Set<string>();
+  for (const e of asIsEdges) {
+    asIsIds.add(e.from);
+    asIsIds.add(e.to);
+  }
+  const proposedIds = new Set<string>();
+  for (const e of proposedEdges) {
+    proposedIds.add(e.from);
+    proposedIds.add(e.to);
+  }
+  const newNodeIds = new Set<string>([...proposedIds].filter((id) => !asIsIds.has(id)));
+  const asIsPairs = new Set(asIsEdges.map((e) => `${e.from} ${e.to}`));
+
+  const out: string[] = [];
+  const reported = new Set<string>();
+  for (const newEdge of proposedEdges) {
+    if (!newNodeIds.has(newEdge.to)) continue; // chỉ xét cạnh TỚI một node mới
+    const source = newEdge.from;
+    for (const oldEdge of proposedEdges) {
+      if (oldEdge.from !== source) continue;
+      if (newNodeIds.has(oldEdge.to)) continue; // chính nó là cạnh mới, không phải cạnh cũ giữ lại
+      if (!asIsPairs.has(`${oldEdge.from} ${oldEdge.to}`)) continue; // cặp này không tồn tại ở as-is
+      if ((oldEdge.label ?? '').trim() !== '') continue; // đã gắn nhãn ở bản proposed — không mâu thuẫn nữa
+
+      const key = `${source} ${oldEdge.to} ${newEdge.to}`;
+      if (reported.has(key)) continue;
+      reported.add(key);
+      out.push(
+        `cạnh song song không nhãn: "${source} --> ${oldEdge.to}" (cũ) tồn tại cạnh mới "${source} --> ${newEdge.to}" — xoá cạnh cũ khỏi proposed.mmd hoặc gắn nhãn "hiện trạng — bỏ nếu áp dụng UX-0n"`,
+      );
+    }
+  }
+  return out;
+}
+
 export interface FinalizeResult {
   index: FlowIndexEntry[];
   warnings: string[];
@@ -623,6 +765,10 @@ export async function finalizeFlowUx(cwd: string): Promise<FinalizeResult> {
       if (proposed != null && looksLikeMermaid(proposed)) {
         entry.hasProposal = true;
         entry.files!.proposed = `flows/${input.id}/proposed.mmd`;
+        // WP-dr-review-readability mục D: cảnh báo (KHÔNG fail) khi nhánh đề
+        // xuất thêm một đường mới nhưng vẫn giữ nguyên cạnh cũ bị thay thế,
+        // không nhãn — xem docblock findUnlabeledParallelEdges.
+        for (const msg of findUnlabeledParallelEdges(code, proposed)) warnings.push(`${input.id}: ${msg}`);
       }
     }
 
