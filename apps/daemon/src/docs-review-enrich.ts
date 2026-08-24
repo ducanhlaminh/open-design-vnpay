@@ -81,9 +81,113 @@ export function findMermaidFence(sliceText: string, asIsMmd: string): { start: n
 
 const CAPTION_RE = /^\*flow-diagram — sơ đồ Mermaid "([^"]*)"; nguồn: (.+)\*$/;
 
+/** Khớp một dòng ẢNH markdown `![alt](url)` hoặc thẻ `<img …>` — dùng chung
+ *  giữa {@link findMermaidPreviewStart} (mục 1) và {@link findDrawioImageBlock}
+ *  (mục 1b), cả hai đều gỡ ảnh preview cũ mà Confluence macro để lại ngay
+ *  cạnh sơ đồ. Khai báo ở đây (thay vì mục 1b) vì mục 1 dùng nó trước. */
+const DRAWIO_IMG_LINE_RE = /!\[[^\]]*\]\([^)]*\)|<img\b[^>]*>/i;
+
+/** Bốn đuôi mở rộng của file sơ đồ dùng để rút "stem" (basename không đuôi)
+ *  khi so khớp ảnh preview cũ — xem {@link stemOfPath}. */
+const DIAGRAM_SOURCE_EXT_RE = /\.(mmd|svg|png|drawio)$/i;
+
+/** Rút `alt`/`url` khỏi một dòng ảnh markdown `![alt](url)` hoặc thẻ
+ *  `<img alt="…" src="…">` (thứ tự thuộc tính bất kỳ, nháy đơn/kép) — dùng
+ *  bởi {@link findMermaidPreviewStart} để phân biệt ảnh preview mermaid cũ
+ *  với ảnh nội dung thường. Không khớp được dạng nào → `null`. */
+function parseImagePreviewLine(line: string): { alt: string; url: string } | null {
+  const md = /!\[([^\]]*)\]\(([^)]*)\)/.exec(line);
+  if (md) return { alt: (md[1] ?? '').trim(), url: (md[2] ?? '').trim() };
+  const tag = /<img\b[^>]*>/i.exec(line);
+  if (!tag) return null;
+  const altM = /\balt\s*=\s*"([^"]*)"/i.exec(tag[0]) ?? /\balt\s*=\s*'([^']*)'/i.exec(tag[0]);
+  const srcM = /\bsrc\s*=\s*"([^"]*)"/i.exec(tag[0]) ?? /\bsrc\s*=\s*'([^']*)'/i.exec(tag[0]);
+  return { alt: (altM?.[1] ?? '').trim(), url: (srcM?.[1] ?? '').trim() };
+}
+
+/** Basename (bỏ đuôi mở rộng sơ đồ — mmd/svg/png/drawio) của một đường dẫn/
+ *  URL — dùng để so khớp `sourceStem`. Percent-decode trước khi tách (cùng lý
+ *  do {@link drawioTargetPattern}: converter có thể tự encode khoảng trắng/
+ *  dấu tiếng Việt). Decode lỗi (chuỗi `%` hỏng) → dùng nguyên văn, không throw. */
+function stemOfPath(pathLike: string): string {
+  let decoded = pathLike;
+  try {
+    decoded = decodeURIComponent(pathLike);
+  } catch {
+    // giữ nguyên — không phải mọi `%` là percent-encoding hợp lệ
+  }
+  const base = decoded.split(/[\\/]/).pop() ?? decoded;
+  return base.replace(DIAGRAM_SOURCE_EXT_RE, '').trim();
+}
+
+/** Rút `sourceStem` từ phần "nguồn" của caption cũ (`capMatch[2]` của {@link
+ *  CAPTION_RE}) — dùng bởi {@link findMermaidPreviewStart} luật (b). Phần
+ *  nguồn có thể là một liên kết markdown `[text](url)` (caption thật do
+ *  ingest sinh) hoặc một đường dẫn/tên file trần. Với liên kết markdown, ưu
+ *  tiên vế MANG đuôi mở rộng sơ đồ đã biết (thường là `url`); không vế nào có
+ *  đuôi → dùng `url`. Rỗng sau khi rút → `null`. */
+function extractMermaidSourceStem(sourceLinkRaw: string): string | null {
+  const trimmed = sourceLinkRaw.trim();
+  const linkMatch = /^\[([^\]]*)\]\(([^)]*)\)$/.exec(trimmed);
+  let candidate: string;
+  if (linkMatch) {
+    const text = (linkMatch[1] ?? '').trim();
+    const url = (linkMatch[2] ?? '').trim();
+    candidate = DIAGRAM_SOURCE_EXT_RE.test(url) ? url : DIAGRAM_SOURCE_EXT_RE.test(text) ? text : url || text;
+  } else {
+    candidate = trimmed;
+  }
+  const stem = stemOfPath(candidate);
+  return stem || null;
+}
+
+/** Quét NGƯỢC LÊN từ `start - 1` (dòng ngay trên fence ```mermaid, cùng tinh
+ *  thần upward-scan của {@link findDrawioImageBlock}) tìm dòng ẢNH PREVIEW
+ *  mermaid cũ mà Confluence mermaid-macro để lại NGAY TRÊN fence (macro để
+ *  lại CẢ ảnh preview LẪN fence — xem docblock đầu file, mục "WP-drreview-
+ *  mmd-preview-gc"). Cho phép dòng trống xen giữa (bỏ qua, không dừng).
+ *
+ *  Một dòng ảnh (khớp {@link DRAWIO_IMG_LINE_RE}) được coi là ảnh preview
+ *  hợp lệ khi ĐỦ MỘT trong hai:
+ *   (a) alt-text bắt đầu bằng `flow-diagram` (không phân biệt hoa/thường,
+ *       sau trim) — dấu ingest mermaid-macro stamp lên mọi ảnh nó tự chèn,
+ *       ảnh thật của user không mang alt này; hoặc
+ *   (b) `sourceStem` (khác `null`) khớp basename-bỏ-đuôi của URL ảnh.
+ *
+ *  Dừng NGAY khi gặp một dòng KHÔNG TRỐNG mà KHÔNG phải ảnh-preview-hợp-lệ
+ *  (dòng thường, hoặc dòng ảnh không khớp cả hai luật) — không nuốt nội dung
+ *  khác lên, kể cả ảnh nội dung thật của user nằm ngay trên fence.
+ *
+ *  Trả chỉ số dòng ảnh-preview NHỎ NHẤT tìm được; không có ảnh preview hợp lệ
+ *  nào → trả nguyên `start` (không đổi hành vi cũ so với trước khi có tính
+ *  năng này — xem {@link replaceDiagramInSlice}). */
+function findMermaidPreviewStart(lines: string[], start: number, sourceStem: string | null): number {
+  let previewStart = start;
+  let i = start - 1;
+  while (i >= 0) {
+    const raw = lines[i] ?? '';
+    if (raw.trim() === '') {
+      i -= 1;
+      continue;
+    }
+    if (!DRAWIO_IMG_LINE_RE.test(raw)) break;
+    const parsed = parseImagePreviewLine(raw);
+    const altOk = parsed != null && parsed.alt.toLowerCase().startsWith('flow-diagram');
+    const stemOk =
+      parsed != null && sourceStem != null && stemOfPath(parsed.url).toLowerCase() === sourceStem.toLowerCase();
+    if (!altOk && !stemOk) break;
+    previewStart = i;
+    i -= 1;
+  }
+  return previewStart;
+}
+
 /** Thay thân fence mermaid (bằng `proposedMmd`) và caption `*flow-diagram —
  *  …*` ngay dưới nó (nếu có) bằng caption "đã thay" — xem docblock đầu file
  *  cho lý do đây là DocChange `origin: 'system'` chứ không phải agent.
+ *  {@link findMermaidPreviewStart} GỠ THÊM ảnh preview mermaid cũ (nếu có)
+ *  nằm ngay trên fence, để tài liệu chỉ còn đúng một sơ đồ (bản đề xuất) thay
+ *  vì ảnh gốc as-is tĩnh chồng lên trên nó.
  *
  *  Trả `null` khi không tìm thấy fence khớp `opts.asIsMmd` trong `sliceText`
  *  (xem {@link findMermaidFence}) — gọi phía server.ts hiểu đây là "section
@@ -116,7 +220,14 @@ export function replaceDiagramInSlice(
   }
   const capMatch = capIdx < lines.length ? CAPTION_RE.exec((lines[capIdx] ?? '').trim()) : null;
   const oldEnd = capMatch ? capIdx : end;
-  const beforeBlock = lines.slice(start, oldEnd + 1).join(eol);
+
+  // WP-drreview-mmd-preview-gc: Confluence mermaid-macro để lại CẢ ảnh
+  // preview LẪN fence — gỡ ảnh preview cũ (nếu có) ngay trên fence để tài
+  // liệu chỉ còn đúng một sơ đồ (bản đề xuất). Không có ảnh preview hợp lệ →
+  // `previewStart === start`, hành vi giữ nguyên như trước tính năng này.
+  const sourceStem = capMatch ? extractMermaidSourceStem(capMatch[2] ?? '') : null;
+  const previewStart = findMermaidPreviewStart(lines, start, sourceStem);
+  const beforeBlock = lines.slice(previewStart, oldEnd + 1).join(eol);
 
   const proposedBody = opts.proposedMmd.replace(/\r\n/g, '\n').replace(/\n+$/, '');
   const newBlockLines: string[] = ['```mermaid', ...proposedBody.split('\n'), '```'];
@@ -129,7 +240,7 @@ export function replaceDiagramInSlice(
   }
   const quoteBlock = newBlockLines.join(eol);
 
-  const newLines = [...lines.slice(0, start), ...newBlockLines, ...lines.slice(oldEnd + 1)];
+  const newLines = [...lines.slice(0, previewStart), ...newBlockLines, ...lines.slice(oldEnd + 1)];
   const text = newLines.join(eol);
 
   const verdict = opts.uxReview.verdict;
@@ -170,8 +281,6 @@ function drawioTargetPattern(stem: string, suffix: string): RegExp {
   const variants = Array.from(new Set([stem, encodeURIComponent(stem)])).map(escapeRe);
   return new RegExp(`(?:${variants.join('|')})${suffix}`, 'i');
 }
-
-const DRAWIO_IMG_LINE_RE = /!\[[^\]]*\]\([^)]*\)|<img\b[^>]*>/i;
 
 /** Tìm khối "ảnh sơ đồ draw.io" cũ trong `sliceText`. Ưu tiên khớp THEO STEM:
  *  RUN LIÊN TỤC các dòng ảnh khớp `<stem>` (đích chứa `<stem>-p<số>.png` hoặc

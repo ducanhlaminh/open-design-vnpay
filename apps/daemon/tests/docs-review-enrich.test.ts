@@ -89,9 +89,14 @@ test('replaceDiagramInSlice thay đúng fence + caption, giữ nguyên phần kh
 
   // Phần trước/sau fence không đổi.
   assert.ok(text.includes('### 3.1 Luồng sơ đồ'));
-  assert.ok(text.includes('![flow-diagram Luồng người dùng](../../attachments/flow.svg)'));
   assert.ok(text.includes('### 3.2 Mô tả'));
   assert.ok(text.includes('Bảng mô tả từng bước.'));
+  // WP-drreview-mmd-preview-gc: ảnh preview mermaid cũ (alt `flow-diagram…`)
+  // ngay trên fence bị GỠ — chỉ còn đúng một sơ đồ (bản đề xuất), không còn
+  // ảnh gốc as-is tĩnh chồng lên trên (xem test riêng bên dưới cho các luật
+  // đầy đủ: guard ảnh thường, khớp theo sourceStem, byte-identical khi không
+  // có ảnh preview).
+  assert.ok(!text.includes('![flow-diagram Luồng người dùng](../../attachments/flow.svg)'));
 
   // Fence mới chứa nội dung proposed, không còn nội dung as-is riêng (D_Retry mới).
   assert.ok(text.includes('D_Retry[Thử lại]'));
@@ -138,6 +143,134 @@ test('replaceDiagramInSlice trả null khi as-is không khớp fence trong slice
     uxReview: {},
   });
   assert.equal(result, null);
+});
+
+/* ── (1c) WP-drreview-mmd-preview-gc: gỡ ảnh preview mermaid cũ ngay trên fence ── */
+
+// Không có ảnh preview nào ngay trên fence — hành vi PHẢI byte-identical với
+// trước khi có tính năng gỡ ảnh (before bắt đầu đúng tại dòng ```mermaid).
+const SLICE_NO_PREVIEW = [
+  '### 3.1 Luồng sơ đồ',
+  '',
+  '```mermaid',
+  ...AS_IS_MMD.split('\n'),
+  '```',
+  '',
+  '*flow-diagram — sơ đồ Mermaid "Luồng người dùng"; nguồn: [flow.mmd](../../attachments/flow.mmd)*',
+  '',
+  '### 3.2 Mô tả',
+  '',
+  'Bảng mô tả từng bước.',
+  '',
+].join('\n');
+
+// Ảnh NGAY TRÊN fence nhưng KHÔNG phải preview mermaid: alt không bắt đầu
+// `flow-diagram` và basename (`screenshot`) không khớp sourceStem (`flow`,
+// rút từ caption cũ) — ảnh nội dung thật của user, PHẢI được giữ nguyên.
+const SLICE_WITH_NORMAL_IMAGE = [
+  '### 3.1 Luồng sơ đồ',
+  '',
+  '![Ảnh chụp màn hình thật](../../attachments/screenshot.png)',
+  '',
+  '```mermaid',
+  ...AS_IS_MMD.split('\n'),
+  '```',
+  '',
+  '*flow-diagram — sơ đồ Mermaid "Luồng người dùng"; nguồn: [flow.mmd](../../attachments/flow.mmd)*',
+  '',
+].join('\n');
+
+// Ảnh NGAY TRÊN fence có alt KHÔNG bắt đầu `flow-diagram` nhưng basename
+// (`flow`) KHỚP sourceStem rút từ caption cũ (`flow.mmd`) — vẫn phải bị gỡ
+// theo luật (b).
+const SLICE_WITH_STEM_MATCHED_PREVIEW = [
+  '### 3.1 Luồng sơ đồ',
+  '',
+  '![Sơ đồ luồng người dùng](../../attachments/flow.svg)',
+  '',
+  '```mermaid',
+  ...AS_IS_MMD.split('\n'),
+  '```',
+  '',
+  '*flow-diagram — sơ đồ Mermaid "Luồng người dùng"; nguồn: [flow.mmd](../../attachments/flow.mmd)*',
+  '',
+].join('\n');
+
+test('replaceDiagramInSlice: ảnh preview SVG (alt flow-diagram) ngay trên fence bị gỡ, before chứa cả ảnh, chỉ còn một sơ đồ đề xuất', () => {
+  const result = replaceDiagramInSlice(SLICE_WITH_DIAGRAM, {
+    asIsMmd: AS_IS_MMD,
+    proposedMmd: PROPOSED_MMD,
+    flowId: 'FLOW-preview-gc',
+    uxReview: {},
+  });
+  assert.ok(result);
+  const { text, change } = result!;
+
+  // Ảnh preview biến mất khỏi text — chỉ còn đúng một sơ đồ (bản đề xuất).
+  assert.ok(!text.includes('![flow-diagram Luồng người dùng](../../attachments/flow.svg)'));
+  assert.equal(text.match(/```mermaid/g)?.length, 1);
+
+  // before mang cả ảnh preview lẫn fence/caption cũ.
+  assert.ok(change.before!.includes('![flow-diagram Luồng người dùng](../../attachments/flow.svg)'));
+  assert.ok(change.before!.includes('```mermaid'));
+  assert.ok(SLICE_WITH_DIAGRAM.includes(change.before!));
+
+  const errors = validateChanges(SLICE_WITH_DIAGRAM, text, [change]);
+  assert.deepEqual(errors, []);
+});
+
+test('replaceDiagramInSlice: KHÔNG có ảnh preview → text/before byte-identical với hành vi hiện tại (before bắt đầu đúng tại fence)', () => {
+  const result = replaceDiagramInSlice(SLICE_NO_PREVIEW, {
+    asIsMmd: AS_IS_MMD,
+    proposedMmd: PROPOSED_MMD,
+    flowId: 'FLOW-no-preview',
+    uxReview: {},
+  });
+  assert.ok(result);
+  const { text, change } = result!;
+
+  assert.ok(change.before!.startsWith('```mermaid'));
+  assert.ok(text.includes('### 3.1 Luồng sơ đồ'));
+  assert.ok(text.includes('### 3.2 Mô tả'));
+  assert.ok(text.includes('Bảng mô tả từng bước.'));
+
+  const errors = validateChanges(SLICE_NO_PREVIEW, text, [change]);
+  assert.deepEqual(errors, []);
+});
+
+test('replaceDiagramInSlice: ảnh nội dung thường (alt không phải flow-diagram, stem không khớp nguồn) ngay trên fence KHÔNG bị gỡ', () => {
+  const result = replaceDiagramInSlice(SLICE_WITH_NORMAL_IMAGE, {
+    asIsMmd: AS_IS_MMD,
+    proposedMmd: PROPOSED_MMD,
+    flowId: 'FLOW-guard-normal-image',
+    uxReview: {},
+  });
+  assert.ok(result);
+  const { text, change } = result!;
+
+  assert.ok(text.includes('![Ảnh chụp màn hình thật](../../attachments/screenshot.png)'));
+  assert.ok(!change.before!.includes('screenshot.png'));
+  assert.ok(change.before!.startsWith('```mermaid'));
+
+  const errors = validateChanges(SLICE_WITH_NORMAL_IMAGE, text, [change]);
+  assert.deepEqual(errors, []);
+});
+
+test('replaceDiagramInSlice: ảnh preview khớp theo sourceStem (alt không phải flow-diagram) vẫn bị gỡ — luật (b)', () => {
+  const result = replaceDiagramInSlice(SLICE_WITH_STEM_MATCHED_PREVIEW, {
+    asIsMmd: AS_IS_MMD,
+    proposedMmd: PROPOSED_MMD,
+    flowId: 'FLOW-preview-gc-stem',
+    uxReview: {},
+  });
+  assert.ok(result);
+  const { text, change } = result!;
+
+  assert.ok(!text.includes('![Sơ đồ luồng người dùng](../../attachments/flow.svg)'));
+  assert.ok(change.before!.includes('![Sơ đồ luồng người dùng](../../attachments/flow.svg)'));
+
+  const errors = validateChanges(SLICE_WITH_STEM_MATCHED_PREVIEW, text, [change]);
+  assert.deepEqual(errors, []);
 });
 
 /* ── (3) mapScreensToSections ──────────────────────────────────────────────── */
