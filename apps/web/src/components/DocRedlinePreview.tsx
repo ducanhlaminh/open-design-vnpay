@@ -219,6 +219,15 @@ function parseDocHeadings(source: string): DocHeading[] {
 function claimUniqueId(id: string, seen: Set<string>): string {
   let out = id;
   for (let n = 2; seen.has(out); n += 1) out = `${id}#${n}`;
+  if (out !== id) {
+    // Từ 0.8.116, daemon tự namespace id theo section trước khi ghi file
+    // (xem sectionAnnotationId/namespaceSectionAnnotations trong
+    // docs-review.ts) nên trùng id KHÔNG còn xảy ra với file mới. Nhánh này
+    // vẫn giữ làm fallback đọc file KẾT QUẢ CŨ (trước 0.8.116) — cảnh báo để
+    // người đọc biết mình đang xem một file cũ đã bị đổi id, không phải im
+    // lặng đổi rồi thôi.
+    console.warn(`[redline] id trùng "${id}" trong file kết quả — file cũ trước 0.8.116, đã tự đổi thành "${out}"`);
+  }
   seen.add(out);
   return out;
 }
@@ -922,10 +931,6 @@ export function DocRedlinePreview({
   const [hiddenAnnotationIds, setHiddenAnnotationIds] = useState<Set<string>>(new Set());
   const pendingSelectionRef = useRef<{ id: string; source: 'document' | 'rail' } | null>(null);
   const docColRef = useRef<HTMLDivElement | null>(null);
-  // Mọi <mark> của một change: một quote trải trên nhiều text node (ví dụ băng
-  // qua <strong>, hoặc hai ô bảng liền nhau) bọc thành nhiều <mark> cùng
-  // `data-change-id`.
-  const marksByChangeRef = useRef<Map<string, HTMLElement[]>>(new Map());
   // Phần tử mục trong rail, theo change id — dùng để cuộn rail tới mục tương
   // ứng khi người dùng bấm một vùng bôi trong tài liệu.
   const itemsByChangeRef = useRef<Map<string, HTMLElement>>(new Map());
@@ -1011,7 +1016,7 @@ export function DocRedlinePreview({
   // `selectFromDoc` của đúng LƯỢT RENDER lúc đăng ký — đọc thẳng biến
   // `panelOpen` ở đó sẽ luôn thấy giá trị CŨ dù panel đã đổi sau đó. Ref luôn
   // đọc được giá trị MỚI NHẤT bất kể closure nào giữ nó, cùng lý do
-  // `itemsByChangeRef`/`marksByChangeRef` ở trên là ref chứ không phải state.
+  // `itemsByChangeRef` ở trên là ref chứ không phải state.
   const panelOpenRef = useRef(panelOpen);
   useEffect(() => {
     panelOpenRef.current = panelOpen;
@@ -1375,10 +1380,6 @@ export function DocRedlinePreview({
   // những gì đang hiện, không ghi gì ra tài liệu (khác hẳn dismiss).
   const [diagramView, setDiagramView] = useState<Record<string, 'proposed' | 'original'>>({});
 
-  // Khai báo TRƯỚC effect gom marksByChangeRef ngay dưới: cả hai cùng chạy
-  // theo `docHtml`, và effect chèn host này PHẢI chạy trước để marksByChangeRef
-  // gom được luôn <mark> vừa chèn trong CÙNG một lượt hiệu ứng (React chạy các
-  // effect của một lượt commit theo đúng thứ tự khai báo).
   useEffect(() => {
     const container = docColRef.current;
     if (!container) {
@@ -1509,25 +1510,6 @@ export function DocRedlinePreview({
     return extractMermaidFenceBody(owner?.before) ?? m.code;
   }
 
-  // Sau khi cột tài liệu đã chạy xong pass bôi highlight, gom lại mark theo
-  // change id — chạy lại mỗi khi HTML đổi vì đó là lúc DOM có mark mới. Bản đồ
-  // này CHỈ dùng để cuộn tới mark khi bấm một mục trong rail; việc nhận click
-  // trên mark KHÔNG đi qua nó (xem effect uỷ quyền ngay dưới).
-  useEffect(() => {
-    const container = docColRef.current;
-    const marksByChange = new Map<string, HTMLElement[]>();
-    if (container) {
-      container.querySelectorAll<HTMLElement>('mark[data-change-id]').forEach((mark) => {
-        const id = mark.dataset.changeId;
-        if (!id) return;
-        const list = marksByChange.get(id) ?? [];
-        list.push(mark);
-        marksByChange.set(id, list);
-      });
-    }
-    marksByChangeRef.current = marksByChange;
-  }, [docHtml, changesState, previewMode, diagramMounts]);
-
   // Block descriptors do not alter the HTML structure. They identify the
   // owning p/li/table-row/table/heading so additions and multi-line matches can be
   // tinted as one safe block without ever wrapping a mark across block tags.
@@ -1601,19 +1583,29 @@ export function DocRedlinePreview({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loading]);
 
-  /** B2 (wp3b.yaml): host mermaid CỦA ĐÚNG change `id`, lọc bằng `dataset`
-   *  thay vì đi qua `marksByChangeRef` — bản đồ đó gom TẤT CẢ `<mark
-   *  data-change-id>` trong cột (kể cả một mark chữ nào đó lỡ khớp trùng nhãn,
-   *  ví dụ một `doc_refs` của change khác trỏ vào đúng đoạn chữ trong khối
-   *  mermaid), nên không đảm bảo phần tử ĐẦU TIÊN trả về luôn là host. Đọc
-   *  thẳng host qua đây thì chắc chắn cuộn tới đúng khối sơ đồ của change này,
-   *  không phải một khối khác lỡ chứa chữ trùng. */
-  function hostMarksFor(id: string): HTMLElement[] {
+  /** Mọi `<mark data-change-id>` của MỘT change/note, truy vấn DOM TRỰC TIẾP
+   *  tại THỜI ĐIỂM GỌI — không đọc qua một bản đồ được gom sẵn trong effect.
+   *
+   *  Vì sao: bản đồ gom sẵn (`marksByChangeRef`, đã bị xoá) chỉ được cập nhật
+   *  TRONG một `useEffect` chạy SAU khi cột tài liệu render lại — có một cửa
+   *  sổ giữa lúc DOM đã đổi (đổi tab mode, đổi trang) và lúc effect đó kịp
+   *  chạy, nhất là ngay sau khi đổi mode. Bấm một mục ngay trong cửa sổ đó đọc
+   *  phải bản đồ CŨ (mark của mode/trang trước), nên cuộn sai chỗ hoặc không
+   *  cuộn được gì — đúng triệu chứng "bấm mục không cuộn tới tài liệu". Query
+   *  DOM sống loại bỏ hẳn cửa sổ đó: không có bản đồ nào để lệch.
+   *
+   *  `opts.hostOnly` (B2, wp3b.yaml — trước đây là `hostMarksFor` riêng): lọc
+   *  thêm class `mermaidHost` — cần cho sơ đồ mermaid, vì một mark chữ nào đó
+   *  lỡ khớp trùng nhãn (ví dụ `doc_refs` của change khác trỏ vào đúng đoạn
+   *  chữ trong khối mermaid) sẽ không đảm bảo phần tử ĐẦU TIÊN trả về luôn là
+   *  host. Không truyền `opts` → hành vi y hệt bản đồ cũ (mọi mark cùng id,
+   *  không lọc host). */
+  function marksFor(id: string, opts?: { hostOnly?: boolean }): HTMLElement[] {
     const container = docColRef.current;
     if (!container) return [];
-    const hostClass = (styles.mermaidHost ?? '').trim();
+    const hostClass = opts?.hostOnly ? (styles.mermaidHost ?? '').trim() : '';
     return Array.from(container.querySelectorAll<HTMLElement>('mark[data-change-id]')).filter(
-      (el) => el.dataset.changeId === id && (!hostClass || el.classList.contains(hostClass)),
+      (el) => el.dataset.changeId === id && (!opts?.hostOnly || !hostClass || el.classList.contains(hostClass)),
     );
   }
 
@@ -1628,11 +1620,11 @@ export function DocRedlinePreview({
       return;
     }
     setSelectedId(id);
-    // Sơ đồ mermaid: cuộn tới HOST, không đi qua marksByChangeRef (xem
-    // hostMarksFor ngay trên — đúng vế (2) của B2 trong wp3b.yaml).
+    // Sơ đồ mermaid: cuộn tới HOST (hostOnly — đúng vế (2) của B2 trong
+    // wp3b.yaml, xem docblock marksFor ngay trên).
     const change = changes.find((c) => c.id === id);
-    const marks = change?.kind === 'flow-diagram' ? hostMarksFor(id) : marksByChangeRef.current.get(id);
-    if (!marks || marks.length === 0) return; // không neo được — không có gì để cuộn tới
+    const marks = marksFor(id, { hostOnly: change?.kind === 'flow-diagram' });
+    if (marks.length === 0) return; // không neo được — không có gì để cuộn tới
     // `behavior: 'auto'`, KHÔNG 'smooth'. Cuộn mượt kéo dài vài trăm ms, và
     // trong lúc đó tài liệu vẫn đang trôi dưới con trỏ. Người dùng bấm tiếp một
     // vùng bôi ngay lúc ấy thì mousedown và mouseup rơi vào hai phần tử khác
@@ -1685,14 +1677,17 @@ export function DocRedlinePreview({
   }
 
   // Cross-mode selection is deliberately two-phase: switching mode rebuilds
-  // docHtml and the mark/card maps. Only a later effect may consume the
-  // pending id, so scroll never races the DOM that owns the destination.
+  // docHtml and the card map (`itemsByChangeRef`). Marks themselves are read
+  // live via `marksFor` (no map to go stale), but the RAIL ITEM ref is still
+  // gathered in an effect — so this gate still waits for `docHtml`/`previewMode`
+  // to settle before consuming the pending id, ensuring the destination
+  // card/mark already exists in the DOM this render produced.
   useEffect(() => {
     const pending = pendingSelectionRef.current;
     if (!pending || annotationMode(pending.id) !== previewMode) return;
-    const marks = marksByChangeRef.current.get(pending.id);
+    const marks = marksFor(pending.id);
     const item = itemsByChangeRef.current.get(pending.id);
-    if ((!marks || marks.length === 0) && !item) return;
+    if (marks.length === 0 && !item) return;
     pendingSelectionRef.current = null;
     if (pending.source === 'rail') selectFromList(pending.id);
     else selectFromDoc(pending.id);

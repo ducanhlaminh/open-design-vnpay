@@ -33,6 +33,9 @@ import {
   headingLevel,
   isParentHeadingSection,
   clipQuote,
+  sectionAnnotationId,
+  namespaceSectionAnnotations,
+  findDuplicateIds,
   type DocChange,
   type DocNote,
   type DocPageResult,
@@ -2026,4 +2029,108 @@ test('mergeChangeReports: sectionsFailed có error dài 1.000 ký tự → dòng
   assert.ok(line, 'phải có dòng section không đạt cho Trang A s00');
   assert.ok(line!.length <= 300, `dòng summary phải ngắn, nhận được ${line!.length} ký tự`);
   assert.ok(!line!.includes('x'.repeat(1000)), 'dòng summary KHÔNG được dump nguyên văn lỗi 1.000 ký tự');
+});
+
+/* ── WP-redline-id-namespace: sectionAnnotationId / namespaceSectionAnnotations /
+   findDuplicateIds — bằng chứng dự án dich-vu-mua-sim: 7 note chỉ có 2 ID gốc
+   (n1×5, n2×2), 24 change chỉ 16 ID gốc duy nhất, vì dr-review fan-out theo
+   SECTION và mỗi agent tự đánh ID cục bộ (skill ví dụ "n1") — daemon merge giữ
+   nguyên ID agent và coi nó là ID toàn trang, nên nhiều section trùng ID. ── */
+
+describe('WP-redline-id-namespace — sectionAnnotationId', () => {
+  test('namespace theo section index, đệm 0 hai chữ số, nối bằng dấu gạch ngang', () => {
+    assert.equal(sectionAnnotationId(3, 'n1'), 's03-n1');
+    assert.equal(sectionAnnotationId(0, 'c2'), 's00-c2');
+  });
+
+  test('rawId có khoảng trắng thừa được trim trước khi ghép', () => {
+    assert.equal(sectionAnnotationId(1, '  n1  '), 's01-n1');
+  });
+
+  test('sectionIndex >= 100 in nguyên, không cắt', () => {
+    assert.equal(sectionAnnotationId(100, 'n1'), 's100-n1');
+    assert.equal(sectionAnnotationId(123, 'c9'), 's123-c9');
+  });
+});
+
+describe('WP-redline-id-namespace — namespaceSectionAnnotations', () => {
+  test('trả bản sao với id đã namespace, không mutate input, giữ nguyên mọi field khác', () => {
+    const changes: DocChange[] = [
+      { id: 'n1', kind: 'gap', severity: 'major', reason: 'thiếu', quote: 'x' },
+      { id: 'n2', kind: 'flow', severity: 'minor', reason: 'y', before: 'z' },
+    ];
+    const original = JSON.parse(JSON.stringify(changes));
+    const out = namespaceSectionAnnotations(changes, 3);
+    assert.deepEqual(changes, original, 'input KHÔNG được mutate');
+    assert.equal(out[0]!.id, 's03-n1');
+    assert.equal(out[1]!.id, 's03-n2');
+    assert.equal(out[0]!.kind, 'gap');
+    assert.equal(out[0]!.severity, 'major');
+    assert.equal(out[0]!.reason, 'thiếu');
+    assert.equal(out[0]!.quote, 'x');
+    assert.equal(out[1]!.before, 'z');
+  });
+
+  test('hoạt động với DocNote (không chỉ DocChange)', () => {
+    const notes: DocNote[] = [
+      { id: 'n1', kind: 'gap', severity: 'major', anchor: 'a', finding: 'f', suggestion: 's' },
+    ];
+    const out = namespaceSectionAnnotations(notes, 4);
+    assert.equal(out[0]!.id, 's04-n1');
+    assert.equal(out[0]!.anchor, 'a');
+  });
+});
+
+describe('WP-redline-id-namespace — findDuplicateIds', () => {
+  test('mảng rỗng → []', () => {
+    assert.deepEqual(findDuplicateIds([]), []);
+  });
+
+  test('không trùng → []', () => {
+    assert.deepEqual(findDuplicateIds([{ id: 'n1' }, { id: 'n2' }]), []);
+  });
+
+  test('trùng → danh sách id trùng, mỗi id một lần, theo thứ tự gặp đầu', () => {
+    assert.deepEqual(
+      findDuplicateIds([{ id: 'n1' }, { id: 'n1' }, { id: 'n1' }, { id: 'n2' }, { id: 'n2' }]),
+      ['n1', 'n2'],
+    );
+  });
+});
+
+describe('WP-redline-id-namespace — mô phỏng merge nhiều section cùng đánh n1/c1', () => {
+  test('hai section cùng sinh n1/c1 → sau namespace, findDuplicateIds của mảng gộp rỗng', () => {
+    const sectionA: DocNote[] = [{ id: 'n1', kind: 'gap', severity: 'major', anchor: 'a', finding: 'f', suggestion: 's' }];
+    const sectionB: DocNote[] = [{ id: 'n1', kind: 'gap', severity: 'major', anchor: 'b', finding: 'f2', suggestion: 's2' }];
+    const merged = [...namespaceSectionAnnotations(sectionA, 1), ...namespaceSectionAnnotations(sectionB, 4)];
+    assert.deepEqual(findDuplicateIds(merged), []);
+    assert.deepEqual(merged.map((m) => m.id), ['s01-n1', 's04-n1']);
+  });
+
+  test('ID kết quả KHÔNG phụ thuộc thứ tự gọi namespace (s01 trước hay s04 trước → cùng tập ID)', () => {
+    const sectionA: DocChange[] = [{ id: 'c1', kind: 'gap', severity: 'major', reason: 'r1', quote: 'q1' }];
+    const sectionB: DocChange[] = [{ id: 'c1', kind: 'gap', severity: 'major', reason: 'r2', quote: 'q2' }];
+    const orderAB = [...namespaceSectionAnnotations(sectionA, 1), ...namespaceSectionAnnotations(sectionB, 4)];
+    const orderBA = [...namespaceSectionAnnotations(sectionB, 4), ...namespaceSectionAnnotations(sectionA, 1)];
+    const idsAB = new Set(orderAB.map((c) => c.id));
+    const idsBA = new Set(orderBA.map((c) => c.id));
+    assert.deepEqual(idsAB, idsBA);
+    assert.deepEqual([...idsAB].sort(), ['s01-c1', 's04-c1']);
+  });
+});
+
+describe('WP-redline-id-namespace — dedupeNotes chạy trên notes ĐÃ namespace', () => {
+  test('vẫn gộp đúng theo nội dung — key không dùng id', () => {
+    const sectionA: DocNote[] = [
+      { id: 'n1', kind: 'component', severity: 'major', rule_id: 'comp/x', anchor: 'a', finding: 'Dùng Text Field State=Default', suggestion: 'Dùng Text Field' },
+    ];
+    const sectionB: DocNote[] = [
+      { id: 'n1', kind: 'component', severity: 'major', rule_id: 'comp/x', anchor: 'b', finding: 'Dùng Text Field State=Default', suggestion: 'Dùng Text Field' },
+    ];
+    const merged = [...namespaceSectionAnnotations(sectionA, 0), ...namespaceSectionAnnotations(sectionB, 2)];
+    const { notes: out, droppedCount } = dedupeNotes(merged);
+    assert.equal(out.length, 1);
+    assert.equal(droppedCount, 1);
+    assert.equal(out[0]!.id, 's00-n1');
+  });
 });

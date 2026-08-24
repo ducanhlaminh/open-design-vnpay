@@ -319,6 +319,9 @@ hai phía**:
   trong tài liệu** — nó chỉ còn nằm trong danh sách bên lề. Daemon đánh hỏng
   trang khi thiếu.
 - Một change mà cả `before` lẫn `quote` đều rỗng là lỗi.
+- `id` chỉ cần duy nhất TRONG section của bạn (ví dụ `c1`, `c2`…); daemon sẽ tự
+  namespace thành `s<NN>-<id>` khi gộp cấp trang — trùng `id` trong cùng
+  section làm section bị loại.
 
 ```json
 [
@@ -443,6 +446,9 @@ Nội dung là một mảng `DocNote`:
   cả thứ không nhìn thấy trong tài liệu.
 - `suggestion`: nên làm gì. Viết đủ cụ thể để người đọc hành động được, đừng
   viết "cần xem lại".
+- `id` chỉ cần duy nhất TRONG section của bạn (ví dụ `n1`, `n2`…); daemon sẽ tự
+  namespace thành `s<NN>-<id>` khi gộp cấp trang — trùng `id` trong cùng
+  section làm section bị loại.
 - **Heading rỗng là gap mức `major`** (`kind: "gap"`) — **CHỈ khi đó là heading
   LÁ** (không có mục con nào sâu hơn ngay dưới nó). Một heading rỗng nhưng là
   **MỤC CHA** của các mục con sâu hơn (kickoff nêu rõ khi section của bạn rơi

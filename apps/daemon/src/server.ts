@@ -626,6 +626,8 @@ import {
   writeDocsReviewFailureNote,
   DOCS_REVIEW_FAILURE_NOTE,
   systemChangesPath,
+  namespaceSectionAnnotations,
+  findDuplicateIds,
   type DocChange,
   type DocNote,
   type DocPage,
@@ -18952,6 +18954,21 @@ export async function startServer({
                 warnings.push(...partitioned.warnings);
                 secErrors.push(...partitioned.errors);
 
+                // ID chỉ cần duy nhất TRONG section (daemon sẽ tự namespace khi
+                // gộp cấp trang, xem namespaceSectionAnnotations ngay dưới) —
+                // change và note là hai không gian id RIÊNG (note có tiền tố
+                // `note:` ở web), nên kiểm riêng từng mảng, không kiểm chung.
+                for (const dup of findDuplicateIds(agentChanges)) {
+                  secErrors.push(
+                    `ID trùng trong cùng section: "${dup}" — mỗi change/note trong một section phải có id duy nhất, agent phải tự đánh lại.`,
+                  );
+                }
+                for (const dup of findDuplicateIds(partitioned.notes)) {
+                  secErrors.push(
+                    `ID trùng trong cùng section: "${dup}" — mỗi change/note trong một section phải có id duy nhất, agent phải tự đánh lại.`,
+                  );
+                }
+
                 secErrors.push(
                   ...validateRuleIds(
                     [
@@ -18973,8 +18990,14 @@ export async function startServer({
                   tasks[taskIdx]!.status = 'failed';
                 } else {
                   finalSlices[si] = slice;
-                  keptChanges.push(...stampSectionProvenance(agentChanges, sec));
-                  keptNotes.push(...stampSectionProvenance(partitioned.notes, sec));
+                  // Namespace TRƯỚC rồi stamp — id agent chỉ cần duy nhất TRONG
+                  // section (đã kiểm ở trên); daemon là nơi DUY NHẤT cấp id
+                  // CUỐI (toàn trang) tại đây, xem docblock
+                  // namespaceSectionAnnotations trong docs-review.ts. sysChanges
+                  // (id `sys-flow-diagram-*`/`sys-comp-*`) KHÔNG đi qua đây —
+                  // chúng cấp trang, id đã duy nhất theo cấu tạo.
+                  keptChanges.push(...stampSectionProvenance(namespaceSectionAnnotations(agentChanges, sec.index), sec));
+                  keptNotes.push(...stampSectionProvenance(namespaceSectionAnnotations(partitioned.notes, sec.index), sec));
                   // Cập nhật `quote` của change bảng (đối tượng CHUNG với
                   // phần tử trong `sysChanges` — mutate tại đây phản ánh
                   // thẳng vào đó) thành bảng cuối agent đã sửa ô.
@@ -19006,6 +19029,19 @@ export async function startServer({
               // nối trước changes agent giữ lại từ các section đạt.
               changes = [...sysChanges, ...keptChanges];
               notes = keptNotes;
+
+              // Cổng unique TOÀN TRANG — lưới cuối, đặt TRƯỚC nhánh
+              // đạt/hỏng (writeFile ở dưới đọc `errors.length` để quyết định
+              // ghi hay fail-shut) chứ không đặt ở đó, vì nhánh đã rẽ theo
+              // if/else tại thời điểm đó nên push vào `errors` không còn kích
+              // hoạt fail-shut được nữa. Sau namespaceSectionAnnotations ở
+              // trên, về lý thuyết không thể trùng — trùng ở đây LÀ BUG DAEMON
+              // (không phải lỗi agent), nên fail-shut thay vì âm thầm ghi một
+              // trang có id đụng nhau.
+              const dupIdsAfterMerge = [...findDuplicateIds(changes), ...findDuplicateIds(notes)];
+              if (dupIdsAfterMerge.length > 0) {
+                errors.push(`ID annotation trùng sau merge — bug daemon, không ghi file: ${dupIdsAfterMerge.join(', ')}`);
+              }
 
               // Self-check daemon (chỉ khi chưa có lỗi nào khác): đối chiếu
               // lại chính những gì daemon vừa dựng — đây là bug DAEMON nếu

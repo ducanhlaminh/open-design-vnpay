@@ -691,6 +691,60 @@ function sectionProvenanceShapeErrors(item: Record<string, unknown>, index: numb
   return errors;
 }
 
+/** ID toàn trang của một change/note SAU khi gộp — `s<NN>-<rawId>` với `NN` là
+ *  `sectionIndex` đệm 0 hai chữ số (index ≥ 100 in nguyên, không cắt bớt chữ
+ *  số), nối bằng DẤU GẠCH NGANG. `rawId` được trim trước khi ghép.
+ *
+ *  Vì sao daemon phải cấp ID cuối ở ranh giới merge này (bằng chứng dự án
+ *  dich-vu-mua-sim, run thật): dr-review fan-out theo SECTION — mỗi agent chỉ
+ *  thấy LÁT của mình và tự đánh ID cục bộ theo ví dụ trong skill ("n1", "c1"…).
+ *  Trước bản vá này daemon merge giữ NGUYÊN id đó và coi nó là ID toàn trang,
+ *  nên một trang 7 note thực chất chỉ có 2 ID gốc (n1×5, n2×2), và 24 change
+ *  chỉ có 16 ID gốc duy nhất — nhiều mục bị UI gom lẫn vào nhau (key React /
+ *  bản đồ mark / điểm cuộn đụng nhau), bấm một mục trong rail có thể cuộn tới
+ *  MARK CỦA MỤC KHÁC hoặc không cuộn được.
+ *
+ *  Vì sao dấu GẠCH NGANG (`s01-n1`) chứ không phải `note:s01:n1` như đề xuất
+ *  ban đầu: (a) web tự thêm tiền tố `note:` khi dựng markId — ghép thêm dấu
+ *  `:` sẽ thành `note:note:…`; (b) id tham chiếu (`ref:<id>:<i>`) có hậu tố
+ *  `:<số>` và `selectFromDoc` gỡ hậu tố đó bằng regex `/:\d+$/` — một id chứa
+ *  `:` mà agent hay đặt thuần số ("1", "2") sẽ bị chính regex này ăn mất một
+ *  khúc. Gạch ngang né cả hai bẫy, vẫn tất định và truy được section nguồn. */
+export function sectionAnnotationId(sectionIndex: number, rawId: string): string {
+  const nn = String(sectionIndex).padStart(2, '0');
+  return `s${nn}-${rawId.trim()}`;
+}
+
+/** Namespace MỌI id trong `annotations` theo {@link sectionAnnotationId} — trả
+ *  bản sao (KHÔNG mutate `annotations`, giữ nguyên mọi field khác). Đây là nơi
+ *  DUY NHẤT server.ts gọi khi push change/note của một section đã đạt vào
+ *  mảng cấp trang; xem docblock {@link sectionAnnotationId} cho bằng chứng vì
+ *  sao cần namespace. */
+export function namespaceSectionAnnotations<T extends DocChange | DocNote>(
+  annotations: readonly T[],
+  sectionIndex: number,
+): T[] {
+  return annotations.map((annotation) => ({
+    ...annotation,
+    id: sectionAnnotationId(sectionIndex, annotation.id),
+  }));
+}
+
+/** Trả danh sách id xuất hiện ≥2 lần trong `items`, mỗi id MỘT lần, theo thứ tự
+ *  gặp ĐẦU TIÊN (không phải thứ tự alphabet) — dùng làm cổng kiểm trùng ở hai
+ *  chỗ: (1) trong một section (change/note của cùng một section phải duy nhất
+ *  TRONG section đó, trước khi namespace) và (2) toàn trang sau khi gộp/namespace
+ *  (lưới cuối — trùng ở đây nghĩa là bug daemon, không phải lỗi agent). */
+export function findDuplicateIds(items: ReadonlyArray<{ id: string }>): string[] {
+  const counts = new Map<string, number>();
+  const order: string[] = [];
+  for (const item of items) {
+    if (!counts.has(item.id)) order.push(item.id);
+    counts.set(item.id, (counts.get(item.id) ?? 0) + 1);
+  }
+  return order.filter((id) => (counts.get(id) ?? 0) >= 2);
+}
+
 /** Gắn provenance section lên bản sao của mỗi annotation. Dùng chung cho
  *  change/note để daemon luôn ghi đè metadata do agent có thể tự gửi và không
  *  mutate object parser. */

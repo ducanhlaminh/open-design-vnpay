@@ -304,4 +304,76 @@ describe('DocRedlinePreview mode integration', () => {
     expect(window.print).toHaveBeenCalled();
     expect(document.body.dataset.odPrint).toBe('redline');
   });
+
+  /* ── WP-redline-id-namespace: marksFor query DOM trực tiếp, bỏ map stale ── */
+
+  it('hai note id đã namespace theo section (s01-n1, s04-n1) ra hai card riêng, click card thứ hai cuộn đúng mark của NÓ', async () => {
+    sourceDoc = ['# Một', '', 'Nội dung neo một', '', '# Bốn', '', 'Nội dung neo hai'].join('\n');
+    sourceChanges = '[]';
+    sourceNotes = JSON.stringify([
+      { id: 's01-n1', kind: 'gap', severity: 'minor', anchor: 'Nội dung neo một', finding: 'x1', suggestion: 'y1' },
+      { id: 's04-n1', kind: 'gap', severity: 'minor', anchor: 'Nội dung neo hai', finding: 'x2', suggestion: 'y2' },
+    ]);
+
+    const scrolled: HTMLElement[] = [];
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = vi.fn(function (this: HTMLElement) { scrolled.push(this); });
+    try {
+      const { container } = render(<DocRedlinePreview projectId="p" file={FILE} />);
+      const noteTab = (await within(container).findAllByRole('tab', { name: 'Nhận xét (2)' }))[0]!;
+      fireEvent.click(noteTab);
+      await waitFor(() => expect(container.querySelector('[data-change-item="note:s01-n1"]')).not.toBeNull());
+      expect(container.querySelector('[data-change-item="note:s04-n1"]')).not.toBeNull();
+
+      fireEvent.click(container.querySelector('[data-change-item="note:s04-n1"]')!);
+      await waitFor(() => expect(scrolled.length).toBeGreaterThan(0));
+      expect(scrolled[scrolled.length - 1]!.getAttribute('data-change-id')).toBe('note:s04-n1');
+    } finally {
+      Element.prototype.scrollIntoView = original;
+    }
+  });
+
+  it('click card ngay sau khi đổi mode (mark vừa render lại) vẫn cuộn đúng — không đi qua map stale', async () => {
+    sourceDoc = ['# A', '', 'Đổi một', '', 'Ghi chú một'].join('\n');
+    sourceChanges = JSON.stringify([{ id: 'c1', kind: 'ux-writing', severity: 'minor', quote: 'Đổi một', reason: 'x' }]);
+    sourceNotes = JSON.stringify([{ id: 'n1', kind: 'gap', severity: 'minor', anchor: 'Ghi chú một', finding: 'x', suggestion: 'y' }]);
+
+    const scrolled: HTMLElement[] = [];
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = vi.fn(function (this: HTMLElement) { scrolled.push(this); });
+    try {
+      const { container } = render(<DocRedlinePreview projectId="p" file={FILE} />);
+      await waitFor(() => expect(container.querySelector('mark[data-change-id="c1"]')).not.toBeNull());
+
+      const noteTab = within(container).getAllByRole('tab', { name: 'Nhận xét (1)' })[0]!;
+      fireEvent.click(noteTab);
+      // KHÔNG await waitFor trước khi bấm card — bấm ngay lập tức, đúng cửa sổ
+      // mà một bản đồ mark gom-sẵn-trong-effect có thể chưa kịp cập nhật theo
+      // DOM vừa đổi (docHtml đổi mode).
+      const item = container.querySelector('[data-change-item="note:n1"]');
+      expect(item).not.toBeNull();
+      fireEvent.click(item!);
+
+      await waitFor(() => expect(scrolled.length).toBeGreaterThan(0));
+      expect(scrolled[scrolled.length - 1]!.getAttribute('data-change-id')).toBe('note:n1');
+    } finally {
+      Element.prototype.scrollIntoView = original;
+    }
+  });
+
+  it('file legacy trùng id (n1 hai lần) → parse ra n1 + n1#2, console.warn được gọi', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const legacyNotes = JSON.stringify([
+        { id: 'n1', kind: 'gap', severity: 'minor', anchor: 'Ghi chú một', finding: 'x1', suggestion: 'y1' },
+        { id: 'n1', kind: 'gap', severity: 'minor', anchor: 'Ghi chú hai', finding: 'x2', suggestion: 'y2' },
+      ]);
+      const parsed = parseDocNotes(legacyNotes)!;
+      expect(parsed.map((n) => n.id)).toEqual(['n1', 'n1#2']);
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(String(warnSpy.mock.calls[0]![0])).toContain('n1');
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
 });
