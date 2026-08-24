@@ -33,12 +33,13 @@ import { renderMarkdownToSafeHtml } from '../artifacts/markdown';
 // KHÔNG import từ './FileViewer' — FileViewer đã import component này để route
 // file redline, nên chiều ngược lại tạo import vòng (xem markdown-images.ts).
 import { inlineMarkdownImages } from '../runtime/markdown-images';
-import { injectDeletedRuns, injectHighlights, quoteSegments, type HighlightBlockTarget, type HighlightScope } from '../runtime/doc-highlight';
+import { injectDeletedRuns, injectHighlights, quoteSegments, type HighlightBlockTarget } from '../runtime/doc-highlight';
 import { wordDiff } from '../runtime/word-diff';
 import { Icon } from './Icon';
 import { MermaidDiagram } from './MermaidDiagram';
 import { DocRedlineModeControls } from './DocRedlineModeControls';
 import { DocRedlineNavigation } from './DocRedlineNavigation';
+import { createRedlineDocumentIndex } from './redline-document';
 import { annotationMode, modeLabel, type PreviewMode } from './redline-mode';
 import { getAdjacentNavigationId, getNavigationPosition, type RedlineNavigationItem } from './redline-navigation';
 import styles from './DocRedlinePreview.module.css';
@@ -676,26 +677,6 @@ const REF_ID_PREFIX = 'ref:';
 const HL_REF_INLINE_STYLE = 'background-color:transparent;color:inherit;border-bottom:1px dotted rgba(59,130,246,.85);cursor:pointer';
 const EMPTY_SET: ReadonlySet<string> = new Set<string>();
 
-function annotationScope(annotation: {
-  sectionIndex?: number;
-  sectionHeading?: string;
-  sectionStartHeadingOrdinal?: number;
-  sectionEndHeadingOrdinalExclusive?: number;
-}): HighlightScope | undefined {
-  if (
-    annotation.sectionIndex == null
-    && annotation.sectionHeading == null
-    && annotation.sectionStartHeadingOrdinal == null
-    && annotation.sectionEndHeadingOrdinalExclusive == null
-  ) return undefined;
-  return {
-    sectionIndex: annotation.sectionIndex,
-    sectionHeading: annotation.sectionHeading,
-    sectionStartHeadingOrdinal: annotation.sectionStartHeadingOrdinal,
-    sectionEndHeadingOrdinalExclusive: annotation.sectionEndHeadingOrdinalExclusive,
-  };
-}
-
 /** Nhãn dễ hiểu + lời giải thích của một tiêu chí. Chip hiện `label`, rê chuột
  *  hiện `summary`, bấm vào mở popover hiện `detail`. Ba mức dài dần cho cùng
  *  một ý: liếc qua → hiểu đại khái → đọc đủ. */
@@ -895,7 +876,7 @@ export function DocRedlinePreview({
 }: { projectId: string; file: ProjectFile; defaultPanelOpen?: boolean }) {
   const [editedText, setEditedText] = useState<string | null>(null);
   const [changesState, setChangesState] = useState<ChangesState>({ status: 'loading' });
-  const [notes, setNotes] = useState<DocRedlineNote[]>(NO_NOTES);
+  const [notesState, setNotes] = useState<DocRedlineNote[]>(NO_NOTES);
   const [notesRaw, setNotesRaw] = useState<string | null>(null);
   const [changesRaw, setChangesRaw] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -1062,10 +1043,12 @@ export function DocRedlinePreview({
     };
   }, [projectId, file.name, file.mtime]);
 
+  const documentIndex = useMemo(() => createRedlineDocumentIndex(editedText ?? ''), [editedText]);
   const changes = useMemo(
-    () => (changesState.status === 'ok' ? changesState.changes : NO_CHANGES),
-    [changesState],
+    () => documentIndex.sort(changesState.status === 'ok' ? changesState.changes : NO_CHANGES),
+    [changesState, documentIndex],
   );
+  const notes = useMemo(() => documentIndex.sort(notesState), [documentIndex, notesState]);
   const events = useMemo(
     () => (changesState.status === 'ok' ? changesState.events : []),
     [changesState],
@@ -1179,7 +1162,7 @@ export function DocRedlinePreview({
       const on = add ? paint.add : paint.edit;
       const className = !on ? styles.hlOff ?? '' : add ? styles.hlAdd ?? '' : styles.hl ?? '';
       const inlineStyle = !on ? HL_OFF_INLINE_STYLE : add ? HL_ADD_INLINE_STYLE : HL_INLINE_STYLE;
-      return quoteSegments(raw).map((text) => ({ id: c.id, text, className, inlineStyle, scope: annotationScope(c) }));
+      return quoteSegments(raw).map((text) => ({ id: c.id, text, className, inlineStyle, scope: documentIndex.scopeFor(c) }));
     });
     const changePass = injectHighlights(html, requests, styles.hl ?? '', HL_INLINE_STYLE);
 
@@ -1197,7 +1180,7 @@ export function DocRedlinePreview({
         text,
         className: paint.note ? styles.hlNote ?? '' : styles.hlOff ?? '',
         inlineStyle: paint.note ? NOTE_HL_INLINE_STYLE : HL_OFF_INLINE_STYLE,
-        scope: annotationScope(n),
+        scope: documentIndex.scopeFor(n),
       }));
     });
     const notePass = injectHighlights(changePass.html, noteRequests, styles.hlNote ?? '', NOTE_HL_INLINE_STYLE);
@@ -1214,7 +1197,7 @@ export function DocRedlinePreview({
       // và segment đầu là chỗ gần nhất với vị trí đoạn bị xoá.
       const seg = quoteSegments((c.anchor ?? '').trim())[0];
       if (!seg || !c.before) return [];
-      return [{ id: c.id, anchor: seg, text: c.before, scope: annotationScope(c) }];
+      return [{ id: c.id, anchor: seg, text: c.before, scope: documentIndex.scopeFor(c) }];
     });
     // Chỗ XOÁ giữ nguyên gạch ngang kể cả khi tắt tô màu: gạch ngang không
     // phải trang trí mà là thứ DUY NHẤT phân biệt "chữ đã bị bỏ" với "chữ đang
@@ -1268,7 +1251,7 @@ export function DocRedlinePreview({
       // but never promote their containing list item/table to a tinted block.
       blocks: [...changePass.blocks, ...notePass.blocks, ...delPass.blocks],
     };
-  }, [editedText, projectId, file.name, changes, notes, paint, previewMode]);
+  }, [editedText, projectId, file.name, changes, notes, paint, previewMode, documentIndex]);
 
   const docHtml = docRender?.html ?? null;
   const anchored = docRender?.matched ?? EMPTY_SET;
