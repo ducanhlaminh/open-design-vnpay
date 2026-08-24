@@ -29,6 +29,14 @@ import {
   type McpServerLike,
   type ScreenBuildSourceDoc,
 } from './figma-build.js';
+import { readFigmaConfig } from './figma-config.js';
+// ds-lab / lab-refs (WP-lab-refs-daemon, 2026-08-24 —
+// .tmp/pipeline/wp-lab-refs-daemon.yaml): "reference concept" — người dùng
+// dán 1..N link PAGE Figma ở rail cấu hình của "Bản đồ màn"; hai route ngay
+// dưới đây (GET/PUT `.../ds-lab/lab-refs`) là mặt HTTP DUY NHẤT của tính
+// năng đó — lab-refs.ts tự thuần/fs, module này chỉ orchestration (đọc
+// token, dựng labCwd, gọi scanLabRefs).
+import { readLabRefs, scanLabRefs } from './lab-refs.js';
 import { effectiveMcpAuthMode, readMcpConfig, type McpServerConfig } from './mcp-config.js';
 import { getToken } from './mcp-tokens.js';
 import { workflowDirForPipeline } from './pipelines.js';
@@ -41,6 +49,13 @@ export interface RegisterFigmaBuildRoutesDeps extends RouteDeps<'db' | 'http' | 
 const docsReviewCwd = async (projectsDir: string, projectId: string): Promise<string> => {
   const projectRoot = await ensureProject(projectsDir, projectId);
   return path.join(projectRoot, workflowDirForPipeline('dr-comp') ?? 'docs-review');
+};
+
+// ds-lab / lab-refs: cwd của workflow "ds-lab" — cùng khuôn `docsReviewCwd`
+// ngay trên, chỉ khác pipeline id gốc ('lab-docs' → workflow 'ds-lab').
+const labWorkflowCwd = async (projectsDir: string, projectId: string): Promise<string> => {
+  const projectRoot = await ensureProject(projectsDir, projectId);
+  return path.join(projectRoot, workflowDirForPipeline('lab-docs') ?? 'ds-lab');
 };
 
 function figmaFrameUrl(fileKey: string, nodeId: string): string {
@@ -493,6 +508,45 @@ export function registerFigmaBuildRoutes(app: Express, deps: RegisterFigmaBuildR
       const cwd = await docsReviewCwd(PROJECTS_DIR, String(req.params.projectId ?? ''));
       await writeFigmaPreviewConfig(cwd, link);
       res.json({ config: link });
+    } catch (err: any) {
+      res.status(500).json({ error: { code: 'INTERNAL', message: String(err && err.message ? err.message : err) } });
+    }
+  });
+
+  // ── ds-lab / lab-refs: "reference concept" — xem docblock lab-refs.ts ────
+
+  app.get('/api/projects/:projectId/ds-lab/lab-refs', async (req: any, res: any) => {
+    if (!guard(req, res)) return;
+    try {
+      const cwd = await labWorkflowCwd(PROJECTS_DIR, String(req.params.projectId ?? ''));
+      const refs = await readLabRefs(cwd);
+      res.json(refs);
+    } catch (err: any) {
+      res.status(500).json({ error: { code: 'INTERNAL', message: String(err && err.message ? err.message : err) } });
+    }
+  });
+
+  app.put('/api/projects/:projectId/ds-lab/lab-refs', async (req: any, res: any) => {
+    if (!guard(req, res)) return;
+    const rawLinks: unknown[] = Array.isArray(req.body?.links) ? req.body.links : [];
+    const links = rawLinks.filter((l): l is string => typeof l === 'string' && l.trim().length > 0);
+    if (links.length === 0) {
+      return res.status(400).json({ error: 'INVALID_INPUT', detail: 'Cần ít nhất một link Figma (dạng "Copy link to page").' });
+    }
+    if (links.length > 10) {
+      return res.status(400).json({ error: 'INVALID_INPUT', detail: 'Tối đa 10 link mỗi lần quét.' });
+    }
+    try {
+      // Token daemon-side (PAT) — KHÔNG BAO GIỜ log/echo giá trị token, chỉ
+      // giữ trong biến cục bộ rồi truyền thẳng vào scanLabRefs.
+      const figmaConfig = await readFigmaConfig(RUNTIME_DATA_DIR);
+      const token = figmaConfig?.token ?? '';
+      if (!token) {
+        return res.status(400).json({ error: 'FIGMA_TOKEN_REQUIRED', detail: 'Chưa cấu hình Figma token trong Cài đặt → Figma.' });
+      }
+      const cwd = await labWorkflowCwd(PROJECTS_DIR, String(req.params.projectId ?? ''));
+      const { refs, warnings } = await scanLabRefs({ labCwd: cwd, links, token });
+      res.json({ refs, warnings });
     } catch (err: any) {
       res.status(500).json({ error: { code: 'INTERNAL', message: String(err && err.message ? err.message : err) } });
     }

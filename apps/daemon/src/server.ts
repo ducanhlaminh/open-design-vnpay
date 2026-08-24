@@ -535,6 +535,13 @@ import {
   SCREEN_MAP_FILE_REL,
   SCREEN_MAP_MD_REL,
 } from './lab-map.js';
+// ds-lab / lab-refs (WP-lab-refs-daemon, 2026-08-24 —
+// .tmp/pipeline/wp-lab-refs-daemon.yaml) — "reference concept": chỉ cần
+// `readLabRefs` (fail-soft) ở đây; scan/HTTP đã ở figma-build-routes.ts.
+// runLabMap đọc `concepts[]` cho buildMapBrief; runLabCompose tra
+// `reference.conceptId` của các màn scoped (từ summarizeScreenMapForCompose)
+// vào registry hiện tại để lấy conceptName/png mới nhất.
+import { readLabRefs } from './lab-refs.js';
 // ds-lab / lab-shell (WP-lab-shell, 2026-08-23 — .tmp/pipeline/wp-lab-shell.yaml)
 // — "Khung màn": module thuần dò comp DS/kit đáp ứng từng vai trò khung
 // (`detectShellBindings`) — server.ts (runLabCompose + runLabKitPlan) là
@@ -20302,6 +20309,28 @@ export async function startServer({
         // `mapSummary.shells`.
         const shellBindings = detectShellBindings(catalog, kitComponents);
 
+        // WP-lab-refs-daemon (2026-08-24): reference concept của các màn
+        // scoped (`mapSummary.references` — raw từ `screen-map.json`, xem
+        // `summarizeScreenMapForCompose`) → tra lại `refs/refs.json` HIỆN TẠI
+        // theo `reference.conceptId` (KHÔNG tin `reference.png` có thể đã cũ
+        // từ lúc "Bản đồ màn" chạy — một lượt quét lại refs sau đó có thể đã
+        // đổi/dọn PNG) để lấy tên + ảnh mới nhất. Concept không còn trong
+        // registry hiện tại, hoặc chưa có ảnh (`png` rỗng — xem
+        // `scanLabRefs`'s fail-soft) → bỏ dòng reference cho màn đó, KHÔNG
+        // fail cả stage (đúng tinh thần "map là ưu tiên, không phải điều
+        // kiện cứng" của toàn bộ khối `mapSummary` này).
+        const rawReferences = mapSummary?.references ?? [];
+        const labRefs = rawReferences.length > 0 ? await readLabRefs(labCwd) : null;
+        const conceptById = new Map((labRefs?.concepts ?? []).map((c) => [c.id, c] as const));
+        const references = rawReferences
+          .map(({ key, reference }) => {
+            const concept = conceptById.get(reference.conceptId);
+            const png = concept?.png || reference.png || '';
+            const url = `https://www.figma.com/design/${reference.fileKey}/?node-id=${reference.nodeId.replace(':', '-')}`;
+            return { key, ...(concept?.name ? { conceptName: concept.name } : {}), png, url };
+          })
+          .filter((r) => r.png.length > 0);
+
         const appFeature = (project.name && String(project.name).trim()) || projectId;
         const brief = buildComposeBrief({
           docsIndex,
@@ -20315,7 +20344,7 @@ export async function startServer({
           hasKit: kitNames.length > 0,
           kitNames,
           hasPinterest: !!pinterest,
-          map: mapSummary ? { ...mapSummary, bindings: shellBindings } : null,
+          map: mapSummary ? { ...mapSummary, bindings: shellBindings, references } : null,
         });
 
         // (2) Spawn MỘT run thường — Symbol allow-list NGUYÊN KHUÔN
@@ -20916,12 +20945,19 @@ export async function startServer({
           .then((entries) => entries.filter((e) => e.toLowerCase().endsWith('.md')).sort().slice(0, 20))
           .catch(() => [] as string[]);
 
+        // WP-lab-refs-daemon (2026-08-24): concept tham khảo đã quét (rail
+        // cấu hình của PipelinesView, PUT .../ds-lab/lab-refs) — fail-soft
+        // (readLabRefs không throw); rỗng → buildMapBrief bỏ qua, hành vi CŨ.
+        const labRefs = await readLabRefs(labCwd);
+        const concepts = labRefs.concepts.map((c) => ({ id: c.id, name: c.name, png: c.png }));
+
         const appFeature = (project.name && String(project.name).trim()) || projectId;
         const brief = buildMapBrief({
           docsIndex,
           scopeHint: scopeHint ?? null,
           appFeature,
           mapSrc,
+          concepts,
         });
 
         // Spawn MỘT run thường — Symbol allow-list RỖNG (KHÔNG MCP nào,

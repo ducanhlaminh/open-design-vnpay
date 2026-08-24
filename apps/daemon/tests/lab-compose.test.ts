@@ -538,6 +538,56 @@ describe('buildComposeBrief', () => {
     });
     expect(brief.length).toBeLessThanOrEqual(2100);
   });
+
+  // ── WP-lab-refs-daemon (.tmp/pipeline/wp-lab-refs-daemon.yaml): reference concept ──
+
+  it('map.references absent/empty → BYTE-IDENTICAL to the pre-WP output (with and without map)', () => {
+    const withoutMap = buildComposeBrief({ ...minOpts, scopeHint: null });
+    expect(withoutMap).not.toContain('Reference');
+    expect(withoutMap).not.toContain('SÁT CẤU TRÚC');
+
+    const withMapNoRefs = buildComposeBrief({
+      ...baseOpts,
+      scopeHint: null,
+      map: { screens: [], mainPath: [], scoped: ['doc__6.1.1'] },
+    });
+    expect(withMapNoRefs).not.toContain('Reference');
+    expect(withMapNoRefs).not.toContain('SÁT CẤU TRÚC');
+  });
+
+  it('one reference per scoped screen with a reference → one "Reference <key>" input line each, with image + url', () => {
+    const brief = buildComposeBrief({
+      ...baseOpts,
+      scopeHint: null,
+      map: {
+        screens: [],
+        mainPath: [],
+        scoped: ['doc__6.1.1', 'doc__6.2.1'],
+        references: [
+          { key: 'doc__6.1.1', conceptName: 'Trang chủ', png: 'refs/F-1-2.png', url: 'https://www.figma.com/design/F/?node-id=1-2' },
+        ],
+      },
+    });
+    expect(brief).toContain('- Reference doc__6.1.1: ảnh `refs/F-1-2.png` + https://www.figma.com/design/F/?node-id=1-2 — SÁT CẤU TRÚC (xem luật reference trong skill)');
+    // No reference for doc__6.2.1 → no line for it.
+    expect(brief).not.toContain('Reference doc__6.2.1');
+  });
+
+  it('≥1 reference → adds ONE reminder line about reference-driven layout', () => {
+    const brief = buildComposeBrief({
+      ...baseOpts,
+      scopeHint: null,
+      map: {
+        screens: [],
+        mainPath: [],
+        scoped: ['doc__6.1.1'],
+        references: [{ key: 'doc__6.1.1', png: 'refs/F-1-2.png', url: 'https://www.figma.com/design/F/?node-id=1-2' }],
+      },
+    });
+    expect(brief).toContain(
+      '- Màn có reference: bố cục THEO reference (cấu trúc khối, thứ tự, tỷ lệ) — comp từ DS/kit, style theo tokens, nội dung thật từ docs; màn không reference: sáng tác như cũ.',
+    );
+  });
 });
 
 // ── resolveLabPreviewConfig ──────────────────────────────────────────────────

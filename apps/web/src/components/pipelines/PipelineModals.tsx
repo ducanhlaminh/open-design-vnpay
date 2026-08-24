@@ -45,6 +45,7 @@ import { relativeTimeLong } from '../../utils/chatTime';
 import { fetchDesignSystems } from '../../providers/registry';
 import { ProjectDesignSystemPicker } from '../ProjectDesignSystemPicker';
 import { AppPoolTree } from './AppPoolTree';
+import { LabRefsSection } from './LabRefsSection';
 import { PlModal } from './PlModal';
 import { UploadDropzone, toPendingFiles, type PendingFile } from './UploadDropzone';
 import { ConfluenceTreeImport } from './ConfluenceTreeImport';
@@ -1301,7 +1302,7 @@ export interface RunAllPayload {
 /** Section duy nhất mà modal hiển thị khi mở từ nút "Đổi" của một dòng trên rail
  *  cấu hình — cùng modal, nhưng chỉ đúng phần người dùng bấm vào. Không truyền =
  *  modal đầy đủ (mọi section). Cả hai chế độ footer đều là "Hủy / Lưu". */
-export type RunAllFocus = 'source' | 'designSystem' | 'targets' | 'stages' | 'mode';
+export type RunAllFocus = 'source' | 'designSystem' | 'targets' | 'stages' | 'mode' | 'labRefs';
 
 const RUN_ALL_FOCUS_TITLES: Record<RunAllFocus, string> = {
   source: 'Nguồn tài liệu',
@@ -1309,6 +1310,7 @@ const RUN_ALL_FOCUS_TITLES: Record<RunAllFocus, string> = {
   targets: 'Sản phẩm cần build',
   stages: 'Các bước sẽ chạy',
   mode: 'Chế độ chạy',
+  labRefs: 'Concept tham khảo',
 };
 
 /**
@@ -1481,7 +1483,9 @@ export function RunAllModal({
   hasTerminal = true,
   hasDesignSystem = true,
   hasUpload = false,
+  hasLabRefs = false,
   appId,
+  projectId,
   supportsLean = true,
   anySucceeded,
   focus,
@@ -1532,10 +1536,18 @@ export function RunAllModal({
    *  không — có thì modal mở thêm nhánh nguồn "Tải file .md lên" bên cạnh
    *  Confluence, đúng như nút Run của riêng bước đó. */
   hasUpload?: boolean;
+  /** Workflow có bước `lab-compose` (ds-lab, `hasLabRefsStage` trong
+   *  PipelinesView.tsx) — có thì modal thêm section "Concept tham khảo"
+   *  (`LabRefsSection`). Section này KHÔNG đi qua `configPatchFor`/
+   *  `RunAllConfig` — refs được ghi qua PUT riêng của chính section. */
+  hasLabRefs?: boolean;
   /** App sở hữu dự án đang mở (`PipelineProject.app.id`) — khi có VÀ pool của
    *  App đó không rỗng, modal thêm thẻ nguồn "Tài liệu App" (docs/app-docs-pool-spec.md
    *  §WP-6). Vắng mặt (dự án chưa gán App) → không có thẻ này, hành vi y hệt cũ. */
   appId?: string;
+  /** Id dự án đang mở — chỉ `LabRefsSection` cần (GET/PUT
+   *  `/api/projects/:projectId/ds-lab/lab-refs`). Bắt buộc có khi `hasLabRefs`. */
+  projectId?: string;
   /** Lean là khái niệm CHỈ của docs-to-ui (bỏ hành trình/research/rà soát để
    *  tới UI nhanh hơn). docs-to-prd không có bước nào bỏ được — hành trình +
    *  research chính là bằng chứng của bài review — nên workflow đó ẩn hẳn
@@ -1829,6 +1841,12 @@ export function RunAllModal({
         return { stageIds: selectedStages.map((s) => s.id), ...(hasTerminal ? { terminal } : {}) };
       case 'mode':
         return { lean };
+      case 'labRefs':
+        // Concept tham khảo KHÔNG thuộc RunAllConfig — `LabRefsSection` tự ghi
+        // qua PUT riêng (`putLabRefs`) ngay khi bấm "Quét & lưu". Nút "Lưu"
+        // chung của modal ở section này chỉ đóng modal lại, không patch field
+        // nào (patch rỗng = daemon giữ nguyên mọi field khác).
+        return {};
     }
   };
 
@@ -1865,7 +1883,8 @@ export function RunAllModal({
     // rỗng cũng không render được stepper), nhưng section này đọc dữ liệu từ
     // caller nên vẫn phải có nhánh cho "caller chưa truyền gì".
     (focus === 'stages' && stages.length === 0) ||
-    (focus === 'mode' && !supportsLean);
+    (focus === 'mode' && !supportsLean) ||
+    (focus === 'labRefs' && !hasLabRefs);
 
   const save = async () => {
     if (busy || !canSave || focusUnavailable) return;
@@ -2468,6 +2487,11 @@ export function RunAllModal({
           popoverZIndex={1100}
         />
       </div>
+      ) : null}
+      {hasLabRefs && shows('labRefs') && projectId ? (
+        <div className="pl-modal-field">
+          <LabRefsSection projectId={projectId} />
+        </div>
       ) : null}
       {anySucceeded && !focus ? (
         // Checkbox hardening lives in .pl-runall-toggle (pipelines.css) — the

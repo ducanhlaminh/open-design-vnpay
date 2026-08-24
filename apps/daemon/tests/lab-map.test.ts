@@ -9,6 +9,12 @@
 // parsing (screen-map.json's `shell` field), deriveShellDefaults/
 // resolveScreenShell/fillShellDefaults, and the "Khung" column in
 // renderScreenMapMd/summarizeScreenMapForCompose's `shells`.
+//
+// WP-lab-refs-daemon (2026-08-24 — .tmp/pipeline/wp-lab-refs-daemon.yaml): +
+// `reference` field parsing/validation, the conditional "Concept" column in
+// renderScreenMapMd (only rendered when ≥1 screen has a reference — keeps
+// screen-map.md BYTE-IDENTICAL for projects without refs, per must_not), and
+// buildMapBrief's optional `concepts` param (null/empty → brief Y HỆT cũ).
 
 import { describe, expect, it } from 'vitest';
 
@@ -638,5 +644,120 @@ describe('buildMapBrief', () => {
     expect(brief).toContain('CÁI GÌ');
     expect(brief).toContain('LÀM THẾ NÀO');
     expect(brief).toContain('Key nguyên văn docs-review');
+  });
+
+  // ── WP-lab-refs-daemon: optional `concepts` param ─────────────────────────
+
+  it('concepts absent/null/empty → BYTE-IDENTICAL to the pre-WP output', () => {
+    const before =
+      '# Bản đồ màn · Ví điện tử\n' +
+      'Áp skill `lab-map` — luật, recipe và hợp đồng cứng đã nằm trong system prompt của bạn; brief này chỉ đưa dữ liệu của lần chạy.\n' +
+      '\n' +
+      '## Đầu vào lần này\n' +
+      '- Tài liệu: `docs/` (đáng chú ý: "_index.md"; đọc cả thư mục)\n' +
+      '- Nguồn docs-review đã staging `map-src/`: flowchart ×2 (FLOW-1, FLOW-2), ux-review ×1, _screens.json ✓, screen.json ×4\n' +
+      '- Figma: không có trong phiên này — chủ đích.\n' +
+      '- Định hướng người dùng: (không có)\n' +
+      '\n' +
+      '## Việc cần làm\n' +
+      '- Đọc `map-src/` trước, `docs/` sau để đối chiếu.\n' +
+      '- Liệt kê từng luồng kèm mainPath (đường đi chính, không phải mọi nhánh).\n' +
+      '- Với mỗi màn: purpose, mustHave (role + content), states, nav.\n' +
+      '- Với mỗi màn: shell (kind + must/should/avoid) theo bảng luật skill; bỏ trống thì daemon tự suy.\n' +
+      '- Ghi đúng hai file kết quả trước khi kết thúc phiên.\n' +
+      '\n' +
+      '## Nhắc luật hay vi phạm nhất (chi tiết trong skill)\n' +
+      '- Bản đồ nói CÁI GÌ, không LÀM THẾ NÀO (không toạ độ/thứ tự/bố cục).\n' +
+      '- Key nguyên văn docs-review khi có, ổn định giữa các lần chạy.\n' +
+      '- Có ux-review → ưu tiên luồng proposed, ghi rõ basis.\n' +
+      '\n' +
+      '## Kết thúc — ghi đúng file\n' +
+      '- `screen-map.json` — `{"schema_version":1,"generatedFrom","flows":[{"id","mainPath"}],"screens":[{"key","name","mustHave","shell"}]}`\n' +
+      '- `screen-map.md` — bảng cho người duyệt';
+    expect(buildMapBrief(baseOpts)).toBe(before);
+    expect(buildMapBrief({ ...baseOpts, concepts: null })).toBe(before);
+    expect(buildMapBrief({ ...baseOpts, concepts: [] })).toBe(before);
+  });
+
+  it('concepts present → adds an input line naming the count and a task line about mapping `reference`', () => {
+    const brief = buildMapBrief({
+      ...baseOpts,
+      concepts: [
+        { id: 'F:1:2', name: 'Màn A', png: 'refs/F-1-2.png' },
+        { id: 'F:1:3', name: 'Màn B', png: 'refs/F-1-3.png' },
+      ],
+    });
+    expect(brief).toContain('Concept tham khảo: refs/refs.json — 2 concept (ảnh refs/*.png, Read được)');
+    expect(brief).toContain('Map mỗi màn ↔ một concept khớp nhất');
+    expect(brief).toContain('field `reference`');
+  });
+});
+
+// ── WP-lab-refs-daemon: `reference` field ────────────────────────────────
+
+describe('parseScreenMap — reference field', () => {
+  it('parses a valid reference (conceptId/fileKey/nodeId, optional png)', () => {
+    const parsed = parseScreenMap(
+      JSON.stringify({
+        screens: [
+          { key: 'S1', name: 'A', reference: { conceptId: 'F:1:2', fileKey: 'F', nodeId: '1:2', png: 'refs/F-1-2.png' } },
+        ],
+      }),
+    );
+    expect(parsed).not.toBeNull();
+    expect(parsed!.warnings).toEqual([]);
+    expect(parsed!.map.screens[0]!.reference).toEqual({ conceptId: 'F:1:2', fileKey: 'F', nodeId: '1:2', png: 'refs/F-1-2.png' });
+  });
+
+  it('a reference missing conceptId/fileKey/nodeId is dropped, with a warning — the screen is kept', () => {
+    const parsed = parseScreenMap(
+      JSON.stringify({ screens: [{ key: 'S1', name: 'A', reference: { fileKey: 'F' } }] }),
+    );
+    expect(parsed).not.toBeNull();
+    expect(parsed!.map.screens[0]!.reference).toBeUndefined();
+    expect(parsed!.map.screens[0]!.key).toBe('S1');
+    expect(parsed!.warnings.some((w) => w.includes('reference'))).toBe(true);
+  });
+
+  it('a reference that is not an object is dropped, with a warning', () => {
+    const parsed = parseScreenMap(JSON.stringify({ screens: [{ key: 'S1', name: 'A', reference: 'nope' }] }));
+    expect(parsed!.map.screens[0]!.reference).toBeUndefined();
+    expect(parsed!.warnings.some((w) => w.includes('reference'))).toBe(true);
+  });
+
+  it('no "reference" field at all → absent, no warning', () => {
+    const parsed = parseScreenMap(JSON.stringify({ screens: [{ key: 'S1', name: 'A' }] }));
+    expect(parsed!.map.screens[0]!.reference).toBeUndefined();
+    expect(parsed!.warnings).toEqual([]);
+  });
+});
+
+describe('renderScreenMapMd — Concept column', () => {
+  it('no screen has a reference → header/rows are BYTE-IDENTICAL (no Concept column)', () => {
+    const md = renderScreenMapMd({
+      schema_version: 1,
+      generatedFrom: 'docs',
+      flows: [],
+      screens: [{ key: 'S1', name: 'A', mustHave: [] }],
+    });
+    expect(md).toContain('| Key | Tên | Mục đích | Phải có | Khung | Trạng thái | Đi tới |');
+    expect(md).not.toContain('Concept');
+  });
+
+  it('≥1 screen has a reference → adds a "Concept" column; a row without one shows "—"', () => {
+    const md = renderScreenMapMd({
+      schema_version: 1,
+      generatedFrom: 'docs',
+      flows: [],
+      screens: [
+        { key: 'S1', name: 'A', mustHave: [], reference: { conceptId: 'F:1:2', fileKey: 'F', nodeId: '1:2' } },
+        { key: 'S2', name: 'B', mustHave: [] },
+      ],
+    });
+    expect(md).toContain('Concept');
+    const row1 = md.split('\n').find((l) => l.startsWith('| S1 '));
+    const row2 = md.split('\n').find((l) => l.startsWith('| S2 '));
+    expect(row1).toContain('F:1:2');
+    expect(row2).toMatch(/\|\s*—\s*\|/);
   });
 });

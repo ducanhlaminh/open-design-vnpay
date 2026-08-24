@@ -1,0 +1,130 @@
+/* Section "Concept tham khảo" (RunAllModal, focus 'labRefs') — cùng họ với
+   FigmaLinksPanel.module.css: viền token, bo góc, không hardcode màu. Riêng
+   phần này thêm lưới thumbnail cuộn trong khung max-height để không phá
+   layout modal khi có nhiều concept. */
+
+.section {
+  display: grid;
+  gap: 10px;
+}
+
+.scanBtn {
+  justify-self: start;
+}
+
+.linkButton {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
+  font-size: inherit;
+  font-weight: 600;
+}
+
+.loadError {
+  margin: 0;
+  color: var(--red);
+  font-size: 13px;
+}
+
+.pages {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.pages li {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.pages li > svg {
+  flex: 0 0 auto;
+  margin-top: 2px;
+  color: var(--red);
+}
+
+.pages li[data-ok='true'] > svg {
+  color: var(--success, var(--green));
+}
+
+.pageText {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.pageText strong {
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.pageText small {
+  color: var(--text-muted);
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+
+/* Lưới thumbnail concept — cuộn riêng trong khung, không kéo giãn modal. */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  gap: 8px;
+  max-height: 260px;
+  overflow-y: auto;
+  padding: 2px;
+}
+
+.cell {
+  display: grid;
+  gap: 4px;
+  justify-items: center;
+  text-align: center;
+}
+
+.cellImg {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  object-fit: cover;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-subtle);
+}
+
+.cellError {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  background: var(--bg-subtle);
+  color: var(--text-muted);
+  font-size: 11.5px;
+}
+
+.cellName {
+  color: var(--text-muted);
+  font-size: 11.5px;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.warnings {
+  margin: 0;
+  padding: 0 0 0 16px;
+  color: var(--text-muted);
+  font-size: 12.5px;
+  line-height: 1.4;
+}

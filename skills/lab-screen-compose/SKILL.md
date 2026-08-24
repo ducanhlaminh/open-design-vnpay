@@ -42,6 +42,41 @@ liệu có nhúng ảnh mockup (từ BA), ảnh đó CHỈ để bạn hiểu t�
 không copy cấu trúc khối từ ảnh. Bố cục là việc bạn tự sáng tác từ comp base,
 không phải tái tạo pixel của ảnh tham khảo.
 
+## Màn có reference concept (WP-lab-refs-daemon, 2026-08-24)
+
+Một số màn trong brief có dòng `Reference <key>: ảnh \`refs/<slug>.png\` +
+<url> — SÁT CẤU TRÚC` — nghĩa là "Bản đồ màn" (`lab-map`) đã MAP màn này với
+một concept Figma người dùng dán tham khảo (`screen-map.json`'s field
+`reference`). Với ĐÚNG những màn có dòng này, **ĐẢO** luật cấm-chép-bố-cục ở
+mục "Vai của bạn" trên: concept ĐÓ là NGUỒN SỰ THẬT BỐ CỤC — chép cấu trúc
+khối, thứ tự xuất hiện, tỷ lệ/nhóm của nó, KHÔNG tự sáng tác bố cục khác.
+Xem cấu trúc concept bằng Read ảnh `refs/<slug>.png` + (nếu MCP hỗ trợ)
+`get_design_context`/`get_screenshot` với chính URL nêu trong brief (URL trỏ
+vào FILE THAM KHẢO của người dùng, không phải file preview của bạn).
+
+Dù bố cục SÁT concept, các luật hợp đồng cứng KHÁC vẫn BẮT BUỘC y nguyên —
+đây KHÔNG phải một hạ sách "chép nguyên khối":
+
+- Mọi phần tử vẫn phải là **instance component DS/kit thật** (luật #1/#5) —
+  TUYỆT ĐỐI không copy node từ file tham khảo vào file preview, không tự vẽ
+  shape trần để "giống ảnh".
+- Màu/chữ/spacing vẫn CHỈ lấy từ `tokens.md` (luật #4) — KHÔNG bê nguyên style
+  thô (hex, font, khoảng cách đo trên ảnh) của concept tham khảo.
+- Nội dung vẫn là nội dung THẬT từ `docs/` (luật #4) — KHÔNG chép chữ mẫu của
+  concept tham khảo (đó là placeholder/demo content của người khác, không
+  phải dữ liệu domain của dự án này).
+- `mustHave`/checklist coverage của bản đồ vẫn phải đủ (mục "Bản đồ màn
+  (`screen-map.json`)" bên dưới) — SÁT CẤU TRÚC không miễn trừ việc thiếu một
+  vai trò bắt buộc.
+- Một khối của concept mà DS/kit KHÔNG có comp tương ứng → dựng TỐI GIẢN từ
+  comp gần nhất (không copy node, không tự vẽ trần) và ghi rõ vào `notes` của
+  màn trong `lab-result.json` — đừng lặng lẽ bỏ khối đó hoặc lặng lẽ đổi bố
+  cục để "lách".
+
+Màn **KHÔNG có** dòng "Reference" trong brief → toàn bộ mục này không áp dụng
+— quay lại hành vi CŨ nguyên vẹn (kể cả luật cấm chép bố cục từ mockup docs ở
+mục "Vai của bạn" trên).
+
 ## Nguyên liệu
 
 - `criteria/components.md` — danh mục comp base HỢP LỆ của Design System (mọi

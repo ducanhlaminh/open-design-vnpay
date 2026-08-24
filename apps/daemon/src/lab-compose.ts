@@ -175,6 +175,12 @@ export interface BuildComposeBriefOptions {
      *  nhiều màn khác nhau); dòng "Comp khung" tự lọc đúng role xuất hiện
      *  trong `shells` của scoped. */
     bindings?: { role: string; name: string; key?: string; from: 'kit' | 'ds' }[];
+    /** WP-lab-refs-daemon (2026-08-24 — .tmp/pipeline/wp-lab-refs-daemon.yaml):
+     *  reference concept ĐÃ RÁP SẴN cho các màn scoped có `reference`
+     *  (server.ts's `runLabCompose` tra lại `refs/refs.json` hiện tại theo
+     *  `reference.conceptId` — xem `summarizeScreenMapForCompose`'s
+     *  `references`). Rỗng/absent → không dòng nào (hành vi CŨ). */
+    references?: { key: string; conceptName?: string; png: string; url: string }[];
   } | null;
 }
 
@@ -268,6 +274,20 @@ export function buildComposeBrief(opts: BuildComposeBriefOptions): string {
   const structureRuleLine = map
     ? '- Frame tên theo key bản đồ, mọi mustHave có mặt; khung đúng shell (phải có/tránh), một điểm nhấn, ba lớp (luật #2/#6/#7/#8).'
     : '- Khung màn chuẩn 390, App Bar/Tabbar, một điểm nhấn; ba lớp nhìn thấy được, listing nổi khỏi sheet, nền không che chữ (luật #6/#7/#8).';
+  // WP-lab-refs-daemon (2026-08-24): một dòng "Reference <key>" cho MỖI màn
+  // scoped có reference (server.ts đã ráp sẵn conceptName/png/url) — rỗng/
+  // absent → không dòng nào (hành vi CŨ). renderLabBrief CHỈ giữ 3 dòng đầu
+  // của `reminderLines` (`.slice(0, 3)`, lab-brief.ts — module dùng chung,
+  // ngoài `touches` của WP này) nên dòng nhắc reference được ĐẶT ĐẦU để chắc
+  // chắn không bị cắt — cái giá là `structureRuleLine` (dòng #4 khi có
+  // reference) rơi khỏi 3 dòng hiển thị; luật đó vẫn còn trong system prompt
+  // của skill, brief chỉ là nhắc lại, không phải nguồn duy nhất.
+  const references = map?.references ?? [];
+  const referenceLines = references.map(
+    (r) => `- Reference ${r.key}: ảnh \`${r.png}\` + ${r.url} — SÁT CẤU TRÚC (xem luật reference trong skill)`,
+  );
+  const referenceReminderLine =
+    '- Màn có reference: bố cục THEO reference (cấu trúc khối, thứ tự, tỷ lệ) — comp từ DS/kit, style theo tokens, nội dung thật từ docs; màn không reference: sáng tác như cũ.';
 
   return renderLabBrief({
     title: `# Sáng tác màn · ${opts.appFeature}`,
@@ -281,6 +301,7 @@ export function buildComposeBrief(opts: BuildComposeBriefOptions): string {
       mapLine,
       ...shellLines,
       ...(compKhungLine ? [compKhungLine] : []),
+      ...referenceLines,
       figmaLine,
       toolLine,
       scopeLine,
@@ -292,6 +313,7 @@ export function buildComposeBrief(opts: BuildComposeBriefOptions): string {
       '- Tự-kiểm cấu trúc + get_screenshot rồi ghi kết quả.',
     ],
     reminderLines: [
+      ...(references.length > 0 ? [referenceReminderLine] : []),
       '- Chỉ file preview, nguyên tử theo lần execute-code — id ruột instance stale ngay khi call kết thúc (luật #1/#3).',
       '- Nội dung trong slot, không vẽ đè, placeholder phải override/hide (luật #5).',
       structureRuleLine,

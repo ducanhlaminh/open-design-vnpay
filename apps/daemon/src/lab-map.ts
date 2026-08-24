@@ -97,6 +97,13 @@ export interface ScreenMapScreen {
    *  lab-map GHI trực tiếp (`source: 'agent'` sau parse) hoặc bỏ trống để
    *  daemon tự suy (`deriveShellDefaults`/`fillShellDefaults`). */
   shell?: ScreenMapShell;
+  /** WP-lab-refs-daemon (2026-08-24 — .tmp/pipeline/wp-lab-refs-daemon.yaml):
+   *  concept tham khảo agent lab-map đã MAP cho màn này (từ `refs/refs.json`)
+   *  — `conceptId` là `<fileKey>:<nodeId>` của concept, `png` là đường dẫn
+   *  ảnh đã tải (`refs/<slug>.png`) tại THỜI ĐIỂM map (lab-compose tra lại
+   *  refs.json hiện tại theo `conceptId` thay vì tin `png` này cũ). Bỏ trống
+   *  khi agent không tìm được concept nào khớp — KHÔNG gán bừa. */
+  reference?: { conceptId: string; fileKey: string; nodeId: string; png?: string };
 }
 
 /** Một luồng — `mainPath` là đường đi CHÍNH (không phải mọi nhánh) từ điểm
@@ -249,6 +256,22 @@ export function parseScreenMap(raw: string): { map: ScreenMap; warnings: string[
         screen.shell = shell;
       } else {
         warnings.push(`Màn "${key}": shell.kind không hợp lệ — daemon sẽ tự suy.`);
+      }
+    }
+    // WP-lab-refs-daemon: `reference` — hỏng (không phải object, hoặc thiếu
+    // conceptId/fileKey/nodeId) → BỎ field (kèm warning), KHÔNG bỏ cả màn
+    // (cùng nguyên tắc "một field hỏng không kéo sập cả entry" như `shell`).
+    if (e.reference !== undefined) {
+      const r = e.reference && typeof e.reference === 'object' && !Array.isArray(e.reference) ? (e.reference as Record<string, unknown>) : null;
+      const conceptId = typeof r?.conceptId === 'string' ? r.conceptId.trim() : '';
+      const fileKey = typeof r?.fileKey === 'string' ? r.fileKey.trim() : '';
+      const nodeId = typeof r?.nodeId === 'string' ? r.nodeId.trim() : '';
+      if (conceptId && fileKey && nodeId) {
+        const reference: NonNullable<ScreenMapScreen['reference']> = { conceptId, fileKey, nodeId };
+        if (typeof r?.png === 'string' && r.png.trim()) reference.png = r.png.trim();
+        screen.reference = reference;
+      } else {
+        warnings.push(`Màn "${key}": reference thiếu/sai định dạng (cần conceptId/fileKey/nodeId) — đã bỏ field này.`);
       }
     }
     screens.push(screen);
@@ -413,8 +436,13 @@ export function renderScreenMapMd(map: ScreenMap): string {
   // (renderScreenMapMd cũng được gọi làm fallback ngay sau parse, trước khi
   // server.ts quyết định ghi lại file).
   const derivedShells = deriveShellDefaults(map);
-  lines.push('| Key | Tên | Mục đích | Phải có | Khung | Trạng thái | Đi tới |');
-  lines.push('| --- | --- | --- | --- | --- | --- | --- |');
+  // WP-lab-refs-daemon: cột "Concept" — CHỈ thêm khi ÍT NHẤT MỘT màn có
+  // `reference` (must_not: dự án không refs phải BYTE-IDENTICAL với bản
+  // trước WP này — thêm cột vô điều kiện sẽ phá bất biến đó).
+  const hasReference = map.screens.some((screen) => screen.reference != null);
+  const headerCells = ['Key', 'Tên', 'Mục đích', 'Phải có', 'Khung', ...(hasReference ? ['Concept'] : []), 'Trạng thái', 'Đi tới'];
+  lines.push(`| ${headerCells.join(' | ')} |`);
+  lines.push(`| ${headerCells.map(() => '---').join(' | ')} |`);
   for (const screen of map.screens) {
     const mustHaveParts = screen.mustHave
       .slice(0, 8)
@@ -429,7 +457,17 @@ export function renderScreenMapMd(map: ScreenMap): string {
     if (shell.should.length > 0) shellParts.push(`nên: ${shell.should.join(', ')}`);
     if (shell.avoid.length > 0) shellParts.push(`tránh: ${shell.avoid.join(', ')}`);
     const shellCell = shellParts.join(' · ');
-    lines.push(`| ${screen.key} | ${screen.name} | ${screen.purpose ?? ''} | ${mustHaveCell} | ${shellCell} | ${statesCell} | ${navCell} |`);
+    const rowCells = [
+      screen.key,
+      screen.name,
+      screen.purpose ?? '',
+      mustHaveCell,
+      shellCell,
+      ...(hasReference ? [screen.reference?.conceptId ?? '—'] : []),
+      statesCell,
+      navCell,
+    ];
+    lines.push(`| ${rowCells.join(' | ')} |`);
   }
   lines.push('');
   lines.push(`Nguồn: ${map.generatedFrom}`);
@@ -493,7 +531,14 @@ export function pickDocsReviewMapSources(relPaths: readonly string[]): string[] 
  *  WP-lab-shell: `shells` — khung màn HIỆU LỰC (agent tự ghi thắng, derive
  *  khi bỏ trống — xem `resolveScreenShell`) cho ĐÚNG các màn trong `scoped`,
  *  theo CÙNG thứ tự — đủ để `buildComposeBrief` in dòng "Khung <key>" mà
- *  không cần lộ toàn bộ `ScreenMap`. */
+ *  không cần lộ toàn bộ `ScreenMap`.
+ *
+ *  WP-lab-refs-daemon: `references` — `reference` THÔ (nguyên văn agent
+ *  lab-map ghi) của các màn trong `scoped` CÓ field đó (màn không có bị lọc
+ *  ra, khác `shells` luôn có đủ mọi màn scoped) — server.ts's `runLabCompose`
+ *  tự tra lại `refs/refs.json` hiện tại theo `reference.conceptId` để lấy
+ *  `conceptName`/`png` mới nhất (KHÔNG tin `reference.png` có thể đã cũ) rồi
+ *  mới ráp `BuildComposeBriefOptions.map.references`. */
 export function summarizeScreenMapForCompose(
   map: ScreenMap,
   scopeHint?: string | null,
@@ -502,6 +547,7 @@ export function summarizeScreenMapForCompose(
   mainPath: string[];
   scoped: string[];
   shells: { key: string; kind: string; must: string[]; should: string[]; avoid: string[] }[];
+  references: { key: string; reference: NonNullable<ScreenMapScreen['reference']> }[];
 } {
   const screens = map.screens.map((s) => ({ key: s.key, name: s.name, mustHaveCount: s.mustHave.length }));
   const mainPath = map.flows[0]?.mainPath ?? [];
@@ -529,8 +575,12 @@ export function summarizeScreenMapForCompose(
       const shell = resolveScreenShell(s, derivedShells);
       return { key: s.key, kind: shell.kind as string, must: shell.must, should: shell.should, avoid: shell.avoid };
     });
+  const references = scoped
+    .map((key) => screenByKey.get(key))
+    .filter((s): s is ScreenMapScreen => s != null && s.reference != null)
+    .map((s) => ({ key: s.key, reference: s.reference! }));
 
-  return { screens, mainPath, scoped, shells };
+  return { screens, mainPath, scoped, shells, references };
 }
 
 export interface BuildMapBriefOptions {
@@ -550,6 +600,10 @@ export interface BuildMapBriefOptions {
     screensIndex: boolean;
     screenJsonCount: number;
   };
+  /** WP-lab-refs-daemon: concept đã quét được (server.ts đã `readLabRefs`
+   *  trước khi gọi) — `null`/rỗng (chưa quét link tham khảo nào cho dự án
+   *  này) → brief Y HỆT hành vi trước WP này (không dòng nào về concept). */
+  concepts?: { id: string; name: string; png: string }[] | null;
 }
 
 /** Message kickoff cho phiên agent duy nhất của stage `lab-map`. Thuần —
@@ -575,16 +629,27 @@ export function buildMapBrief(opts: BuildMapBriefOptions): string {
     opts.scopeHint && opts.scopeHint.trim()
       ? `- Định hướng người dùng: "${opts.scopeHint.trim()}"`
       : '- Định hướng người dùng: (không có)';
+  // WP-lab-refs-daemon: concept tham khảo — chỉ có dòng khi server.ts đã đọc
+  // được ≥1 concept từ `refs/refs.json` (null/rỗng → không dòng nào, brief Y
+  // HỆT trước WP này).
+  const concepts = opts.concepts ?? null;
+  const conceptsLine =
+    concepts && concepts.length > 0
+      ? `- Concept tham khảo: refs/refs.json — ${concepts.length} concept (ảnh refs/*.png, Read được)`
+      : null;
 
   return renderLabBrief({
     title: `# Bản đồ màn · ${opts.appFeature}`,
     skillId: 'lab-map',
-    inputLines: [docsLine, mapSrcLine, figmaLine, scopeLine],
+    inputLines: [docsLine, mapSrcLine, figmaLine, scopeLine, ...(conceptsLine ? [conceptsLine] : [])],
     taskLines: [
       '- Đọc `map-src/` trước, `docs/` sau để đối chiếu.',
       '- Liệt kê từng luồng kèm mainPath (đường đi chính, không phải mọi nhánh).',
       '- Với mỗi màn: purpose, mustHave (role + content), states, nav.',
       '- Với mỗi màn: shell (kind + must/should/avoid) theo bảng luật skill; bỏ trống thì daemon tự suy.',
+      ...(concepts && concepts.length > 0
+        ? ['- Map mỗi màn ↔ một concept khớp nhất (field `reference`, theo tên/ngữ nghĩa/ảnh); không concept nào khớp → bỏ trống field.']
+        : []),
       '- Ghi đúng hai file kết quả trước khi kết thúc phiên.',
     ],
     reminderLines: [

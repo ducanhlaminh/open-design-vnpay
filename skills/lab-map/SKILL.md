@@ -98,6 +98,35 @@ KHÔNG phải lỗi. Tự phân tích từ `docs/`: đọc tài liệu tính nă
 danh sách màn (key `SCR-<code-hoặc-số-thứ-tự>`, ví dụ "SCR-01"), mục đích,
 mustHave (role+content) và luồng chính; ghi `generatedFrom: "docs"`.
 
+## Concept tham khảo (`refs/`)
+
+Người dùng có thể dán 1..N link **PAGE** Figma ở rail cấu hình của bước này
+(WP-lab-refs-daemon, 2026-08-24) — daemon đã quét trước khi bạn vào phiên và
+kickoff sẽ nêu rõ có bao nhiêu concept trong `refs/refs.json` (mỗi mục
+`{id, fileKey, nodeId, name, png}` — `id` dạng `<fileKey>:<nodeId>`). Kickoff
+KHÔNG nêu gì về concept nghĩa là chưa ai dán link tham khảo — bỏ qua mục này,
+hành vi CŨ không đổi.
+
+Có concept → với MỖI màn bạn đang lập trong bản đồ:
+
+1. **Read từng ảnh** `refs/<slug>.png` (đường dẫn nêu trong `refs/refs.json`)
+   để xem hình dạng/nội dung của mỗi concept.
+2. **Map theo tên/ngữ nghĩa/nội dung ảnh** — concept nào MÔ TẢ ĐÚNG màn bạn
+   đang lập (cùng chức năng, cùng vị trí trong luồng) → ghi field `reference`
+   của màn đó:
+   ```json
+   "reference": { "conceptId": "F1A2B3:120:45", "fileKey": "F1A2B3", "nodeId": "120:45", "png": "refs/F1A2B3-120-45.png" }
+   ```
+3. **Không chắc → BỎ TRỐNG field, đừng gán bừa.** Một concept map sai kéo
+   theo bước "Sáng tác màn" sau đó dựng SÁT bố cục của concept SAI — worse
+   than không có reference. Concept thừa (không map vào màn nào) là BÌNH
+   THƯỜNG, không phải lỗi — không phải mọi concept designer paste vào đều có
+   một màn tương ứng trong bản đồ.
+
+`reference` là quyết định CỦA BẠN — bước sau ("Sáng tác màn") sẽ TIN TƯỞNG
+field này và dựng sát cấu trúc concept đã map, nên map sai ở đây lan xuống
+thành bố cục sai ở đó.
+
 ## Nguyên tắc CÁI GÌ, không LÀM THẾ NÀO
 
 Bản đồ trả lời "màn này cần gì" — **KHÔNG BAO GIỜ** trả lời "màn này trông

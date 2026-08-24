@@ -64,6 +64,7 @@ import {
 } from './pipelines/PipelineModals';
 import { UploadFilesModal } from './pipelines/UploadFilesModal';
 import { fetchDesignSystems, writeProjectTextFileDetailed } from '../providers/registry';
+import { getLabRefs } from '../providers/lab-refs';
 import { applyPendingStarts } from '../runtime/pipeline-pending-starts';
 import { PullConflictModal } from './pipelines/PullConflictModal';
 import { PlModal } from './pipelines/PlModal';
@@ -89,6 +90,19 @@ export function figmaSourceIssue(value: FigmaConfigResponse | null): string | nu
 
 export function needsFigmaSource(stageIds: readonly string[], source: DocsReviewComponentSource | undefined): boolean {
   return stageIds.includes('dr-comp') && source?.mode === 'figma-links';
+}
+
+/**
+ * Gate của dòng rail "Concept tham khảo" + section `labRefs` trong modal cấu
+ * hình (WP-lab-refs-web): chỉ workflow CÓ bước `lab-compose` (ds-lab) mới cần
+ * cấu hình concept tham khảo Figma. Cùng khuôn `railHasTargets`/
+ * `railHasDesignSystem` (gate theo sự có mặt của một bước, không hard-code
+ * theo workflow id). Hàm THUẦN, tách riêng để test không cần mount cả
+ * `PipelinesView` — xem `resolveStageRunConfig`/`stage-run-uses-config.test.tsx`
+ * cho cùng lý do (mount kéo theo fetch dự án/pipeline/design-system).
+ */
+export function hasLabRefsStage(pipelines: readonly Pick<PipelineView, 'id'>[]): boolean {
+  return pipelines.some((p) => p.id === 'lab-compose');
 }
 
 const STATUS_LABEL: Record<string, string> = {
@@ -1851,6 +1865,30 @@ export function PipelinesView() {
   // này không có lựa chọn đó". Cùng nguồn cờ với RunAllModal bên dưới.
   const railHasDesignSystem = pipelines.some((p) => p.acceptsDesignSystem);
   const railHasTargets = pipelines.some((p) => p.acceptsPlatform);
+  // ds-lab (WP-lab-refs-web): dòng "Concept tham khảo" chỉ hiện khi workflow
+  // có bước lab-compose — xem `hasLabRefsStage`.
+  const railHasLabRefs = hasLabRefsStage(pipelines);
+  // Tóm tắt đọc RIÊNG qua GET (refs không nằm trong RunAllConfig/`savedRunAll`
+  // như các dòng trên) — fetch lại mỗi khi đổi dự án; lỗi mạng hay chưa từng
+  // quét đều fail-soft về cùng một câu "Chưa cấu hình" (contract: chưa cấu
+  // hình → `pages`/`concepts` rỗng).
+  const [railLabRefsSummary, setRailLabRefsSummary] = useState('Chưa cấu hình');
+  useEffect(() => {
+    if (!railHasLabRefs || !projectId) return;
+    let cancelled = false;
+    void (async () => {
+      const result = await getLabRefs(projectId);
+      if (cancelled) return;
+      if (result.ok && (result.value.pages.length > 0 || result.value.concepts.length > 0)) {
+        setRailLabRefsSummary(`${result.value.concepts.length} concept · ${result.value.pages.length} trang`);
+      } else {
+        setRailLabRefsSummary('Chưa cấu hình');
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, railHasLabRefs]);
 
   // Nội dung dùng chung cho cả hai chỗ hiển thị (aside cạnh stepper ở màn
   // rộng, PlModal-drawer ở màn hẹp) — một nguồn duy nhất, không có editor mới:
@@ -1878,6 +1916,15 @@ export function PipelinesView() {
           <span className="pl-rail-row__label">Sản phẩm cần build</span>
           <span className="pl-rail-row__value">{railTargetsSummary}</span>
           <button type="button" className="pl-rail-row__change" onClick={() => openRunAll('targets')}>
+            Đổi
+          </button>
+        </div>
+      ) : null}
+      {railHasLabRefs ? (
+        <div className="pl-rail-row">
+          <span className="pl-rail-row__label">Concept tham khảo</span>
+          <span className="pl-rail-row__value">{railLabRefsSummary}</span>
+          <button type="button" className="pl-rail-row__change" onClick={() => openRunAll('labRefs')}>
             Đổi
           </button>
         </div>
@@ -3368,9 +3415,13 @@ export function PipelinesView() {
             // Ingest step nhận file tay (Docs → Review tài liệu) → modal mở thêm
             // nhánh nguồn "Tải file .md lên" thay vì khóa cứng Confluence.
             hasUpload={pipelines.some((p) => p.acceptsUpload)}
+            // ds-lab: section "Concept tham khảo" (LabRefsSection) — cùng cờ
+            // dòng rail (`hasLabRefsStage`).
+            hasLabRefs={railHasLabRefs}
             // App sở hữu dự án — modal tự fetch pool của App này và chỉ hiện
             // thẻ "Tài liệu App" khi pool không rỗng (docs/app-docs-pool-spec.md §WP-6).
             appId={runAllProject?.app?.id}
+            projectId={projectId}
             // Lean chỉ là khái niệm của docs-to-ui — các workflow khác (Docs →
             // PRD Review) chạy đủ chuỗi, ẩn hẳn section "Chế độ chạy".
             supportsLean={workflowId === 'docs-to-ui'}
