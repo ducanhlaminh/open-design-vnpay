@@ -50,8 +50,10 @@ describe('DocRedlinePreview legacy ordering and scope', () => {
     await waitFor(() => expect(container.querySelector('[data-change-item="earlier"]')).not.toBeNull());
     const items = Array.from(container.querySelectorAll('[data-change-item]'));
     expect(items.map((item) => item.getAttribute('data-change-item'))).toEqual(['earlier', 'later']);
-    expect(container.querySelector('mark[data-change-id="earlier"]')?.getAttribute('data-od-idx')).toBe('1');
-    expect(container.querySelector('mark[data-change-id="later"]')?.getAttribute('data-od-idx')).toBe('2');
+    await waitFor(() => {
+      expect(container.querySelector('mark[data-change-id="earlier"]')?.getAttribute('data-od-idx')).toBe('1');
+      expect(container.querySelector('mark[data-change-id="later"]')?.getAttribute('data-od-idx')).toBe('2');
+    });
 
     const nav = within(container).getByRole('navigation', { name: 'Điều hướng thay đổi' });
     fireEvent.click(within(nav).getByRole('button', { name: 'Thay đổi sau' }));

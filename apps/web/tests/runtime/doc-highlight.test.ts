@@ -264,7 +264,26 @@ describe('injectHighlights', () => {
     expect(out.html).toContain('<mark class="hl-edit" data-change-id="e1" style="background:amber">');
   });
 
-  it('trả block descriptors cho paragraph, list và table mà không bọc mark xuyên block', () => {
+  it('bôi mọi segment cùng annotation mà không tạo mark lồng nhau', () => {
+    const html = '<p>Dòng thay đổi thứ nhất.</p><p>Dòng thay đổi thứ hai.</p>';
+    const out = injectHighlights(
+      html,
+      [
+        { id: 'multi', text: 'Dòng thay đổi thứ nhất.' },
+        { id: 'multi', text: 'Dòng thay đổi thứ hai.' },
+      ],
+      'hl',
+    );
+    expect(out.matched).toEqual(new Set(['multi']));
+    expect((out.html.match(/data-change-id="multi"/g) ?? [])).toHaveLength(2);
+    expect(out.html).not.toMatch(/<mark[^>]*>\s*<mark/);
+    expect(out.blocks).toEqual([
+      { id: 'multi', blockIndex: 0, tagName: 'p', kind: 'paragraph' },
+      { id: 'multi', blockIndex: 1, tagName: 'p', kind: 'paragraph' },
+    ]);
+  });
+
+  it('trả block descriptors cho paragraph, list và table row mà không bọc mark xuyên block', () => {
     const html = [
       '<h3>Tiêu đề được bổ sung</h3>',
       '<p>Đoạn văn được bổ sung đầy đủ.</p>',
@@ -285,7 +304,7 @@ describe('injectHighlights', () => {
       { id: 'h1', blockIndex: 0, tagName: 'h3', kind: 'heading' },
       { id: 'p1', blockIndex: 1, tagName: 'p', kind: 'paragraph' },
       { id: 'l1', blockIndex: 2, tagName: 'li', kind: 'list-item' },
-      { id: 't1', blockIndex: 3, tagName: 'table', kind: 'table' },
+      { id: 't1', blockIndex: 4, tagName: 'tr', kind: 'table-row' },
     ]);
     expect(out.html).not.toMatch(/<mark[^>]*>[^<]*<\/(?:p|li|td|table)>/);
   });

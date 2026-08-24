@@ -110,6 +110,27 @@
   background: rgba(139, 92, 246, 0.08);
 }
 
+/* Table dùng border-collapse + zebra background trên từng td, nên background
+   đặt ở tr/table bị cell che mất. Tô trực tiếp cell của row sở hữu annotation;
+   `!important` chỉ thắng đúng zebra rule toàn cục, không đụng inline mark. */
+.blockTintFull > :global(td),
+.blockTintFull > :global(th) {
+  background: rgba(245, 158, 11, 0.09) !important;
+  box-shadow: inset 0 1px 0 rgba(245, 158, 11, 0.5), inset 0 -1px 0 rgba(245, 158, 11, 0.5);
+}
+
+.blockTintFull[data-redline-block='add'] > :global(td),
+.blockTintFull[data-redline-block='add'] > :global(th) {
+  background: rgba(34, 197, 94, 0.09) !important;
+  box-shadow: inset 0 1px 0 rgba(34, 197, 94, 0.5), inset 0 -1px 0 rgba(34, 197, 94, 0.5);
+}
+
+.blockTintFull[data-redline-block='note'] > :global(td),
+.blockTintFull[data-redline-block='note'] > :global(th) {
+  background: rgba(139, 92, 246, 0.09) !important;
+  box-shadow: inset 0 1px 0 rgba(139, 92, 246, 0.48), inset 0 -1px 0 rgba(139, 92, 246, 0.48);
+}
+
 .modeToolbar,
 .railToolbar {
   display: flex;
@@ -129,8 +150,57 @@
   position: sticky;
   top: -12px;
   z-index: 3;
+  flex-direction: column;
+  align-items: stretch;
   padding: 10px 0 8px;
   background: var(--bg-panel, #fff);
+}
+
+.visibilityToolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.visibilityCount {
+  margin-right: auto;
+  color: var(--text-muted, #6b7280);
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.visibilityToolbar button {
+  min-height: 26px;
+  padding: 3px 7px;
+  border: 1px solid var(--border, #e1e5eb);
+  border-radius: 6px;
+  background: var(--bg-panel, #fff);
+  color: var(--text-soft, #4b5563);
+  font: inherit;
+  font-size: 10.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 160ms ease, color 160ms ease, transform 160ms ease;
+}
+
+.visibilityToolbar button:hover:not(:disabled) {
+  background: var(--bg-subtle, #f5f6f8);
+  color: var(--text-strong, #1f2937);
+}
+
+.visibilityToolbar button:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.visibilityToolbar button:focus-visible {
+  outline: 2px solid var(--accent, #0066b3);
+  outline-offset: 2px;
+}
+
+.visibilityToolbar button:disabled {
+  opacity: .45;
+  cursor: not-allowed;
 }
 
 /* Rail chỗ sửa bên phải: tự cuộn riêng, không đẩy tài liệu. */
@@ -149,6 +219,7 @@
 /* Mục trong rail. Mục neo được là <button> thật, nên phải trung hoà style mặc
    định của button (nền/viền/canh chữ) để nó trông như một thẻ. */
 .item {
+  position: relative;
   display: block;
   width: 100%;
   margin: 0;
@@ -167,6 +238,56 @@
 }
 .itemActive {
   box-shadow: 0 0 0 2px var(--accent, #0066b3);
+}
+.itemDisabled {
+  cursor: default;
+}
+.itemDisabled .card {
+  opacity: .56;
+  filter: saturate(.45);
+}
+.itemVisibilityToggle {
+  position: absolute;
+  top: 9px;
+  right: 9px;
+  z-index: 2;
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--border, #e1e5eb);
+  border-radius: 7px;
+  background: var(--bg-panel, #fff);
+  color: var(--text-muted, #6b7280);
+  cursor: pointer;
+  transition: background-color 160ms ease, color 160ms ease, border-color 160ms ease, transform 160ms ease;
+}
+.itemVisibilityToggle:hover:not(:disabled) {
+  border-color: var(--accent, #0066b3);
+  color: var(--accent-strong, #005a9e);
+}
+.itemVisibilityToggle:active:not(:disabled) {
+  transform: scale(.96);
+}
+.itemVisibilityToggle:focus-visible {
+  outline: 2px solid var(--accent, #0066b3);
+  outline-offset: 2px;
+}
+.itemVisibilityToggle:disabled {
+  opacity: .4;
+  cursor: not-allowed;
+}
+.itemVisibilityOn {
+  border-color: rgba(0, 102, 179, .38);
+  background: rgba(0, 102, 179, .08);
+  color: var(--accent-strong, #005a9e);
+}
+.itemHiddenNote {
+  margin: 5px 2px 0;
+  color: var(--text-muted, #6b7280);
+  font-size: 11px;
+  font-weight: 600;
 }
 /* Mục không neo được: không bấm được, nên bỏ con trỏ tay và làm nhạt đi một
    chút — nhưng vẫn hiện đầy đủ nhóm/mức độ/lý do như mọi mục khác. */
@@ -294,6 +415,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+  padding-right: 34px;
 }
 .cardKind {
   font-size: 11.5px;

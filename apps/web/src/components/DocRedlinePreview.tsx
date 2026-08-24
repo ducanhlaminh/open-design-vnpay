@@ -677,6 +677,26 @@ const REF_ID_PREFIX = 'ref:';
 const HL_REF_INLINE_STYLE = 'background-color:transparent;color:inherit;border-bottom:1px dotted rgba(59,130,246,.85);cursor:pointer';
 const EMPTY_SET: ReadonlySet<string> = new Set<string>();
 
+/** Một quote nhiều dòng mang ý nghĩa vùng, không chỉ một token. Table row và
+ * list item được nhận diện từ block HTML; helper này bổ sung paragraph/heading
+ * nhiều dòng để mọi block mà quote đi qua đều được tint. */
+function annotationWantsFullBlock(annotation: Pick<DocRedlineChange, 'quote' | 'anchor'>): boolean {
+  const raw = annotation.quote?.trim() || annotation.anchor?.trim() || '';
+  return raw.split(/\r?\n/).filter((line) => line.trim()).length > 1;
+}
+
+/** Mỗi dòng table chỉ cần một neo đủ đặc trưng để tìm đúng `<tr>`; tô cả row
+ *  do block descriptor lo. Bôi mọi cell riêng lẻ vừa thừa vừa có thể kéo sang
+ *  row khác khi một cell chung chung ("Có", "Không", "Input") bị lặp. Ngoài
+ *  table vẫn giữ mọi segment để quote nhiều dòng bôi đủ từng block. */
+function annotationHighlightSegments(raw: string): string[] {
+  return raw.split(/\r?\n/).flatMap((line) => {
+    const segments = quoteSegments(line);
+    if (!line.includes('|') || segments.length <= 1) return segments;
+    return [segments.reduce((best, segment) => segment.length > best.length ? segment : best)];
+  });
+}
+
 /** Nhãn dễ hiểu + lời giải thích của một tiêu chí. Chip hiện `label`, rê chuột
  *  hiện `summary`, bấm vào mở popover hiện `detail`. Ba mức dài dần cho cùng
  *  một ý: liếc qua → hiểu đại khái → đọc đủ. */
@@ -896,6 +916,10 @@ export function DocRedlinePreview({
   const undoTextRef = useRef<Map<string, string>>(new Map());
   const [previewMode, setPreviewMode] = useState<PreviewMode>('changes');
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  // Trạng thái hiển thị chỉ sống trong phiên xem. Tab vẫn độc quyền; set này
+  // chỉ cho phép người review ẩn/hiện từng annotation BÊN TRONG tab hiện tại,
+  // hoàn toàn không ghi vào sidecar và không đồng nghĩa với "Bỏ".
+  const [hiddenAnnotationIds, setHiddenAnnotationIds] = useState<Set<string>>(new Set());
   const pendingSelectionRef = useRef<{ id: string; source: 'document' | 'rail' } | null>(null);
   const docColRef = useRef<HTMLDivElement | null>(null);
   // Mọi <mark> của một change: một quote trải trên nhiều text node (ví dụ băng
@@ -922,6 +946,21 @@ export function DocRedlinePreview({
     pendingSelectionRef.current = null;
     setSelectedId(null);
     setPreviewMode(mode);
+  }
+  function annotationVisible(id: string): boolean {
+    return !hiddenAnnotationIds.has(id);
+  }
+  function setAnnotationVisible(id: string, visible: boolean) {
+    setHiddenAnnotationIds((prev) => {
+      const next = new Set(prev);
+      if (visible) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+    if (!visible) {
+      pendingSelectionRef.current = null;
+      setSelectedId((current) => current === id ? null : current);
+    }
   }
   // Bật/tắt tô màu THEO TỪNG LOẠI. Một công tắc chung là chưa đủ: việc thật của
   // người review là "cho tôi xem riêng chỗ bị xoá" hay "ẩn mấy chỗ thêm chữ đi",
@@ -1018,6 +1057,12 @@ export function DocRedlinePreview({
       cancelled = true;
     };
   }, [projectId, file.name, file.mtime]);
+
+  // Không mang lựa chọn ẩn/hiện của tài liệu trước sang tài liệu mới. Mỗi
+  // tài liệu mở lần đầu luôn bắt đầu với toàn bộ annotation đang hiện.
+  useEffect(() => {
+    setHiddenAnnotationIds(new Set());
+  }, [projectId, file.name]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1143,6 +1188,7 @@ export function DocRedlinePreview({
     const requests = changes.flatMap((c) => {
       if (previewMode !== 'changes') return [];
       if (c.status === 'dismissed') return [];
+      if (!annotationVisible(c.id)) return [];
       // B2 (wp3b.yaml): sơ đồ mermaid đã được neo bằng HOST MARK riêng (xem
       // effect chèn host bên dưới — khớp theo NGUYÊN VĂN mã mermaid, không
       // theo đoạn chữ), nên KHÔNG đưa segment chữ của `quote` vào injectHighlights
@@ -1162,7 +1208,7 @@ export function DocRedlinePreview({
       const on = add ? paint.add : paint.edit;
       const className = !on ? styles.hlOff ?? '' : add ? styles.hlAdd ?? '' : styles.hl ?? '';
       const inlineStyle = !on ? HL_OFF_INLINE_STYLE : add ? HL_ADD_INLINE_STYLE : HL_INLINE_STYLE;
-      return quoteSegments(raw).map((text) => ({ id: c.id, text, className, inlineStyle, scope: documentIndex.scopeFor(c) }));
+      return annotationHighlightSegments(raw).map((text) => ({ id: c.id, text, className, inlineStyle, scope: documentIndex.scopeFor(c) }));
     });
     const changePass = injectHighlights(html, requests, styles.hl ?? '', HL_INLINE_STYLE);
 
@@ -1173,9 +1219,10 @@ export function DocRedlinePreview({
     const noteRequests = notes.flatMap((n) => {
       if (previewMode !== 'notes') return [];
       if (n.status === 'dismissed') return [];
+      if (!annotationVisible(`${NOTE_ID_PREFIX}${n.id}`)) return [];
       const raw = (n.anchor ?? '').trim();
       if (!raw) return [];
-      return quoteSegments(raw).map((text) => ({
+      return annotationHighlightSegments(raw).map((text) => ({
         id: `${NOTE_ID_PREFIX}${n.id}`,
         text,
         className: paint.note ? styles.hlNote ?? '' : styles.hlOff ?? '',
@@ -1191,6 +1238,7 @@ export function DocRedlinePreview({
     const delRequests = changes.flatMap((c) => {
       if (previewMode !== 'changes') return [];
       if (c.status === 'dismissed') return [];
+      if (!annotationVisible(c.id)) return [];
       if (changeOp(c) !== 'del') return [];
       // `anchor` là nguyên văn mã nguồn markdown, y như `quote`, nên phải cắt
       // qua quoteSegments. Lấy segment ĐẦU: một chỗ xoá chỉ cần một điểm neo,
@@ -1212,10 +1260,10 @@ export function DocRedlinePreview({
     // Lượt thứ TƯ: các đoạn được `reason`/`finding` VIỆN DẪN. Chạy sau cùng để
     // không tranh chỗ với ba loại trên — một đoạn vừa là chỗ sửa vừa được viện
     // dẫn thì nó phải hiện là chỗ sửa, vì đó mới là thông tin người đọc cần
-    // trước. injectHighlights bỏ qua request có id đã khớp, nên thứ tự này cũng
-    // là thứ tự ưu tiên.
+    // trước. injectHighlights bỏ qua occurrence đã nằm trong mark, nên thứ tự
+    // các pass này cũng là thứ tự ưu tiên.
     const refRequests = [
-      ...(previewMode === 'changes' ? changes : []).flatMap((c) =>
+      ...(previewMode === 'changes' ? changes.filter((c) => c.status !== 'dismissed' && annotationVisible(c.id)) : []).flatMap((c) =>
         (c.doc_refs ?? []).flatMap((ref, i) =>
           quoteSegments(ref.trim()).slice(0, 1).map((text) => ({
             id: `${REF_ID_PREFIX}${c.id}:${i}`,
@@ -1225,7 +1273,7 @@ export function DocRedlinePreview({
           })),
         ),
       ),
-      ...(previewMode === 'notes' ? notes : []).flatMap((n) =>
+      ...(previewMode === 'notes' ? notes.filter((n) => n.status !== 'dismissed' && annotationVisible(`${NOTE_ID_PREFIX}${n.id}`)) : []).flatMap((n) =>
         (n.doc_refs ?? []).flatMap((ref, i) =>
           quoteSegments(ref.trim()).slice(0, 1).map((text) => ({
             id: `${REF_ID_PREFIX}${NOTE_ID_PREFIX}${n.id}:${i}`,
@@ -1251,7 +1299,7 @@ export function DocRedlinePreview({
       // but never promote their containing list item/table to a tinted block.
       blocks: [...changePass.blocks, ...notePass.blocks, ...delPass.blocks],
     };
-  }, [editedText, projectId, file.name, changes, notes, paint, previewMode, documentIndex]);
+  }, [editedText, projectId, file.name, changes, notes, paint, previewMode, documentIndex, hiddenAnnotationIds]);
 
   const docHtml = docRender?.html ?? null;
   const anchored = docRender?.matched ?? EMPTY_SET;
@@ -1285,6 +1333,28 @@ export function DocRedlinePreview({
   const dismissedTotalCount =
     changes.filter((c) => c.status === 'dismissed').length + notes.filter((n) => n.status === 'dismissed').length;
   const activeNoteCount = notes.filter((n) => n.status !== 'dismissed').length;
+  const visibleChangeCount = changes.filter((c) => c.status !== 'dismissed' && annotationVisible(c.id)).length;
+  const visibleNoteCount = notes.filter((n) => n.status !== 'dismissed' && annotationVisible(`${NOTE_ID_PREFIX}${n.id}`)).length;
+  const currentVisibleCount = previewMode === 'changes' ? visibleChangeCount : visibleNoteCount;
+  const currentActiveCount = previewMode === 'changes' ? activeChangeCount : activeNoteCount;
+
+  function setCurrentModeVisible(visible: boolean) {
+    const ids = previewMode === 'changes'
+      ? changes.filter((c) => c.status !== 'dismissed').map((c) => c.id)
+      : notes.filter((n) => n.status !== 'dismissed').map((n) => `${NOTE_ID_PREFIX}${n.id}`);
+    setHiddenAnnotationIds((prev) => {
+      const next = new Set(prev);
+      for (const id of ids) {
+        if (visible) next.delete(id);
+        else next.add(id);
+      }
+      return next;
+    });
+    if (!visible && selectedId && ids.includes(selectedId)) {
+      pendingSelectionRef.current = null;
+      setSelectedId(null);
+    }
+  }
 
   // ── Sơ đồ mermaid trong cột tài liệu (mục 4 WP3) ──────────────────────────
   // `renderMarkdownToSafeHtml` (dùng chung với FileViewer) đã dựng fence
@@ -1322,7 +1392,7 @@ export function DocRedlinePreview({
     const consumedOwners = new Set<string>();
     const headings = Array.from(container.querySelectorAll<HTMLElement>('article h1, article h2, article h3, article h4, article h5, article h6'));
     const diagramOwners = previewMode === 'changes'
-      ? changes.filter((c) => c.kind === 'flow-diagram' && c.status !== 'dismissed')
+      ? changes.filter((c) => c.kind === 'flow-diagram' && c.status !== 'dismissed' && annotationVisible(c.id))
       : [];
 
     const headingOrdinalFor = (element: HTMLElement): number => {
@@ -1411,7 +1481,7 @@ export function DocRedlinePreview({
         host.remove();
       }
     };
-  }, [docHtml, loading, previewMode, changes]);
+  }, [docHtml, loading, previewMode, changes, hiddenAnnotationIds]);
 
   // (d, review WP3b): effect RIÊNG chỉ đồng bộ class + style nội tuyến của
   // host ĐÃ CHÈN theo `paint.edit` — KHÔNG gộp vào effect chèn host phía
@@ -1459,12 +1529,12 @@ export function DocRedlinePreview({
   }, [docHtml, changesState, previewMode, diagramMounts]);
 
   // Block descriptors do not alter the HTML structure. They identify the
-  // owning p/li/table/heading so additions and multi-cell/list matches can be
+  // owning p/li/table-row/table/heading so additions and multi-line matches can be
   // tinted as one safe block without ever wrapping a mark across block tags.
   useEffect(() => {
     const container = docColRef.current;
     if (!container || !docRender) return;
-    const blocks = Array.from(container.querySelectorAll<HTMLElement>('p, li, table, h1, h2, h3, h4, h5, h6'));
+    const blocks = Array.from(container.querySelectorAll<HTMLElement>('p, li, table, tr, h1, h2, h3, h4, h5, h6'));
     const tintClasses = [styles.blockTintAdd, styles.blockTintFull].filter((name): name is string => !!name);
     const clearBlockTint = () => {
       for (const block of blocks) {
@@ -1478,14 +1548,20 @@ export function DocRedlinePreview({
       const block = blocks[target.blockIndex];
       if (!block) continue;
       const owner = changes.find((change) => change.id === target.id);
-      const operation = owner ? changeOp(owner) : previewMode === 'notes' ? 'note' : 'edit';
+      const noteOwner = notes.find((note) => `${NOTE_ID_PREFIX}${note.id}` === target.id);
+      const operation = owner ? changeOp(owner) : noteOwner ? 'note' : previewMode === 'notes' ? 'note' : 'edit';
       block.dataset.redlineBlock = operation;
       block.dataset.redlineOwner = target.id;
       if (operation === 'add') block.classList.add(styles.blockTintAdd ?? '');
-      if (target.kind === 'table' || target.kind === 'list-item') block.classList.add(styles.blockTintFull ?? '');
+      if (
+        target.kind === 'table'
+        || target.kind === 'table-row'
+        || target.kind === 'list-item'
+        || annotationWantsFullBlock(owner ?? noteOwner ?? {})
+      ) block.classList.add(styles.blockTintFull ?? '');
     }
     return clearBlockTint;
-  }, [docHtml, docRender, changes, previewMode]);
+  }, [docHtml, docRender, changes, notes, previewMode]);
 
   // MỘT listener trên CỘT tài liệu, không phải một listener trên mỗi <mark>.
   //
@@ -1502,7 +1578,8 @@ export function DocRedlinePreview({
     const fn = (ev: Event) => {
       const target = ev.target as HTMLElement | null;
       const mark = target?.closest?.('mark[data-change-id]') as HTMLElement | null;
-      if (!mark) return; // bấm vào chỗ trống trong cột — không phải vùng bôi
+      const ownerBlock = target?.closest?.('[data-redline-owner]') as HTMLElement | null;
+      if (!mark && !ownerBlock) return; // bấm ngoài mọi vùng annotation
       // N6 (wp3b.yaml): host mermaid (chính LÀ <mark> này) chứa MermaidDiagram
       // portal thẳng vào, và các nút zoom/pan/reset của nó KHÔNG tự
       // stopPropagation (không được sửa MermaidDiagram.tsx — ngoài phạm vi
@@ -1511,7 +1588,7 @@ export function DocRedlinePreview({
       // riêng nên không lọt tới đây; chỉ còn nút của MermaidDiagram mới rơi
       // vào nhánh này.
       if (target?.closest?.('button')) return;
-      const id = mark.dataset.changeId;
+      const id = mark?.dataset.changeId ?? ownerBlock?.dataset.redlineOwner;
       if (!id) return;
       selectFromDoc(id);
     };
@@ -1896,17 +1973,18 @@ export function DocRedlinePreview({
 
   const navigationItems = useMemo<RedlineNavigationItem[]>(() => {
     if (previewMode === 'notes') {
-      return notes.map((note) => ({
+      return notes.filter((note) => annotationVisible(`${NOTE_ID_PREFIX}${note.id}`)).map((note) => ({
         id: `${NOTE_ID_PREFIX}${note.id}`,
         anchored: anchored.has(`${NOTE_ID_PREFIX}${note.id}`),
         dismissed: note.status === 'dismissed',
       }));
     }
     return changes
+      .filter((change) => annotationVisible(change.id))
       .filter((change) => change.kind !== 'flow-diagram' || kindFilter.diagram)
       .filter((change) => !isComponentTableChange(change) || kindFilter.compTable)
       .map((change) => ({ id: change.id, anchored: isAnchored(change), dismissed: change.status === 'dismissed' }));
-  }, [previewMode, notes, changes, anchored, diagramMounts, kindFilter]);
+  }, [previewMode, notes, changes, anchored, diagramMounts, kindFilter, hiddenAnnotationIds]);
   const navigationPosition = getNavigationPosition(navigationItems, selectedId);
   function navigate(direction: 'previous' | 'next') {
     const id = getAdjacentNavigationId(navigationItems, selectedId, direction);
@@ -2200,6 +2278,25 @@ export function DocRedlinePreview({
                     onModeChange={changePreviewMode}
                     placement="rail"
                   />
+                  <div className={styles.visibilityToolbar ?? ''} role="group" aria-label={`Hiển thị highlight ${modeLabel(previewMode).toLocaleLowerCase('vi')}`}>
+                    <span className={styles.visibilityCount ?? ''} aria-live="polite">
+                      {currentVisibleCount}/{currentActiveCount} đang hiện
+                    </span>
+                    <button
+                      type="button"
+                      disabled={currentActiveCount === 0 || currentVisibleCount === currentActiveCount}
+                      onClick={() => setCurrentModeVisible(true)}
+                    >
+                      Hiện tất cả
+                    </button>
+                    <button
+                      type="button"
+                      disabled={currentVisibleCount === 0}
+                      onClick={() => setCurrentModeVisible(false)}
+                    >
+                      Ẩn tất cả
+                    </button>
+                  </div>
                 </div>
                 <div
                   id="doc-redline-rail-tabpanel"
@@ -2222,7 +2319,18 @@ export function DocRedlinePreview({
                       if (el) itemsByChangeRef.current.set(c.id, el);
                       else itemsByChangeRef.current.delete(c.id);
                     };
+                    const visible = annotationVisible(c.id);
                     const activeClass = selectedId === c.id ? styles.itemActive ?? '' : '';
+                    const visibilityToggle = (
+                      <AnnotationVisibilityToggle
+                        id={c.id}
+                        indexLabel={String(changeIdx + 1)}
+                        mode="changes"
+                        visible={visible}
+                        disabled={c.status === 'dismissed'}
+                        onChange={(next) => setAnnotationVisible(c.id, next)}
+                      />
+                    );
                     const detail = (
                       <ChangeDetail
                         idx={String(changeIdx + 1)}
@@ -2234,7 +2342,7 @@ export function DocRedlinePreview({
                         onJumpRef={(i) =>
                           openRefModal(`${REF_ID_PREFIX}${c.id}:${i}`, (c.doc_refs ?? [])[i] ?? '')
                         }
-                        busy={busyId === c.id} error={errorById[c.id]} showActions={isAnchored(c) || c.status === 'dismissed'} undoable={undoableIds.has(c.id)} editing={editingId === c.id} editText={editText} onEditText={setEditText} onEdit={() => { setEditingId(c.id); setEditText(c.quote ?? ''); }} onSaveEdit={() => { if (!editText.trim()) { setErrorById((p) => ({ ...p, [c.id]: 'Nội dung sửa không được để trống' })); return; } void editChange(c); }} onCancelEdit={() => setEditingId(null)} onDismiss={() => { if (c.status === 'dismissed') { void dismissChange(c); } else if (window.confirm('Bỏ thay đổi này khỏi tài liệu? Bạn có thể hoàn tác trong phiên hiện tại.')) void dismissChange(c); }}
+                        busy={busyId === c.id} error={errorById[c.id]} showActions={!visible || isAnchored(c) || c.status === 'dismissed'} undoable={undoableIds.has(c.id)} editing={editingId === c.id} editText={editText} onEditText={setEditText} onEdit={() => { setEditingId(c.id); setEditText(c.quote ?? ''); }} onSaveEdit={() => { if (!editText.trim()) { setErrorById((p) => ({ ...p, [c.id]: 'Nội dung sửa không được để trống' })); return; } void editChange(c); }} onCancelEdit={() => setEditingId(null)} onDismiss={() => { if (c.status === 'dismissed') { void dismissChange(c); } else if (window.confirm('Bỏ thay đổi này khỏi tài liệu? Bạn có thể hoàn tác trong phiên hiện tại.')) void dismissChange(c); }}
                         expanded={expandedIds.has(c.id)}
                         onToggleExpand={() => toggleExpanded(c.id)}
                         accepted={acceptedIds.has(c.id)}
@@ -2247,7 +2355,7 @@ export function DocRedlinePreview({
                     // `<button>` lồng `<button>` là HTML không hợp lệ — trình
                     // duyệt tự gỡ lồng, làm mất luôn nút con. Bàn phím vẫn dùng
                     // được nhờ tabIndex + xử lý Enter/Space bên dưới.
-                    if (isAnchored(c)) {
+                    if (visible && isAnchored(c)) {
                       return (
                         <div
                           key={c.id}
@@ -2267,6 +2375,7 @@ export function DocRedlinePreview({
                             selectFromList(c.id);
                           }}
                         >
+                          {visibilityToggle}
                           {detail}
                         </div>
                       );
@@ -2276,13 +2385,16 @@ export function DocRedlinePreview({
                         key={c.id}
                         ref={setItemRef}
                         data-change-item={c.id}
-                        className={`${styles.item} ${styles.itemDead}`}
+                        className={`${styles.item} ${visible ? styles.itemDead : styles.itemDisabled ?? ''}`}
                       >
+                        {visibilityToggle}
                         {detail}
-                        <p className={styles.itemDeadNote}>
-                          <Icon name="info" size={12} />
-                          Không tìm thấy trong tài liệu — không nhảy tới được.
-                        </p>
+                        {visible ? (
+                          <p className={styles.itemDeadNote}>
+                            <Icon name="info" size={12} />
+                            Không tìm thấy trong tài liệu — không nhảy tới được.
+                          </p>
+                        ) : <p className={styles.itemHiddenNote}>Highlight đang tắt.</p>}
                       </div>
                     );
                   }) : null}
@@ -2295,7 +2407,18 @@ export function DocRedlinePreview({
                             if (el) itemsByChangeRef.current.set(markId, el);
                             else itemsByChangeRef.current.delete(markId);
                           };
+                          const visible = annotationVisible(markId);
                           const activeClass = selectedId === markId ? styles.itemActive ?? '' : '';
+                          const visibilityToggle = (
+                            <AnnotationVisibilityToggle
+                              id={markId}
+                              indexLabel={`N${noteIdx + 1}`}
+                              mode="notes"
+                              visible={visible}
+                              disabled={n.status === 'dismissed'}
+                              onChange={(next) => setAnnotationVisible(markId, next)}
+                            />
+                          );
                           const detail = (
                             <NoteDetail
                             idx={`N${noteIdx + 1}`}
@@ -2310,7 +2433,7 @@ export function DocRedlinePreview({
                               busy={busyId === markId} error={errorById[markId]} undoable={undoableIds.has(markId)} onDismiss={() => void dismissNote(n)}
                             />
                           );
-                          if (anchored.has(markId)) {
+                          if (visible && anchored.has(markId)) {
                             return (
                               <div
                                 key={markId}
@@ -2327,6 +2450,7 @@ export function DocRedlinePreview({
                                   selectFromList(markId);
                                 }}
                               >
+                                {visibilityToggle}
                                 {detail}
                               </div>
                             );
@@ -2336,13 +2460,16 @@ export function DocRedlinePreview({
                               key={markId}
                               ref={setItemRef}
                               data-change-item={markId}
-                              className={`${styles.item} ${styles.itemDead}`}
+                              className={`${styles.item} ${visible ? styles.itemDead : styles.itemDisabled ?? ''}`}
                             >
+                              {visibilityToggle}
                               {detail}
-                              <p className={styles.itemDeadNote}>
-                                <Icon name="info" size={12} />
-                                Không tìm thấy trong tài liệu — không nhảy tới được.
-                              </p>
+                              {visible ? (
+                                <p className={styles.itemDeadNote}>
+                                  <Icon name="info" size={12} />
+                                  Không tìm thấy trong tài liệu — không nhảy tới được.
+                                </p>
+                              ) : <p className={styles.itemHiddenNote}>Highlight đang tắt.</p>}
                             </div>
                           );
                         })}
@@ -2575,6 +2702,45 @@ function RuleChip({ ruleId, open, body, onToggle }: { ruleId: string; open: bool
         </span>
       ) : null}
     </span>
+  );
+}
+
+/** Công tắc mắt của từng card. Đây chỉ là visibility state của preview; nút
+ *  dừng propagation để không đồng thời chọn/cuộn card khi người dùng chỉ muốn
+ *  bật hoặc tắt highlight. */
+function AnnotationVisibilityToggle({
+  id,
+  indexLabel,
+  mode,
+  visible,
+  disabled,
+  onChange,
+}: {
+  id: string;
+  indexLabel: string;
+  mode: PreviewMode;
+  visible: boolean;
+  disabled: boolean;
+  onChange: (visible: boolean) => void;
+}) {
+  const noun = mode === 'changes' ? 'thay đổi' : 'nhận xét';
+  const action = visible ? 'Ẩn' : 'Hiện';
+  return (
+    <button
+      type="button"
+      className={`${styles.itemVisibilityToggle ?? ''} ${visible ? styles.itemVisibilityOn ?? '' : ''}`}
+      data-annotation-visibility={id}
+      aria-label={`${action} highlight ${noun} ${indexLabel}`}
+      aria-pressed={visible}
+      disabled={disabled}
+      title={disabled ? 'Item đã bị bỏ nên không có highlight' : `${action} highlight trên tài liệu`}
+      onClick={(event) => {
+        event.stopPropagation();
+        onChange(!visible);
+      }}
+    >
+      <Icon name={visible ? 'eye' : 'eye-off'} size={15} />
+    </button>
   );
 }
 

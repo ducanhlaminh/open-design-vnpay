@@ -108,10 +108,10 @@ export interface HighlightScope {
   sectionEndHeadingOrdinalExclusive?: number;
 }
 
-export type HighlightBlockKind = 'paragraph' | 'list-item' | 'table' | 'heading';
+export type HighlightBlockKind = 'paragraph' | 'list-item' | 'table' | 'table-row' | 'heading';
 
 /** Metadata để caller tint nguyên block mà không bọc `<mark>` qua biên block.
- *  `blockIndex` là chỉ số ổn định trong `querySelectorAll('p, li, table,
+ *  `blockIndex` là chỉ số ổn định trong `querySelectorAll('p, li, table, tr,
  *  h1, h2, h3, h4, h5, h6')` của HTML kết quả. */
 export interface HighlightBlockTarget {
   id: string;
@@ -139,8 +139,9 @@ export interface HighlightResult {
  * Chỉ đụng vào phần TEXT giữa các thẻ, không bao giờ chạm nội dung bên trong
  * `<...>` — nếu không sẽ phá thuộc tính (ví dụ khớp trúng chữ nằm trong `src=`).
  *
- * Mỗi request chỉ bôi lần khớp ĐẦU TIÊN. Đoạn nào không khớp thì id của nó
- * vắng mặt trong `matched`, để phía gọi báo "không neo được" thay vì im lặng.
+ * Mỗi request bôi occurrence CHƯA được mark đầu tiên. Nhiều request có thể
+ * dùng chung id để một annotation phủ nhiều dòng/block; id có mặt trong
+ * `matched` khi ít nhất một segment neo được.
  *
  * `className`/`inlineStyle` là giá trị DỰ PHÒNG chung; request nào mang
  * `className`/`inlineStyle` riêng thì dùng của nó (xem HighlightRequest).
@@ -165,7 +166,6 @@ export function injectHighlights(
   // Việt), còn anchor/quote của agent là NFC → cùng chữ mà regex trượt.
   let current = html.normalize('NFC');
   for (const req of requests) {
-    if (matched.has(req.id)) continue;
     const re = fuzzyRegex(escapeHtmlText(req.text.normalize('NFC')));
     if (!re) continue;
     const next = insertOneHighlight(current, re, openTag(req), req.scope);
@@ -198,10 +198,9 @@ function insertOneHighlight(
   const layout = buildHtmlTextLayout(html);
   const range = resolveScopeRange(layout, scope);
   if (!range) return null;
-  const m = re.exec(layout.full.slice(range.start, range.end));
-  if (!m || !m[0]) return null;
-  const matchStart = range.start + m.index;
-  const matchEnd = matchStart + m[0].length;
+  const match = findFirstUnmarkedMatch(layout, re, range);
+  if (!match) return null;
+  const { start: matchStart, end: matchEnd } = match;
 
   // Chèn từ CUỐI về ĐẦU để các vị trí phía trước không bị lệch.
   for (let k = layout.spans.length - 1; k >= 0; k -= 1) {
@@ -216,6 +215,31 @@ function insertOneHighlight(
       text.slice(0, localStart) + openTag + text.slice(localStart, localEnd) + '</mark>' + text.slice(localEnd);
   }
   return { html: layout.parts.join(''), matchStart, matchEnd, layout };
+}
+
+/** Tìm occurrence đầu tiên không đè lên mark đã chèn bởi request trước.
+ *  Một quote nhiều dòng tạo nhiều request cùng id; nếu vẫn luôn lấy occurrence
+ *  đầu tiên thì request thứ hai sẽ bọc mark vào trong mark thứ nhất. */
+function findFirstUnmarkedMatch(
+  layout: HtmlTextLayout,
+  re: RegExp,
+  range: { start: number; end: number },
+): { start: number; end: number } | null {
+  let cursor = range.start;
+  while (cursor < range.end) {
+    const match = re.exec(layout.full.slice(cursor, range.end));
+    if (!match?.[0]) return null;
+    const start = cursor + match.index;
+    const end = start + match[0].length;
+    const overlapsHighlight = layout.spans.some((span) => {
+      if (!span.insideHighlight) return false;
+      const spanEnd = span.start + span.len;
+      return spanEnd > start && span.start < end;
+    });
+    if (!overlapsHighlight) return { start, end };
+    cursor = Math.max(end, start + 1);
+  }
+  return null;
 }
 
 export interface DeletedRunRequest {
@@ -342,6 +366,9 @@ interface HtmlTextSpan {
   start: number;
   len: number;
   block?: HtmlBlock;
+  /** Text đã nằm trong mark của request trước. Request tiếp theo phải bỏ qua
+   *  vùng này để nhiều segment cùng id không tạo mark lồng nhau. */
+  insideHighlight: boolean;
 }
 
 interface HtmlHeading {
@@ -369,6 +396,7 @@ const BLOCK_KIND_BY_TAG: Partial<Record<string, HighlightBlockKind>> = {
   p: 'paragraph',
   li: 'list-item',
   table: 'table',
+  tr: 'table-row',
   h1: 'heading',
   h2: 'heading',
   h3: 'heading',
@@ -391,7 +419,13 @@ function buildHtmlTextLayout(html: string): HtmlTextLayout {
     const value = parts[part] ?? '';
     if (part % 2 === 0) {
       const block = preferredBlock(stack);
-      spans.push({ part, start: full.length, len: value.length, ...(block ? { block } : {}) });
+      spans.push({
+        part,
+        start: full.length,
+        len: value.length,
+        ...(block ? { block } : {}),
+        insideHighlight: stack.some((frame) => frame.tagName === 'mark'),
+      });
       full += value;
       continue;
     }
@@ -439,7 +473,10 @@ function buildHtmlTextLayout(html: string): HtmlTextLayout {
 }
 
 function preferredBlock(stack: readonly ElementFrame[]): HtmlBlock | undefined {
-  for (const tagName of ['table', 'li', 'p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6']) {
+  // Row đứng trước table: một match trong td/th phải sở hữu đúng hàng, không
+  // được nâng thẳng thành toàn bảng. Table vẫn là fallback cho caption/text
+  // nằm ngoài mọi <tr>.
+  for (const tagName of ['tr', 'table', 'li', 'p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6']) {
     for (let i = stack.length - 1; i >= 0; i -= 1) {
       const block = stack[i]?.block;
       if (block?.tagName === tagName) return block;
