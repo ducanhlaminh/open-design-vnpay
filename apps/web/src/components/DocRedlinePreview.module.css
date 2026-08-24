@@ -1455,6 +1455,21 @@
   margin-top: 6px;
   font-size: 11px;
 }
+/* Khung cao cố định cho sơ đồ mermaid SỐNG (portal MermaidDiagram vào đây, xem
+   DocRedlinePreview.tsx). `.mermaidHost` cố ý "co theo nội dung" cho khối mã gập
+   dưới, nhưng MermaidDiagram dựng viewport pan/zoom bằng position:absolute
+   inset:0 nên cần tổ tiên CÓ chiều cao — không có thì height:100% → 0, sơ đồ
+   (kể cả node tô màu) tàng hình. Cùng khuôn .md-mermaid (FileViewer, height
+   520px) và .drawioFrame ngay dưới; resize:vertical để người xem kéo cao thấp. */
+.mermaidFrame {
+  height: 460px;
+  position: relative;
+  border: 1px solid var(--border, #e1e5eb);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--bg-subtle, #f6f8fa);
+  resize: vertical;
+}
 /* N7 (wp3b.yaml): host mermaid được CHỌN (selectedId trùng, xem .hlActive ở
    trên) chỉ đổi VIỀN, không đổi NỀN — `.hlActive` mặc định sơn nền accent đậm
    kín cả khối, hợp cho một cụm chữ ngắn nhưng phủ hết diện tích cả một sơ đồ

@@ -2476,7 +2476,16 @@ export function DocRedlinePreview({
                           <span className={styles.diagramBadgeOriginal ?? ''}>Nguyên bản</span>
                         </div>
                       )}
-                      <MermaidDiagram code={activeDiagramCode(m)} initialFit="width" />
+                      {/* Khung có CHIỀU CAO cố định: MermaidDiagram dựng viewport
+                          pan/zoom bằng position:absolute inset:0, cần một tổ tiên
+                          ĐÃ CÓ chiều cao mới hiện ra (giống .md-mermaid height:520px
+                          của FileViewer). `.mermaidHost` không đặt height nên nếu
+                          nhét thẳng MermaidDiagram vào, height:100% quy về auto → 0
+                          → sơ đồ (kể cả node đã tô màu) tàng hình. Bọc trong khung
+                          cao cố định như .drawioFrame để sơ đồ hiện đúng. */}
+                      <div className={styles.mermaidFrame ?? ''}>
+                        <MermaidDiagram code={activeDiagramCode(m)} initialFit="width" />
+                      </div>
                     </>,
                     m.host,
                     `diagram-${i}`,
