@@ -205,8 +205,23 @@ function pageReferencing(mdByRel: Map<string, string>, diagramBase: string): str
   return null;
 }
 
+/** App-pool (dự án có `docs-app/`) copy NGUYÊN thư mục `attachments/` của
+ *  TOÀN BỘ trang App vào `docs-feature/attachments/` khi nạp tài liệu (Bước 1
+ *  — không sửa ở đó, xem `wp-drflow-docsapp-scope.yaml`). Hệ quả: mọi
+ *  `.drawio`/`.mmd` của MỌI trang App nằm vật lý dưới `docs-feature`, kể cả
+ *  sơ đồ thuộc feature khác feature đang xét. Với dự án App-pool, "không
+ *  trang docs-feature nào tham chiếu sơ đồ này" gần như chắc chắn là sơ đồ
+ *  của feature khác lọt vào theo, KHÔNG phải một sơ đồ thật đang mất-mát —
+ *  nên gate loại-bỏ (drawio safety-net tắt, mermaid standalone không add vô
+ *  điều kiện) chỉ bật khi có `docs-app/` ngay dưới cwd. Dự án legacy (không
+ *  `docs-app/`, `docs/` một-feature-một-dự-án) không có kiểu leak này — sơ đồ
+ *  không trang nào tham chiếu ở đó nhiều khả năng là matching trượt (tên
+ *  không khớp) chứ không phải leak, nên giữ nguyên safety-net "giữ tất cả"
+ *  cũ + add mermaid vô điều kiện, tránh biến một dự án chạy được thành mất
+ *  hết luồng chỉ vì việc khớp trang tham chiếu trượt hết. */
 export async function prepareFlowUxInputs(cwd: string): Promise<PrepareResult> {
   const flowsDir = path.join(cwd, 'flows');
+  const isAppPool = await exists(path.join(cwd, 'docs-app'));
   const inputs: FlowInput[] = [];
   const taken = new Set<string>();
   const normalizedPages: string[] = [];
@@ -287,8 +302,18 @@ export async function prepareFlowUxInputs(cwd: string): Promise<PrepareResult> {
   const referenced = drawioCandidates.filter((c) => !c.orphan);
   const orphanedCandidates = drawioCandidates.filter((c) => c.orphan);
   const orphans: PrepareResult['orphans'] = [];
+  const orphanDiagrams = new Set<string>();
+  const pushOrphan = (diagram: string, reason: string) => {
+    if (orphanDiagrams.has(diagram)) return;
+    orphanDiagrams.add(diagram);
+    orphans.push({ diagram, reason });
+  };
   let orphanSafetyNote: string | undefined;
-  if (referenced.length === 0 && orphanedCandidates.length > 0) {
+  // Safety net chỉ bật cho dự án legacy — App-pool tắt hẳn (xem docblock
+  // prepareFlowUxInputs): "không trang nào tham chiếu" ở đó gần như chắc
+  // chắn là leak từ Bước 1, giữ-tất-cả sẽ nhét sơ đồ của feature khác vào
+  // flows thay vì báo minh bạch qua orphans.
+  if (!isAppPool && referenced.length === 0 && orphanedCandidates.length > 0) {
     // Safety net: đừng để một dự án đang chạy được (có sơ đồ thật) biến thành
     // không còn luồng nào chỉ vì việc khớp trang tham chiếu trượt hết —
     // hành vi cũ (mọi sơ đồ vào flows) + cảnh báo thay vì im lặng bỏ hết.
@@ -302,12 +327,7 @@ export async function prepareFlowUxInputs(cwd: string): Promise<PrepareResult> {
       inputs.push(c.input);
       pendingWrites.push(c.write);
     }
-    const seenDiagram = new Set<string>();
-    for (const c of orphanedCandidates) {
-      if (seenDiagram.has(c.diagram)) continue;
-      seenDiagram.add(c.diagram);
-      orphans.push({ diagram: c.diagram, reason: 'không có trang tài liệu nào tham chiếu sơ đồ này' });
-    }
+    for (const c of orphanedCandidates) pushOrphan(c.diagram, 'không có trang tài liệu nào tham chiếu sơ đồ này');
   }
 
   // (2) Mermaid — standalone files, exported macro calls, fenced blocks.
@@ -406,7 +426,10 @@ export async function prepareFlowUxInputs(cwd: string): Promise<PrepareResult> {
   // Standalone `.mmd` / `.mermaid` attachments (a copy of an embedded diagram
   // is skipped by the code dedupe above): titled after the file minus the
   // `<pageId>-` prefix our ingest adds; a sibling `.svg` of the same stem is
-  // the rendered picture.
+  // the rendered picture. App-pool: same "không trang nào tham chiếu → khả
+  // năng cao là leak" logic as drawio above — no unconditional add; an
+  // unreferenced one goes to orphans instead. Legacy: unchanged (add
+  // unconditionally, source = referencing page or the file itself).
   for (const [name, code] of attachmentText) {
     if (!/\.(mmd|mermaid)$/i.test(name)) continue;
     consumedAttachments.add(name);
@@ -414,20 +437,37 @@ export async function prepareFlowUxInputs(cwd: string): Promise<PrepareResult> {
     const stem = name.replace(/\.(mmd|mermaid)$/i, '');
     const svgRel = files.find((f) => path.dirname(f) === path.dirname(rel) && path.basename(f) === `${stem}.svg`);
     const svg = svgRel ? (await readText(path.join(cwd, svgRel))) ?? undefined : undefined;
-    await addMermaid(stem.replace(/^\d+-/, ''), code, pageReferencing(mdByRel, name) ?? rel, rel, svg && /<svg\b/i.test(svg) ? svg : undefined);
+    const referencedBy = pageReferencing(mdByRel, name);
+    if (isAppPool && referencedBy == null) {
+      pushOrphan(rel, 'không có trang tài liệu nào tham chiếu sơ đồ này');
+      continue;
+    }
+    await addMermaid(stem.replace(/^\d+-/, ''), code, referencedBy ?? rel, rel, svg && /<svg\b/i.test(svg) ? svg : undefined);
   }
 
   // Extension-less Mermaid attachments no page call referenced (older ingests
   // that dropped the macro's <script>, leaving only the source attachment):
-  // still a flow — titled after the file.
+  // still a flow — titled after the file. Same App-pool gate as above.
   for (const [name, code] of attachmentText) {
     if (consumedAttachments.has(name)) continue;
     const rel = files.find((f) => path.basename(f) === name)!;
-    await addMermaid(name, code, pageReferencing(mdByRel, name) ?? rel, rel);
+    const referencedBy = pageReferencing(mdByRel, name);
+    if (isAppPool && referencedBy == null) {
+      pushOrphan(rel, 'không có trang tài liệu nào tham chiếu sơ đồ này');
+      continue;
+    }
+    await addMermaid(name, code, referencedBy ?? rel, rel);
   }
 
   await fs.promises.mkdir(flowsDir, { recursive: true });
   for (const w of pendingWrites.splice(0)) await w();
+  // App-pool, còn ít nhất một flow khác đứng được (inputs.length > 0): nói rõ
+  // bao nhiêu sơ đồ bị loại vì leak — khác note "text-only" (không có sơ đồ
+  // nào) và khác orphanSafetyNote (chỉ dự án legacy mới giữ-tất-cả).
+  const poolOrphanNote =
+    isAppPool && orphans.length > 0 && inputs.length > 0
+      ? `${orphans.length} sơ đồ thuộc pool App (docs-app) không trang docs-feature nào tham chiếu — đã loại khỏi flows.`
+      : undefined;
   await writeJson(path.join(flowsDir, '_inputs.json'), {
     generatedAt: new Date().toISOString(),
     flows: inputs,
@@ -435,7 +475,7 @@ export async function prepareFlowUxInputs(cwd: string): Promise<PrepareResult> {
     note:
       inputs.length === 0
         ? 'Không tìm thấy sơ đồ draw.io/Mermaid nào trong tài liệu — chạy chế độ text-only (tự dựng flowchart.json từ chữ).'
-        : orphanSafetyNote,
+        : (poolOrphanNote ?? orphanSafetyNote),
   });
   return { inputs, normalizedPages, orphans };
 }

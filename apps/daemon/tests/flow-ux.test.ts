@@ -532,6 +532,149 @@ test('prepareFlowUxInputs: mọi sơ đồ đều mồ côi → safety net giữ
   }
 });
 
+// ── WP dr-flow docs-app scope: dự án App-pool (có docs-app/) copy NGUYÊN
+// attachments/ của TOÀN BỘ trang App vào docs-feature/attachments (Bước 1) —
+// sơ đồ của feature khác lọt vào theo, "không trang docs-feature nào tham
+// chiếu" gần như chắc chắn là leak, không phải một cái trống mất-mát. Gate
+// theo sự TỒN TẠI của docs-app/ ngay dưới cwd. ─────────────────────────────
+
+test('App-pool (docs-app/): .mmd standalone không trang nào tham chiếu → KHÔNG vào flows, có trong orphans của _inputs.json; CÙNG fixture bỏ docs-app/ → legacy giữ nguyên (vào flows)', async () => {
+  const build = (withAppPool: boolean) => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'od-flow-ux-pool-mmd-'));
+    if (withAppPool) fs.mkdirSync(path.join(cwd, 'docs-app'), { recursive: true });
+    const dir = path.join(cwd, 'docs-feature', 'other-feature');
+    fs.mkdirSync(path.join(dir, 'attachments'), { recursive: true });
+    // Sơ đồ này thuộc một feature KHÁC — không trang docs-feature nào ở đây
+    // nhắc tới nó (đúng dạng leak do copy nguyên attachments/ ở Bước 1).
+    fs.writeFileSync(path.join(dir, 'attachments', '999-Leaked-Diagram.mmd'), MERMAID);
+    fs.writeFileSync(path.join(dir, 'doc.md'), '# Doc\n\nKhông nhắc tới sơ đồ nào cả.\n');
+    return cwd;
+  };
+
+  const poolCwd = build(true);
+  try {
+    const prep = await prepareFlowUxInputs(poolCwd);
+    assert.equal(
+      prep.inputs.some((i) => i.diagram.endsWith('999-Leaked-Diagram.mmd')),
+      false,
+      'App-pool: .mmd không trang docs-feature nào tham chiếu → không vào flows',
+    );
+    assert.ok(
+      prep.orphans.some((o) => o.diagram.endsWith('999-Leaked-Diagram.mmd')),
+      'phải ghi nhận minh bạch vào orphans',
+    );
+    const inputsJson = JSON.parse(fs.readFileSync(path.join(poolCwd, 'flows', '_inputs.json'), 'utf8'));
+    assert.deepEqual(inputsJson.orphans, prep.orphans);
+  } finally {
+    fs.rmSync(poolCwd, { recursive: true, force: true });
+  }
+
+  const legacyCwd = build(false);
+  try {
+    const prep = await prepareFlowUxInputs(legacyCwd);
+    assert.equal(
+      prep.inputs.some((i) => i.diagram.endsWith('999-Leaked-Diagram.mmd')),
+      true,
+      'legacy (không docs-app/): hành vi cũ giữ nguyên — vẫn vào flows dù không trang nào tham chiếu',
+    );
+  } finally {
+    fs.rmSync(legacyCwd, { recursive: true, force: true });
+  }
+});
+
+test('App-pool (docs-app/): TOÀN BỘ sơ đồ draw.io mồ côi → safety-net TẮT (không giữ hết), flows không chứa chúng, orphans đủ từng diagram', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'od-flow-ux-pool-drawio-'));
+  try {
+    fs.mkdirSync(path.join(cwd, 'docs-app'), { recursive: true });
+    const dir = path.join(cwd, 'docs-feature', 'sso');
+    fs.mkdirSync(path.join(dir, 'attachments'), { recursive: true });
+    const diagramXml = (a: string, b: string) => `<mxGraphModel><root>
+<mxCell id="0"/><mxCell id="1" parent="0"/>
+<mxCell id="v1" value="${a}" style="ellipse;" vertex="1" parent="1"><mxGeometry x="0" y="0" width="80" height="40" as="geometry"/></mxCell>
+<mxCell id="v2" value="${b}" style="ellipse;" vertex="1" parent="1"><mxGeometry x="200" y="0" width="80" height="40" as="geometry"/></mxCell>
+<mxCell id="e1" edge="1" parent="1" source="v1" target="v2"><mxGeometry relative="1" as="geometry"/></mxCell>
+</root></mxGraphModel>`;
+    fs.writeFileSync(path.join(dir, 'attachments', '901-A.drawio'), diagramXml('A1', 'A2'));
+    fs.writeFileSync(path.join(dir, 'attachments', '902-B.drawio'), diagramXml('B1', 'B2'));
+    // Không có trang .md nào cả — mọi sơ đồ chắc chắn mồ côi, nhưng đây là
+    // App-pool nên KHÔNG áp safety-net "giữ tất cả" như dự án legacy.
+
+    const prep = await prepareFlowUxInputs(cwd);
+    assert.equal(prep.inputs.length, 0, 'App-pool: safety-net tắt, mọi candidate mồ côi bị loại khỏi flows');
+    assert.deepEqual(prep.orphans.map((o) => o.diagram).sort(), [
+      'docs-feature/sso/attachments/901-A.drawio',
+      'docs-feature/sso/attachments/902-B.drawio',
+    ]);
+    const inputsJson = JSON.parse(fs.readFileSync(path.join(cwd, 'flows', '_inputs.json'), 'utf8'));
+    assert.deepEqual(inputsJson.orphans, prep.orphans);
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('App-pool (docs-app/): drawio và .mmd ĐƯỢC trang docs-feature tham chiếu → vẫn vào flows bình thường; kèm 1 sơ đồ mồ côi khác → orphans + note đếm N sơ đồ pool App bị loại', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'od-flow-ux-pool-referenced-'));
+  try {
+    fs.mkdirSync(path.join(cwd, 'docs-app'), { recursive: true });
+    const dir = path.join(cwd, 'docs-feature', 'sim');
+    fs.mkdirSync(path.join(dir, 'attachments'), { recursive: true });
+    fs.copyFileSync(path.join(FIXTURES, 'sample-compressed.drawio'), path.join(dir, 'attachments', '12345-Luong-mua-sim.drawio'));
+    fs.writeFileSync(path.join(dir, 'attachments', '999-Referenced.mmd'), MERMAID);
+    const otherMermaid = 'flowchart TD\n    P1[Bắt đầu] --> P2[Kết thúc]\n';
+    fs.writeFileSync(path.join(dir, 'attachments', '888-Orphan.mmd'), otherMermaid);
+    fs.writeFileSync(
+      dir + '/doc.md',
+      '# Doc\n\n![](attachments/12345-Luong-mua-sim.drawio)\n\n![](attachments/999-Referenced.mmd)\n',
+    );
+
+    const prep = await prepareFlowUxInputs(cwd);
+    assert.ok(
+      prep.inputs.some((i) => i.diagram.endsWith('12345-Luong-mua-sim.drawio')),
+      'drawio được tham chiếu vẫn vào flows',
+    );
+    assert.ok(
+      prep.inputs.some((i) => i.diagram.endsWith('999-Referenced.mmd')),
+      '.mmd được tham chiếu vẫn vào flows',
+    );
+    assert.equal(
+      prep.inputs.some((i) => i.diagram.endsWith('888-Orphan.mmd')),
+      false,
+      'sơ đồ mồ côi khác (không tham chiếu) vẫn bị loại dù cùng dự án',
+    );
+    assert.equal(prep.orphans.length, 1);
+    assert.ok(prep.orphans[0]!.diagram.endsWith('888-Orphan.mmd'));
+    const inputsJson = JSON.parse(fs.readFileSync(path.join(cwd, 'flows', '_inputs.json'), 'utf8'));
+    assert.equal(
+      inputsJson.note,
+      '1 sơ đồ thuộc pool App (docs-app) không trang docs-feature nào tham chiếu — đã loại khỏi flows.',
+    );
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('App-pool (docs-app/): sau khi lọc hết bởi luật mới, inputs rỗng → note text-only hiện có vẫn được ghi (không phải note đếm orphan)', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'od-flow-ux-pool-empty-'));
+  try {
+    fs.mkdirSync(path.join(cwd, 'docs-app'), { recursive: true });
+    const dir = path.join(cwd, 'docs-feature', 'sso');
+    fs.mkdirSync(path.join(dir, 'attachments'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'attachments', '999-Leaked.mmd'), MERMAID);
+    fs.writeFileSync(path.join(dir, 'doc.md'), '# Doc\n\nKhông nhắc gì tới sơ đồ.\n');
+
+    const prep = await prepareFlowUxInputs(cwd);
+    assert.equal(prep.inputs.length, 0);
+    assert.equal(prep.orphans.length, 1);
+    const inputsJson = JSON.parse(fs.readFileSync(path.join(cwd, 'flows', '_inputs.json'), 'utf8'));
+    assert.equal(
+      inputsJson.note,
+      'Không tìm thấy sơ đồ draw.io/Mermaid nào trong tài liệu — chạy chế độ text-only (tự dựng flowchart.json từ chữ).',
+    );
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test('finalizeFlowUx: screens.json khai mapping hỏng (id lạ + node decision) → entry.screens rỗng, screensDropped đủ, flows/_warnings.json được ghi', async () => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'od-flow-ux-dropped-'));
   try {
