@@ -481,11 +481,26 @@ function isComponentTableChange(c: Pick<DocRedlineChange, 'kind' | 'before' | 'r
   return c.kind === 'component' && !c.before && !!c.rule_id?.startsWith('comp/');
 }
 
-/** Cắt `text` còn tối đa `max` ký tự, thêm "…" khi có cắt — dùng cho tiêu đề
- *  thẻ (60 ký tự) và từng vế của dòng diff rút gọn (~40 ký tự). */
+/** Cắt `text` còn tối đa `max` ký tự, thêm "…" khi có cắt — dùng cho caption
+ *  sơ đồ (~40 ký tự, xem `diagramCaption`). Cắt đúng ranh giới ký tự, KHÔNG
+ *  lùi về ranh giới từ — caption mermaid ngắn, ranh giới từ không đáng để lo. */
 function truncateText(text: string, max: number): string {
   const flat = text.trim();
   return flat.length > max ? `${flat.slice(0, max)}…` : flat;
+}
+
+/** Như `truncateText` nhưng lùi điểm cắt về khoảng trắng gần nhất trước `max`
+ *  ký tự, thay vì chặt đứt giữa một từ — dùng cho dòng diff rút gọn (wp-redline
+ *  -card-polish.yaml mục 2): cắt giữa từ ("ngư…") khó đọc hơn cắt sau một từ
+ *  trọn vẹn ("người dùng…"). Không tìm được khoảng trắng nào (một từ dài hơn
+ *  `max`) thì rơi về cắt cứng như `truncateText`. */
+function truncateTextAtWord(text: string, max: number): string {
+  const flat = text.trim();
+  if (flat.length <= max) return flat;
+  const cut = flat.slice(0, max);
+  const lastSpace = cut.lastIndexOf(' ');
+  const boundary = lastSpace > 0 ? lastSpace : max;
+  return `${flat.slice(0, boundary).trim()}…`;
 }
 
 /** Trích nội dung GIỮA cặp rào ```` ```mermaid ``` ```` của một change sơ đồ.
@@ -499,15 +514,18 @@ function extractMermaidFenceBody(text: string | undefined): string | null {
   return m ? (m[1] ?? '').replace(/\s+$/, '') : null;
 }
 
-/** Một vế ngắn gọn cho dòng diff rút gọn của thẻ (dòng 2): với sơ đồ mermaid,
- *  chữ mermaid thô (`flowchart TD`, `A --> B`…) không đọc được ở dạng cắt 40
- *  ký tự, nên ưu tiên dòng caption ("Gốc"/"Đề xuất …") nếu `text` có rào
- *  mermaid; còn lại thì cắt thẳng, gộp khoảng trắng/xuống dòng thành một dòng. */
-function diffPreviewSide(text: string | undefined, max = 40): string {
+/** Một vế của khối diff mono (op 'edit'/'add'/'del' — xem `ChangeDetail`): với
+ *  sơ đồ mermaid, chữ mermaid thô (`flowchart TD`, `A --> B`…) không đọc được
+ *  ở dạng cắt, nên ưu tiên dòng caption ("Gốc"/"Đề xuất …") nếu `text` có rào
+ *  mermaid; còn lại thì cắt thẳng, gộp khoảng trắng/xuống dòng thành một dòng.
+ *  Trần nâng 40 → 72 ký tự và cắt ở RANH GIỚI TỪ (`truncateTextAtWord`, xem
+ *  wp-redline-card-polish.yaml mục 2) — 40 ký tự/cắt-giữa-từ là đúng nguyên
+ *  nhân người dùng đọc không nổi dòng diff cũ. */
+function diffPreviewSide(text: string | undefined, max = 72): string {
   if (!text) return '';
   const withoutFence = text.replace(/```mermaid\r?\n[\s\S]*?```/, '').trim();
   const flat = (withoutFence || text).replace(/\s+/g, ' ').replace(/^\*+|\*+$/g, '').trim();
-  return truncateText(flat, max);
+  return truncateTextAtWord(flat, max);
 }
 
 /** Vế caption RIÊNG cho thẻ sơ đồ (khác `diffPreviewSide` ở TRÊN, dùng cho mọi
@@ -616,11 +634,16 @@ function tableColumnIndex(header: string | null, label: string, fallback: number
 /** Tiêu đề dòng 1 của thẻ (mặt thẻ, không phải Chi tiết): hai loại thẻ MỚI có
  *  tiêu đề CỐ ĐỊNH tả đúng hành động ("Thay sơ đồ…", "Chèn bảng N…") thay vì
  *  cắt `reason` — `reason` của chúng nói vì sao rà soát lại sơ đồ/bảng, không
- *  tả chỗ sửa này LÀM GÌ, nên cắt nó vào tiêu đề sẽ khó hiểu hơn câu cố định. */
+ *  tả chỗ sửa này LÀM GÌ, nên cắt nó vào tiêu đề sẽ khó hiểu hơn câu cố định.
+ *
+ *  wp-redline-card-polish.yaml mục 1: nhánh mặc định (reason) THÔI cắt 60 ký
+ *  tự — trả `reason` đầy đủ, để CSS `.cardTitle` (line-clamp 2 dòng) lo việc
+ *  gọn mặt thẻ; cắt bằng JS từng cắt đứt giữa từ ("…") mà CSS clamp không có
+ *  nhược điểm đó. */
 function cardTitle(c: DocRedlineChange): string {
   if (c.kind === 'flow-diagram') return 'Thay sơ đồ bằng bản đề xuất';
   if (isComponentTableChange(c)) return `Chèn bảng ${componentTableCounts(c.quote).total} thành phần`;
-  return truncateText(c.reason, 60);
+  return c.reason.trim();
 }
 
 /** Nền vùng bôi đặt thẳng trong thuộc tính style thay vì chỉ dựa vào class:
@@ -2771,24 +2794,47 @@ function RefRow({ refs, isRefAnchored, onJumpRef }: { refs: string[] } & Pick<Re
 
 /** Một khối chi tiết của một NOTE: nhóm, mức độ, rule_id, phát hiện, đề xuất.
  *  Không có `before → quote` vì note không sửa gì — đó là điểm phân biệt với
- *  ChangeDetail, và cũng là lý do thẻ mang nhãn riêng. */
+ *  ChangeDetail, và cũng là lý do thẻ mang nhãn riêng.
+ *
+ *  wp-redline-card-polish.yaml mục 4: về cùng khuôn thẻ-3-dòng nén như
+ *  ChangeDetail — mặt thẻ chỉ còn `finding` (class `cardTitle` dùng chung,
+ *  clamp 2 dòng bằng CSS) + `suggestion` rút gọn một dòng ellipsis; RuleChip/
+ *  RefRow/"Đề xuất" đầy đủ chuyển vào sau "Chi tiết ▾". Trạng thái mở/đóng là
+ *  state CỤC BỘ trong component này (không đẩy lên cha) — không có gì khác
+ *  trong ứng dụng cần biết một note có đang mở Chi tiết hay không, cùng lý do
+ *  như `tableEditOpen` của `ComponentTableCardBody`. */
 function NoteDetail({ note: n, idx, ruleOpen, ruleBody, onToggleRule, isRefAnchored, onJumpRef, busy, error, undoable, onDismiss }: { note: DocRedlineNote; idx?: string; onDismiss: () => void } & RefProps) {
+  const [expanded, setExpanded] = useState(false);
   return (
-    <div className={`${styles.card} ${styles.noteCard} ${SEV_CLASS[n.severity]} ${n.status === 'dismissed' ? styles.dismissed : ''}`}>
+    <div className={`${styles.card} ${styles.cardCompact ?? ''} ${styles.noteCard} ${SEV_CLASS[n.severity]} ${n.status === 'dismissed' ? styles.dismissed : ''}`}>
       <div className={styles.cardHead}>
         {idx ? <span className={styles.cardIdx}>{idx}</span> : null}
         <span className={styles.cardKind}>{KIND_LABEL[n.kind]}</span>
         <span className={styles.sevBadge}>{SEV_LABEL[n.severity]}</span>
       </div>
-      {n.rule_id ? <RuleChip ruleId={n.rule_id} open={ruleOpen} body={ruleBody} onToggle={onToggleRule} /> : null}
-      <p className={styles.reason}>{n.finding}</p>
+      <p className={styles.cardTitle ?? ''} title={n.finding}>{n.finding}</p>
       {n.suggestion ? (
-        <p className={styles.suggestion}>
-          <span className={styles.suggestionLabel}>Đề xuất</span> {n.suggestion}
-        </p>
+        <p className={styles.suggestionCompact ?? ''} title={n.suggestion}>{n.suggestion}</p>
       ) : null}
-      <RefRow refs={n.doc_refs ?? []} isRefAnchored={isRefAnchored} onJumpRef={onJumpRef} />
-      <div className={styles.actions}><button type="button" disabled={busy} onClick={(ev) => { ev.stopPropagation(); onDismiss(); }}>{n.status === 'dismissed' && undoable ? 'Hoàn tác' : 'Bỏ'}</button>{n.status === 'dismissed' ? <span className={styles.badgeDeleted}>Đã bỏ</span> : null}</div>
+      <div className={styles.actions}>
+        <button type="button" disabled={busy} onClick={(ev) => { ev.stopPropagation(); onDismiss(); }}>{n.status === 'dismissed' && undoable ? 'Hoàn tác' : 'Bỏ'}</button>
+        {n.status === 'dismissed' ? <span className={styles.badgeDeleted}>Đã bỏ</span> : null}
+        <button type="button" className={styles.detailToggle ?? ''} aria-expanded={expanded} onClick={(ev) => { ev.stopPropagation(); setExpanded((prev) => !prev); }}>
+          {expanded ? 'Chi tiết ▴' : 'Chi tiết ▾'}
+        </button>
+      </div>
+      {expanded ? (
+        <div className={styles.cardDetail ?? ''}>
+          {n.rule_id ? <RuleChip ruleId={n.rule_id} open={ruleOpen} body={ruleBody} onToggle={onToggleRule} /> : null}
+          <p className={styles.reason}>{n.finding}</p>
+          {n.suggestion ? (
+            <p className={styles.suggestion}>
+              <span className={styles.suggestionLabel}>Đề xuất</span> {n.suggestion}
+            </p>
+          ) : null}
+          <RefRow refs={n.doc_refs ?? []} isRefAnchored={isRefAnchored} onJumpRef={onJumpRef} />
+        </div>
+      ) : null}
       {error ? <p className={styles.error}>{error}</p> : null}
     </div>
   );
@@ -2815,13 +2861,16 @@ interface CompactCardProps {
  *
  *  wp3b.yaml mục D mở khuôn 3-dòng đó cho MỌI thẻ, kể cả các loại CŨ
  *  (`ux-writing`/`flow`/`gap`/`edge-case`/`component` có `before`, và change
- *  `origin: 'user'`) — nhánh dưới đây. `rule_id` VẪN hiện trên mặt thẻ (chip
- *  RuleChip, giữ nguyên như trước) vì đó là nhãn thân thiện chứ không phải mã
- *  thô; `reason` đầy đủ/RefRow/diff đầy đủ chuyển vào sau "Chi tiết ▾" — mặt
- *  thẻ chỉ còn tiêu đề (reason cắt 60 ký tự) + một dòng diff rút gọn. Các
- *  test cũ (doc-redline-preview/.ops/.refs/.rule-chip.test.tsx — nay đều nằm
- *  trong `touches` của wp3b.yaml) đã được cập nhật để mở "Chi tiết" trước khi
- *  assert phần đã gập; class DOM của phần diff đầy đủ (EditDiff/blockAdd/
+ *  `origin: 'user'`) — nhánh dưới đây. `reason` đầy đủ (lại, không rút gọn)/
+ *  RefRow/diff đầy đủ chuyển vào sau "Chi tiết ▾" — mặt thẻ chỉ còn tiêu đề
+ *  (reason đầy đủ, clamp 2 dòng bằng CSS — xem `cardTitle`) + một dòng diff
+ *  dạng khối mono. RuleChip (wp-redline-card-polish.yaml mục 3) KHÔNG còn ở
+ *  mặt thẻ nữa — nó chuyển vào ĐẦU `cardDetail`, chỉ thấy khi mở "Chi tiết":
+ *  hàng nút mặt thẻ trước đây chen "Sửa / Bỏ chỗ sửa / RuleChip / Chi tiết ▾"
+ *  khiến khó đọc; `rule_id` vẫn trace ngược được, chỉ lùi vào sau một cú bấm.
+ *  Các test cũ (doc-redline-preview/.ops/.refs/.rule-chip.test.tsx — nay đều
+ *  nằm trong `touches` của wp3b.yaml) đã được cập nhật để mở "Chi tiết" trước
+ *  khi assert phần đã gập; class DOM của phần diff đầy đủ (EditDiff/blockAdd/
  *  blockDel/diffBefore/diffAfter) giữ NGUYÊN để những test đó không phải đổi
  *  cách tìm phần tử, chỉ đổi thời điểm tìm. */
 function ChangeDetail(
@@ -2863,35 +2912,40 @@ function ChangeDetail(
         </span>
         {c.status === 'dismissed' ? <span className={styles.badgeDeleted}>Đã bỏ</span> : c.status === 'edited' ? <span className={styles.badgeEdited}>Đã sửa tay</span> : null}
       </div>
-      {/* Dòng 1 (tiếp): tiêu đề = reason cắt 60 ký tự; title = reason đầy đủ để
-          rê chuột đọc được ngay cả khi chưa mở "Chi tiết". */}
+      {/* Dòng 1 (tiếp): tiêu đề = reason đầy đủ, clamp 2 dòng bằng CSS
+          (`.cardTitle`, xem module.css) — `title` vẫn giữ nguyên văn đầy đủ để
+          rê chuột đọc được khi CSS clamp cắt mất phần cuối. */}
       <p className={styles.cardTitle ?? ''} title={c.reason}>{cardTitle(c)}</p>
-      {/* Dòng 2: diff rút gọn MỘT dòng — sửa "cũ → mới", thêm "+ mới", xoá
-          "− cũ" (mỗi vế ≤ 40 ký tự, xem diffPreviewSide).
+      {/* Dòng 2: khối diff mono (wp-redline-card-polish.yaml mục 2) — sửa hiện
+          HAI dòng riêng "− cũ" / "+ mới" (mỗi vế đọc trọn một dòng thay vì gạch
+          ngang chung một dòng ~40 ký tự khó đọc); thêm chỉ "+ mới"; xoá chỉ
+          "− cũ" (mỗi vế ≤ 72 ký tự, cắt ở ranh giới từ — xem `diffPreviewSide`).
           `diffPreviewBefore`/`diffPreviewAfter` — KHÔNG dùng lại
           `diffBefore`/`diffAfter`: đó là hai class của layout-hai-khối-cũ bên
           trong "Chi tiết" (EditDiff rơi về khi cặp quá lớn), và test cũ
           (doc-redline-preview.ops.test.tsx) dùng chính sự CÓ MẶT của chúng để
           khẳng định "đã/chưa rơi về layout cũ". Dòng rút gọn này LUÔN hiện
           (không phụ thuộc cặp lớn hay nhỏ), nên phải là class khác để không
-          làm sai lệch phép đo đó. */}
-      <p className={styles.diffCompact ?? styles.diff}>
+          làm sai lệch phép đo đó. Prefix "− "/"+ " render thẳng trong JSX
+          (không phải content CSS) để còn chọn/copy được chữ. */}
+      <div className={styles.diffCompact ?? styles.diff}>
         {op === 'edit' ? (
           <>
-            <span className={styles.diffPreviewBefore ?? ''}>{beforePreview}</span>
-            <span aria-hidden="true"> → </span>
-            <span className={styles.diffPreviewAfter ?? ''}>{afterPreview}</span>
+            <span className={styles.diffPreviewBefore ?? ''}>{'− '}{beforePreview}</span>
+            <span className={styles.diffPreviewAfter ?? ''}>{'+ '}{afterPreview}</span>
           </>
         ) : op === 'add' ? (
-          <span className={styles.diffPreviewAfter ?? ''}>+ {afterPreview}</span>
+          <span className={styles.diffPreviewAfter ?? ''}>{'+ '}{afterPreview}</span>
         ) : (
-          <span className={styles.diffPreviewBefore ?? ''}>− {beforePreview}</span>
+          <span className={styles.diffPreviewBefore ?? ''}>{'− '}{beforePreview}</span>
         )}
-      </p>
+      </div>
       {/* Dòng 3: sửa tay thay thế hẳn hàng hành động khi đang mở (giữ nguyên
-          hành vi/aria-label cũ) — RuleChip + "Chi tiết ▾" nằm ở hàng dưới,
-          KHÔNG phụ thuộc `showActions`: một chỗ sửa không neo được vẫn phải
-          xem được lý do đầy đủ của nó (xem `isAnchored`/"không neo được"). */}
+          hành vi/aria-label cũ) — "Chi tiết ▾" căn phải bằng
+          `margin-left: auto` (CSS), KHÔNG phụ thuộc `showActions`: một chỗ sửa
+          không neo được vẫn phải xem được lý do đầy đủ của nó (xem
+          `isAnchored`/"không neo được"). RuleChip KHÔNG còn ở hàng này — xem
+          `cardDetail` bên dưới. */}
       {showActions && editing ? (
         <div className={styles.editBox}>
           <textarea value={editText} onChange={(ev) => onEditText(ev.target.value)} aria-label="Nội dung sửa" />
@@ -2905,17 +2959,17 @@ function ChangeDetail(
         {showActions && !editing ? (
           <>
             <button type="button" disabled={busy || c.status === 'dismissed'} onClick={(ev) => { ev.stopPropagation(); onEdit(); }}>Sửa</button>
-            <button type="button" disabled={busy || (c.status !== 'dismissed' && c.before != null && c.quote == null && !c.anchor)} title={c.status !== 'dismissed' && c.before != null && c.quote == null && !c.anchor ? 'Không có anchor duy nhất để chèn lại' : undefined} onClick={(ev) => { ev.stopPropagation(); onDismiss(); }}>{c.status === 'dismissed' && undoable ? 'Hoàn tác' : 'Bỏ chỗ sửa'}</button>
+            <button type="button" disabled={busy || (c.status !== 'dismissed' && c.before != null && c.quote == null && !c.anchor)} title={c.status !== 'dismissed' && c.before != null && c.quote == null && !c.anchor ? 'Không có anchor duy nhất để chèn lại' : undefined} onClick={(ev) => { ev.stopPropagation(); onDismiss(); }}>{c.status === 'dismissed' && undoable ? 'Hoàn tác' : 'Bỏ'}</button>
             {c.status === 'dismissed' ? <span className={styles.badgeDeleted}>Đã bỏ</span> : null}
           </>
         ) : null}
-        {c.rule_id ? <RuleChip ruleId={c.rule_id} open={ruleOpen} body={ruleBody} onToggle={onToggleRule} /> : null}
-        <button type="button" aria-expanded={expanded} onClick={(ev) => { ev.stopPropagation(); onToggleExpand(); }}>
+        <button type="button" className={styles.detailToggle ?? ''} aria-expanded={expanded} onClick={(ev) => { ev.stopPropagation(); onToggleExpand(); }}>
           {expanded ? 'Chi tiết ▴' : 'Chi tiết ▾'}
         </button>
       </div>
       {expanded ? (
         <div className={styles.cardDetail ?? ''}>
+          {c.rule_id ? <RuleChip ruleId={c.rule_id} open={ruleOpen} body={ruleBody} onToggle={onToggleRule} /> : null}
           <p className={styles.reason}>{c.reason}</p>
           <RefRow refs={c.doc_refs ?? []} isRefAnchored={isRefAnchored} onJumpRef={onJumpRef} />
           {op === 'edit' && c.before && c.quote ? (
@@ -3007,8 +3061,10 @@ function FlowDiagramCardBody({
             một sơ đồ không neo được (quote không khớp fence nào trong tài
             liệu) trước đây MẤT LUÔN nút này, không có cách nào mở ra xem
             reason/rule_id. Cùng khuôn với nhánh mặc định của `ChangeDetail`
-            (RuleChip + Chi tiết luôn hiện, chỉ Sửa/Bỏ mới theo showActions). */}
-        <button type="button" aria-expanded={expanded} onClick={(ev) => { ev.stopPropagation(); onToggleExpand(); }}>
+            (RuleChip + Chi tiết luôn hiện, chỉ Sửa/Bỏ mới theo showActions).
+            `detailToggle` (wp-redline-card-polish.yaml mục 3): căn phải bằng
+            margin-left: auto, đồng bộ cả 3 khuôn thẻ change. */}
+        <button type="button" className={styles.detailToggle ?? ''} aria-expanded={expanded} onClick={(ev) => { ev.stopPropagation(); onToggleExpand(); }}>
           {expanded ? 'Chi tiết ▴' : 'Chi tiết ▾'}
         </button>
       </div>
@@ -3136,8 +3192,9 @@ function ComponentTableCardBody({
           </>
         ) : null}
         {/* (a, review WP3b): nút "Chi tiết ▾" ra NGOÀI gate `showActions`,
-            cùng lý do như FlowDiagramCardBody ngay trên. */}
-        <button type="button" aria-expanded={expanded} onClick={(ev) => { ev.stopPropagation(); onToggleExpand(); }}>
+            cùng lý do như FlowDiagramCardBody ngay trên. `detailToggle` — xem
+            chú thích ở FlowDiagramCardBody. */}
+        <button type="button" className={styles.detailToggle ?? ''} aria-expanded={expanded} onClick={(ev) => { ev.stopPropagation(); onToggleExpand(); }}>
           {expanded ? 'Chi tiết ▴' : 'Chi tiết ▾'}
         </button>
       </div>

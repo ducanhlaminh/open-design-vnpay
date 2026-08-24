@@ -176,6 +176,24 @@ describe('DocRedlinePreview — ba màu theo phép sửa', () => {
     expect(dead.textContent).toContain('Không tìm thấy trong tài liệu');
   });
 
+  // wp-redline-card-polish.yaml mục 2/5b: khối diff mặt thẻ (chưa mở "Chi
+  // tiết") của chỗ SỬA hiện HAI dòng riêng "− cũ"/"+ mới" thay vì gạch ngang
+  // chung một dòng.
+  it('dòng diff mặt thẻ của chỗ SỬA hiện HAI dòng riêng "− cũ" và "+ mới"', async () => {
+    const container = await renderRedline();
+
+    const card = itemOf(container, 'e1');
+    const before = card.querySelector('[class*="diffPreviewBefore"]');
+    const after = card.querySelector('[class*="diffPreviewAfter"]');
+    expect(before, 'phải có vế "cũ" của dòng diff mặt thẻ').not.toBeNull();
+    expect(after, 'phải có vế "mới" của dòng diff mặt thẻ').not.toBeNull();
+    expect(before!.textContent).toBe('− Người dùng nhập OTP.');
+    expect(after!.textContent).toBe('+ Người dùng nhập mã OTP gồm 6 chữ số.');
+    // Không còn dấu mũi tên "→" nối hai vế trên một dòng (layout gạch ngang
+    // cũ) — mỗi vế đọc trọn một dòng riêng.
+    expect(card.querySelector('[class*="diffCompact"]')?.textContent).not.toContain('→');
+  });
+
   it('dải trạng thái đếm theo phép sửa và có đủ bốn mục chú giải', async () => {
     const container = await renderRedline();
 

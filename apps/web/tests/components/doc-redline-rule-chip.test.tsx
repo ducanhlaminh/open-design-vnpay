@@ -78,7 +78,11 @@ beforeAll(() => {
 /** Chip rule của một thẻ, tìm theo class riêng của nút "?" (`ruleHelpBtn`) —
  *  KHÔNG còn dùng `button[aria-expanded]` chung chung: wp3b.yaml mục D thêm
  *  nút "Chi tiết ▾/▴" (cũng mang `aria-expanded`) vào mọi thẻ, nên selector cũ
- *  đếm lẫn cả nút đó. `ruleHelpBtn` chỉ nút "?" của RuleChip mới có. */
+ *  đếm lẫn cả nút đó. `ruleHelpBtn` chỉ nút "?" của RuleChip mới có.
+ *
+ *  wp-redline-card-polish.yaml mục 3/4: RuleChip (change lẫn note) chuyển
+ *  KHỎI mặt thẻ vào ĐẦU khối "Chi tiết" — chưa mở thì KHÔNG có chip nào trong
+ *  DOM (không chỉ ẩn bằng CSS). Phải bấm "Chi tiết ▾" trước khi tìm chip. */
 async function renderAndGetChip(mode: 'changes' | 'notes' = 'changes'): Promise<HTMLButtonElement> {
   const { container } = render(<DocRedlinePreview projectId="p1" file={FILE} />);
   await waitFor(() => {
@@ -91,6 +95,14 @@ async function renderAndGetChip(mode: 'changes' | 'notes' = 'changes'): Promise<
     expect(noteTab, 'rail phải có tab Nhận xét').toBeDefined();
     fireEvent.click(noteTab!);
   }
+  // Case mới (wp-redline-card-polish.yaml mục 5d/5e): RuleChip chỉ xuất hiện
+  // sau khi mở "Chi tiết" — trước đó DOM không có chip nào.
+  await waitFor(() => {
+    expect(container.querySelectorAll('[class*="ruleHelpBtn"]').length).toBe(0);
+  });
+  const detailBtn = Array.from(container.querySelectorAll('button')).find((b) => b.textContent?.includes('Chi tiết'));
+  expect(detailBtn, 'phải có nút "Chi tiết"').toBeTruthy();
+  fireEvent.click(detailBtn!);
   return waitFor(() => {
     const chips = container.querySelectorAll<HTMLButtonElement>('[class*="ruleHelpBtn"]');
     expect(chips.length).toBe(1);
@@ -153,5 +165,55 @@ describe('chip rule — nhãn dễ hiểu, tooltip, popover chi tiết', () => {
       expect(pop?.textContent).toContain('criteria/rules.md#R-OVERLAY');
       expect(pop?.textContent).toContain('Modal chỉ dùng cho xác nhận một bước.');
     });
+  });
+});
+
+// wp-redline-card-polish.yaml mục 4/5e: NoteDetail về cùng khuôn thẻ nén như
+// ChangeDetail — mặt thẻ chỉ còn finding (clamp 2 dòng) + suggestion rút gọn
+// một dòng, có nút "Chi tiết ▾" riêng (state cục bộ); RuleChip/RefRow/"Đề
+// xuất" đầy đủ chỉ hiện sau khi mở.
+describe('NoteDetail — khuôn thẻ nén, "Chi tiết ▾" gập RuleChip/suggestion đầy đủ', () => {
+  async function renderNoteCard(): Promise<HTMLElement> {
+    const { container } = render(<DocRedlinePreview projectId="p1" file={FILE} />);
+    await waitFor(() => {
+      expect(container.querySelector('[data-placement="rail"]')).not.toBeNull();
+    });
+    const railMode = container.querySelector('[data-placement="rail"]');
+    const noteTab = Array.from(railMode?.querySelectorAll<HTMLButtonElement>('[role="tab"]') ?? [])
+      .find((button) => button.textContent?.startsWith('Nhận xét'));
+    expect(noteTab, 'rail phải có tab Nhận xét').toBeDefined();
+    fireEvent.click(noteTab!);
+    return waitFor(() => {
+      const card = container.querySelector<HTMLElement>('[data-change-item="note:n1"]');
+      expect(card, 'phải có thẻ note n1').not.toBeNull();
+      return card!;
+    });
+  }
+
+  it('mặt thẻ hiện finding đầy đủ + suggestion rút gọn một dòng, có nút "Chi tiết ▾"', async () => {
+    const card = await renderNoteCard();
+
+    const title = card.querySelector('[class*="cardTitle"]');
+    expect(title?.textContent).toBe('Popup này có form nhiều bước.');
+    // Chưa mở "Chi tiết": không có RuleChip, không có nhãn "Đề xuất" đầy đủ
+    // (`suggestionLabel`) — chỉ dòng rút gọn.
+    expect(card.querySelector('[class*="ruleHelpBtn"]')).toBeNull();
+    expect(card.querySelector('[class*="suggestionLabel"]')).toBeNull();
+    const suggestionCompact = card.querySelector('[class*="suggestionCompact"]');
+    expect(suggestionCompact?.textContent).toBe('Đổi sang drawer.');
+    expect(suggestionCompact?.getAttribute('title')).toBe('Đổi sang drawer.');
+
+    const detailBtn = Array.from(card.querySelectorAll('button')).find((b) => b.textContent?.includes('Chi tiết'));
+    expect(detailBtn, 'NoteDetail phải có nút "Chi tiết ▾"').toBeTruthy();
+    expect(detailBtn!.getAttribute('aria-expanded')).toBe('false');
+
+    fireEvent.click(detailBtn!);
+    await waitFor(() => {
+      expect(detailBtn!.getAttribute('aria-expanded')).toBe('true');
+    });
+    // Mở ra: RuleChip + "Đề xuất" đầy đủ (nhãn `suggestionLabel`) đều xuất hiện.
+    expect(card.querySelector('[class*="ruleHelpBtn"]')).not.toBeNull();
+    expect(card.querySelector('[class*="suggestionLabel"]')).not.toBeNull();
+    expect(card.textContent).toContain('Đổi sang drawer.');
   });
 });

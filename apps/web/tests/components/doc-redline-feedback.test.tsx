@@ -164,7 +164,9 @@ describe('Docs Review annotations and confirmation', () => {
     const card = container.querySelector<HTMLElement>('[data-change-item="agent-1"]');
     if (!card) throw new Error('missing agent card');
 
-    fireEvent.click(within(card).getByRole('button', { name: 'Bỏ chỗ sửa' }));
+    // wp-redline-card-polish.yaml mục 3: nhãn "Bỏ chỗ sửa" rút gọn còn "Bỏ"
+    // (hàng nút mặt thẻ gọn lại; hành vi/aria-label của nút không đổi).
+    fireEvent.click(within(card).getByRole('button', { name: 'Bỏ' }));
     await waitFor(() => expect(latestSidecarWrite().events.at(-1)).toMatchObject({ type: 'dismiss', actor: 'user' }));
     expect(latestSidecarWrite().annotations[0]).toMatchObject({ status: 'dismissed' });
 

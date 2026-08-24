@@ -53,7 +53,7 @@ vi.mock('../../src/components/MermaidDiagram', () => ({
   ),
 }));
 
-const { FlowUxReviewPreview, isFlowUxFile, flowUxLocationOf, parseUxReview, drawioPageCount } = await import('../../src/components/FlowUxReviewPreview');
+const { FlowUxReviewPreview, isFlowUxFile, flowUxLocationOf, parseUxReview, drawioPageCount, evidenceLabel } = await import('../../src/components/FlowUxReviewPreview');
 
 afterEach(() => {
   cleanup();
@@ -93,7 +93,7 @@ const REVIEW = {
   summary: 'Thiếu phản hồi khi timeout.',
   findings: [
     { id: 'UX-02', severity: 'minor', title: 'Nhãn chưa rõ', reason: 'r2', cells: { asIs: ['s1'] }, change: 'modified' },
-    { id: 'UX-01', severity: 'major', heuristic: 'Nielsen#1', title: 'Timeout mù', reason: 'r1', recommendation: 'Thêm bước', evidence: ['doc.md#4.2c'], cells: { asIs: ['timeout'], proposed: ['timeout', 'od-n1'] }, change: 'added' },
+    { id: 'UX-01', severity: 'major', heuristic: 'Nielsen#1', title: 'Timeout mù', reason: 'r1', recommendation: 'Thêm bước', evidence: ['docs-feature/timeout-flow.md#4.2 Xử lý timeout'], cells: { asIs: ['timeout'], proposed: ['timeout', 'od-n1'] }, change: 'added' },
   ],
 };
 const PROPOSED = '<mxfile><diagram id="p1" name="Hiện trạng"><mxGraphModel/></diagram><diagram id="p1-proposed" name="Đề xuất"><mxGraphModel/></diagram></mxfile>';
@@ -296,5 +296,99 @@ describe('FlowUxReviewPreview (Mermaid)', () => {
   it('không có gì để hiện → thông báo chạy bước', async () => {
     render(<FlowUxReviewPreview projectId="p" file={file('flows/FLOW-z/ux-review.json')} />);
     await waitFor(() => expect(screen.getByText(/Chưa có dữ liệu đánh giá/)).toBeTruthy());
+  });
+});
+
+// wp-flowux-panel-compact.yaml: card "Phát hiện UX" trước đây dump toàn bộ
+// reason + recommendation + evidence (path docs-feature/... rất dài) ngay
+// trên mặt thẻ, chiếm cả màn hình. Đưa về khuôn 3 dòng như DocRedlinePreview
+// — mặt thẻ chỉ còn đầu thẻ + tiêu đề + 1 dòng tóm tắt, phần đầy đủ nằm sau
+// "Chi tiết ▾". Các case dưới ĐỎ trước khi sửa component (card cũ là
+// <button> render reason/heuristic/evidence/cells thẳng trên mặt thẻ, không
+// có nút "Chi tiết").
+describe('FlowUxReviewPreview — panel "Phát hiện UX" gọn 3 dòng + "Chi tiết ▾" (wp-flowux-panel-compact)', () => {
+  it('(a) mặt thẻ không chứa reason đầy đủ / evidence / heuristic / cells khi chưa mở Chi tiết', async () => {
+    renderSideDefault();
+    await waitFor(() => expect(screen.getAllByTestId('drawio-stub').length).toBe(2));
+    const card = screen.getByTestId('finding-UX-01');
+    // Dòng tóm tắt ưu tiên recommendation khi có.
+    expect(within(card).getByText('Thêm bước')).toBeTruthy();
+    expect(within(card).queryByText('r1')).toBeNull();
+    expect(within(card).queryByText('Nielsen#1')).toBeNull();
+    expect(within(card).queryByText('timeout-flow #4.2 Xử lý timeout')).toBeNull();
+    expect(within(card).queryByText('timeout')).toBeNull();
+    expect(within(card).queryByText('od-n1')).toBeNull();
+
+    const card2 = screen.getByTestId('finding-UX-02');
+    // UX-02 không có recommendation → tóm tắt rơi về reason.
+    expect(within(card2).getByText('r2')).toBeTruthy();
+  });
+
+  it('(b) bấm "Chi tiết ▾" → hiện reason đầy đủ + evidence (rút gọn label, title = gốc) + cells; bấm lại ẩn', async () => {
+    renderSideDefault();
+    await waitFor(() => expect(screen.getAllByTestId('drawio-stub').length).toBe(2));
+    const card = screen.getByTestId('finding-UX-01');
+    const toggle = within(card).getByText('Chi tiết ▾');
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    fireEvent.click(toggle);
+    const toggleOpen = within(card).getByText('Chi tiết ▴');
+    expect(toggleOpen.getAttribute('aria-expanded')).toBe('true');
+    expect(within(card).getByText('Nielsen#1')).toBeTruthy();
+    expect(within(card).getByText('r1')).toBeTruthy();
+    const evLabel = within(card).getByText('timeout-flow #4.2 Xử lý timeout');
+    expect(evLabel.closest('li')?.getAttribute('title')).toBe('docs-feature/timeout-flow.md#4.2 Xử lý timeout');
+    expect(within(card).getByText('timeout')).toBeTruthy();
+    expect(within(card).getByText('od-n1')).toBeTruthy();
+    fireEvent.click(within(card).getByText('Chi tiết ▴'));
+    expect(within(card).queryByText('r1')).toBeNull();
+    expect(within(card).queryByText('timeout-flow #4.2 Xử lý timeout')).toBeNull();
+  });
+
+  it('(c) bấm "Chi tiết" không đổi trạng thái chọn của thẻ (aria-pressed giữ nguyên)', async () => {
+    renderSideDefault();
+    await waitFor(() => expect(screen.getAllByTestId('drawio-stub').length).toBe(2));
+    const card = screen.getByTestId('finding-UX-01');
+    expect(card.getAttribute('aria-pressed')).toBe('false');
+    fireEvent.click(within(card).getByText('Chi tiết ▾'));
+    expect(card.getAttribute('aria-pressed')).toBe('false');
+    fireEvent.click(card);
+    expect(card.getAttribute('aria-pressed')).toBe('true');
+    fireEvent.click(within(card).getByText('Chi tiết ▴'));
+    expect(card.getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('(e) hành vi cũ giữ: bấm thẻ chọn/bỏ chọn, Enter kích hoạt được', async () => {
+    renderSideDefault();
+    await waitFor(() => expect(screen.getAllByTestId('drawio-stub').length).toBe(2));
+    const card = screen.getByTestId('finding-UX-01');
+    expect(card.getAttribute('aria-pressed')).toBe('false');
+    fireEvent.click(card);
+    expect(card.getAttribute('aria-pressed')).toBe('true');
+    fireEvent.click(card);
+    expect(card.getAttribute('aria-pressed')).toBe('false');
+    fireEvent.keyDown(card, { key: 'Enter' });
+    expect(card.getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('dòng tóm tắt cắt còn ≤ 90 ký tự tại ranh giới từ + "…", title = chuỗi gốc', async () => {
+    const longReason = `${'A'.repeat(40)} ${'B'.repeat(40)} ${'C'.repeat(40)}`;
+    FILES['flows/FLOW-c/ux-review.json'] = JSON.stringify({ verdict: 'needs-improvement', summary: 's', findings: [{ id: 'UX-01', severity: 'major', title: 't', reason: longReason }] });
+    FILES['flows/FLOW-c/as-is.drawio'] = '<mxfile><diagram id="p" name="x"><mxGraphModel/></diagram></mxfile>';
+    render(<FlowUxReviewPreview projectId="p" file={file('flows/FLOW-c/as-is.drawio')} />);
+    await waitFor(() => expect(screen.getByTestId('drawio-stub')).toBeTruthy());
+    const card = screen.getByTestId('finding-UX-01');
+    const summary = card.querySelector(`.${styles.summaryLine}`) as HTMLElement | null;
+    expect(summary).toBeTruthy();
+    expect(summary!.textContent!.length).toBeLessThanOrEqual(91);
+    expect(summary!.textContent!.endsWith('…')).toBe(true);
+    expect(summary!.getAttribute('title')).toBe(longReason);
+  });
+});
+
+describe('evidenceLabel (wp-flowux-panel-compact.yaml mục 4)', () => {
+  it('rút gọn 3 dạng evidence', () => {
+    expect(evidenceLabel('docs-feature/timeout-flow.md#4.2 Xử lý timeout')).toBe('timeout-flow #4.2 Xử lý timeout');
+    expect(evidenceLabel('docs-feature/nested/dir/spec.md')).toBe('spec');
+    expect(evidenceLabel('cell G_Int')).toBe('cell G_Int');
   });
 });

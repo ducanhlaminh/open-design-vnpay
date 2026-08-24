@@ -173,6 +173,37 @@ export function drawioPageCount(xml: string): number {
   return (xml.match(/<diagram\b/gi) ?? []).length || 1;
 }
 
+/** Cắt `s` ở RANH GIỚI TỪ gần nhất ≤ `max` ký tự, nối thêm '…' khi có cắt —
+ *  dùng cho dòng tóm tắt trên mặt thẻ finding (wp-flowux-panel-compact). */
+function truncateAtWordBoundary(s: string, max: number): string {
+  if (s.length <= max) return s;
+  const slice = s.slice(0, max);
+  const lastSpace = slice.lastIndexOf(' ');
+  const cut = lastSpace > 0 ? slice.slice(0, lastSpace) : slice;
+  return `${cut}…`;
+}
+
+/** Rút gọn một mục evidence để hiện trong khối "Chi tiết" (path docs-feature/
+ *  ... thật dài không có chỗ trên mặt thẻ, và ngay cả trong Chi tiết vẫn nên
+ *  gọn — bản đầy đủ luôn còn ở attr `title`):
+ *  - `<đường/dẫn>/<file>.md#<mục>` → `<file> #<mục>` (bỏ thư mục, bỏ đuôi
+ *    .md; phần mục giữ nguyên cả khoảng trắng).
+ *  - Path có '/' không có '#' → basename (bỏ đuôi .md nếu có).
+ *  - Chuỗi thường không có '/' (vd `cell G_Int`) → trả nguyên văn. */
+export function evidenceLabel(e: string): string {
+  if (!e.includes('/')) return e;
+  const hashIdx = e.indexOf('#');
+  if (hashIdx < 0) {
+    const base = e.split('/').pop() ?? e;
+    return base.replace(/\.md$/i, '');
+  }
+  const pathPart = e.slice(0, hashIdx);
+  const anchor = e.slice(hashIdx + 1);
+  const base = pathPart.split('/').pop() ?? pathPart;
+  const fileName = base.replace(/\.md$/i, '');
+  return `${fileName} #${anchor}`;
+}
+
 type ViewMode = 'as-is' | 'proposed' | 'svg';
 /** Bố cục khung sơ đồ: 'side' = Hiện trạng/Đề xuất cạnh nhau (mặc định khi có
  *  đề xuất), 'single' = kiểu tab cũ (as-is/proposed/svg đổi qua lại). */
@@ -245,6 +276,18 @@ export function FlowUxReviewPreview({
   const [failed, setFailed] = useState(false);
   const [mode, setMode] = useState<ViewMode>('as-is');
   const [activeId, setActiveId] = useState<string | null>(null);
+  // Thẻ finding nào đang mở "Chi tiết ▾" — cục bộ, KHÔNG liên quan tới
+  // activeId (chọn thẻ để highlight cell trên sơ đồ là một chiều khác hẳn;
+  // bấm "Chi tiết" không được đổi lựa chọn đó — wp-flowux-panel-compact).
+  const [expandedFindingIds, setExpandedFindingIds] = useState<Set<string>>(() => new Set());
+  function toggleFindingExpanded(id: string) {
+    setExpandedFindingIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
   // Bố cục thô đọc từ localStorage (mặc định 'side') — bị "ép" về 'single' ở
   // effectiveLayout bên dưới khi luồng không có bản đề xuất (không thể đối
   // chiếu 2 bản khi chỉ có 1).
@@ -674,13 +717,33 @@ export function FlowUxReviewPreview({
               <ol className={styles.list}>
                 {SEVERITY_ORDER.flatMap((sev) => findings.filter((f) => f.severity === sev)).map((f) => {
                   const isActive = f.id === activeId;
+                  const isExpanded = expandedFindingIds.has(f.id);
+                  // Dòng tóm tắt: recommendation nếu có, không thì reason —
+                  // bản đầy đủ luôn còn ở attr title và (nếu recommendation
+                  // đã hiện ở đây) lặp lại đầy đủ trong Chi tiết.
+                  const summarySource = f.recommendation || f.reason;
+                  const toggleSelect = () => setActiveId(isActive ? null : f.id);
                   return (
                     <li key={f.id}>
-                      <button
-                        type="button"
+                      {/* `div role="button"` chứ không phải <button> thật: thẻ
+                          giờ chứa nút "Chi tiết" con, và <button> lồng <button>
+                          là HTML không hợp lệ (trình duyệt tự gỡ lồng, mất nút
+                          con). Bàn phím vẫn hoạt động nhờ tabIndex + Enter/Space
+                          bên dưới — cùng khuôn DocRedlinePreview's `.item`. */}
+                      <div
+                        role="button"
+                        tabIndex={0}
                         className={`${styles.card} ${isActive ? styles.cardActive : ''}`}
                         aria-pressed={isActive}
-                        onClick={() => setActiveId(isActive ? null : f.id)}
+                        onClick={toggleSelect}
+                        onKeyDown={(ev) => {
+                          if (ev.key !== 'Enter' && ev.key !== ' ') return;
+                          // Enter/Space bấm trên nút "Chi tiết" con nổi bọt lên
+                          // đây — bỏ qua để không kích hoạt cả 2 hành động.
+                          if (ev.target !== ev.currentTarget) return;
+                          ev.preventDefault();
+                          toggleSelect();
+                        }}
                         data-testid={`finding-${f.id}`}
                       >
                         <div className={styles.cardTop}>
@@ -689,33 +752,55 @@ export function FlowUxReviewPreview({
                           {f.change && f.change !== 'none' ? <span className={`${styles.change} ${styles[`legend_${f.change}`]}`}>{CHANGE_LABEL[f.change]}</span> : null}
                         </div>
                         <div className={styles.cardTitle}>{f.title}</div>
-                        {f.heuristic ? <div className={styles.heuristic}>{f.heuristic}</div> : null}
-                        <p className={styles.reason}>{f.reason}</p>
-                        {f.recommendation ? (
-                          <p className={styles.reco}>
-                            <strong>Đề xuất:</strong> {f.recommendation}
+                        {summarySource ? (
+                          <p className={styles.summaryLine} title={summarySource}>
+                            {truncateAtWordBoundary(summarySource, 90)}
                           </p>
                         ) : null}
-                        {f.conflictsWith ? <p className={styles.conflict}>Không đề xuất sửa vì vướng {f.conflictsWith}.</p> : null}
-                        {f.evidence?.length ? (
-                          <ul className={styles.evidence}>
-                            {f.evidence.map((e, i) => (
-                              <li key={i}>
-                                <code>{e}</code>
-                              </li>
-                            ))}
-                          </ul>
-                        ) : null}
-                        {f.cells?.asIs?.length || f.cells?.proposed?.length ? (
-                          <div className={styles.cells}>
-                            {cardCellsFor(f).map((c) => (
-                              <span key={c} className={styles.cellChip}>
-                                {c}
-                              </span>
-                            ))}
+                        <div className={styles.cardFoot}>
+                          <button
+                            type="button"
+                            className={styles.detailToggle ?? ''}
+                            aria-expanded={isExpanded}
+                            onClick={(ev) => {
+                              ev.stopPropagation();
+                              toggleFindingExpanded(f.id);
+                            }}
+                          >
+                            {isExpanded ? 'Chi tiết ▴' : 'Chi tiết ▾'}
+                          </button>
+                        </div>
+                        {isExpanded ? (
+                          <div className={styles.cardDetail}>
+                            {f.heuristic ? <div className={styles.heuristic}>{f.heuristic}</div> : null}
+                            <p className={styles.reason}>{f.reason}</p>
+                            {f.recommendation ? (
+                              <p className={styles.reco}>
+                                <strong>Đề xuất:</strong> {f.recommendation}
+                              </p>
+                            ) : null}
+                            {f.conflictsWith ? <p className={styles.conflict}>Không đề xuất sửa vì vướng {f.conflictsWith}.</p> : null}
+                            {f.evidence?.length ? (
+                              <ul className={styles.evidence}>
+                                {f.evidence.map((e, i) => (
+                                  <li key={i} title={e}>
+                                    <code>{evidenceLabel(e)}</code>
+                                  </li>
+                                ))}
+                              </ul>
+                            ) : null}
+                            {f.cells?.asIs?.length || f.cells?.proposed?.length ? (
+                              <div className={styles.cells}>
+                                {cardCellsFor(f).map((c) => (
+                                  <span key={c} className={styles.cellChip}>
+                                    {c}
+                                  </span>
+                                ))}
+                              </div>
+                            ) : null}
                           </div>
                         ) : null}
-                      </button>
+                      </div>
                     </li>
                   );
                 })}

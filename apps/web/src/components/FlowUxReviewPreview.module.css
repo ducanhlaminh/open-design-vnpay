@@ -428,7 +428,7 @@
   text-align: left;
   font: inherit;
   color: inherit;
-  padding: 9px 10px;
+  padding: 8px 10px;
   border-radius: 8px;
   border: 1px solid var(--border, #e1e5eb);
   background: var(--bg, #fff);
@@ -464,6 +464,43 @@
   font-size: 12.5px;
   font-weight: 650;
   line-height: 1.35;
+}
+/* Dòng tóm tắt mặt thẻ (wp-flowux-panel-compact): recommendation nếu có,
+ * không thì reason — 1 dòng, cắt bằng ellipsis; bản đầy đủ ở attr title. */
+.summaryLine {
+  margin: 4px 0 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-muted, #57544e);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Hàng riêng cho nút "Chi tiết" — margin-left:auto đẩy nó về mép phải mà
+ * không phụ thuộc anh em nào khác có render hay không. */
+.cardFoot {
+  display: flex;
+  margin-top: 6px;
+}
+.detailToggle {
+  appearance: none;
+  margin-left: auto;
+  border: 1px solid var(--border, #e1e5eb);
+  border-radius: 6px;
+  background: var(--bg, #fff);
+  color: var(--text-muted, #57544e);
+  font: inherit;
+  font-size: 11px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+/* Khối "Chi tiết" mở ra: heuristic/reason đầy đủ/reco/conflict/evidence/cells
+ * — tái dùng nguyên các class hiện có bên trong (xem JSX), chỉ thêm khung
+ * ngoài (đường phân cách đứt nét + khoảng cách trên). */
+.cardDetail {
+  margin-top: 6px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border, #e1e5eb);
 }
 .heuristic {
   margin-top: 2px;

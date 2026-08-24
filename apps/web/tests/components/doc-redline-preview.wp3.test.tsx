@@ -486,8 +486,8 @@ const F_FILE = {
   mtime: 1,
 } as never;
 
-describe('DocRedlinePreview — F (wp3b.yaml): khuôn thẻ 3-dòng cho thẻ agent "kiểu sửa" thường', () => {
-  it('mặt thẻ không chứa reason đầy đủ (>60 ký tự); mở "Chi tiết" mới hiện reason đầy đủ + EditDiff', async () => {
+describe('DocRedlinePreview — F (wp-redline-card-polish.yaml): khuôn thẻ 3-dòng cho thẻ agent "kiểu sửa" thường', () => {
+  it('mặt thẻ hiện reason ĐẦY ĐỦ (không còn cắt 60 ký tự/dấu "…" — clamp 2 dòng chỉ bằng CSS); mở "Chi tiết" mới hiện EditDiff', async () => {
     vi.resetModules();
     mockFCardProject();
     const { DocRedlinePreview: Comp } = await import('../../src/components/DocRedlinePreview');
@@ -497,17 +497,26 @@ describe('DocRedlinePreview — F (wp3b.yaml): khuôn thẻ 3-dòng cho thẻ ag
       expect(container.querySelector('[data-change-item="f1"]')).not.toBeNull();
     });
     const card = container.querySelector('[data-change-item="f1"]') as HTMLElement;
-    expect(card.textContent).not.toContain(F_REASON);
+    // wp-redline-card-polish.yaml mục 1: cardTitle() thôi cắt 60 ký tự — reason
+    // đầy đủ (92 ký tự) đã có ngay trên mặt thẻ; CSS line-clamp chỉ ẩn phần
+    // thừa BẰNG MẮT, không cắt khỏi DOM, nên không còn dấu "…" của phép cắt cũ.
+    const title = card.querySelector('[class*="cardTitle"]');
+    expect(title?.textContent).toBe(F_REASON);
+    expect(title?.textContent).not.toContain('…');
+    expect(title?.getAttribute('title')).toBe(F_REASON);
+    expect(card.textContent).toContain(F_REASON);
 
     const detailBtn = Array.from(card.querySelectorAll('button')).find((b) => b.textContent?.includes('Chi tiết'));
     expect(detailBtn, 'phải có nút "Chi tiết"').toBeTruthy();
     expect(detailBtn!.getAttribute('aria-expanded')).toBe('false');
+    // Phần "Chi tiết" (EditDiff/RuleChip/RefRow) vẫn gập cho tới khi mở, dù
+    // reason đã hiện đầy đủ trên mặt thẻ.
+    expect(card.querySelector('[class*="diffInline"]')).toBeNull();
 
     fireEvent.click(detailBtn!);
     await waitFor(() => {
-      expect(card.textContent).toContain(F_REASON);
+      expect(detailBtn!.getAttribute('aria-expanded')).toBe('true');
     });
-    expect(detailBtn!.getAttribute('aria-expanded')).toBe('true');
     // Cặp before/quote đủ nhỏ để word-diff — EditDiff (không rơi về layout
     // hai khối cũ).
     expect(card.querySelector('[class*="diffInline"]')).not.toBeNull();
