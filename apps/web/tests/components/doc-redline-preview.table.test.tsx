@@ -151,6 +151,67 @@ describe('pickUniqueTableAnchorLine (wp-table-highlight.yaml Q2)', () => {
   });
 });
 
+describe('parseDocNotes — user-highlight round-trip (wp-text-highlight.yaml, "Tô đoạn chọn")', () => {
+  // Đường "Tô đoạn chọn" lưu một note KHÔNG có `tableCells` (khác Q2): `anchor`
+  // là chữ RENDER (không phải dòng mã nguồn) và có thể mang thêm
+  // `sectionHeading` best-effort. Test round-trip qua JSON.stringify đúng như
+  // saveAction ghi ra notes.json, giữ cả hai field và không sinh `tableCells`.
+  it('giữ anchor/finding/sectionHeading, không có tableCells', () => {
+    const raw = JSON.stringify([
+      {
+        id: 'n1',
+        kind: 'ux-writing',
+        severity: 'minor',
+        anchor: 'Người dùng nhập mã OTP trong vòng 5 phút.',
+        finding: 'Cần làm rõ hành vi khi hết hạn.',
+        suggestion: '',
+        sectionHeading: 'Đăng nhập bằng OTP',
+      },
+    ]);
+    const notes = parseDocNotes(raw);
+    expect(notes).not.toBeNull();
+    expect(notes![0]!.tableCells).toBeUndefined();
+    expect(notes![0]!.anchor).toBe('Người dùng nhập mã OTP trong vòng 5 phút.');
+    expect(notes![0]!.finding).toBe('Cần làm rõ hành vi khi hết hạn.');
+    expect(notes![0]!.sectionHeading).toBe('Đăng nhập bằng OTP');
+  });
+
+  it('round-trip qua JSON.stringify (như saveAction ghi ra notes.json) không mất sectionHeading', () => {
+    const original = parseDocNotes(JSON.stringify([
+      {
+        id: 'n1',
+        kind: 'ux-writing',
+        severity: 'minor',
+        anchor: 'Một đoạn chữ được người dùng bôi đen.',
+        finding: 'Người dùng tự đánh dấu đoạn này.',
+        suggestion: '',
+        sectionHeading: 'Quy trình xác thực',
+      },
+    ]))!;
+    const rewritten = parseDocNotes(JSON.stringify(original))!;
+    expect(rewritten[0]!.tableCells).toBeUndefined();
+    expect(rewritten[0]!.sectionHeading).toBe('Quy trình xác thực');
+    expect(rewritten[0]!.anchor).toBe('Một đoạn chữ được người dùng bôi đen.');
+  });
+
+  it('không có sectionHeading (chọn trước heading đầu tiên / tài liệu không có heading) vẫn parse bình thường', () => {
+    const raw = JSON.stringify([
+      {
+        id: 'n1',
+        kind: 'ux-writing',
+        severity: 'minor',
+        anchor: 'Đoạn chữ không nằm trong section nào xác định.',
+        finding: 'Người dùng tự đánh dấu đoạn này.',
+        suggestion: '',
+      },
+    ]);
+    const notes = parseDocNotes(raw);
+    expect(notes).not.toBeNull();
+    expect(notes![0]!.sectionHeading).toBeUndefined();
+    expect(notes![0]!.tableCells).toBeUndefined();
+  });
+});
+
 // Không có test thu {row,col} từ một <table> jsdom + Range.intersectsNode
 // thật: jsdom không dựng layout (getBoundingClientRect luôn 0), và
 // Range.intersectsNode so theo VỊ TRÍ CÂY DOM (không cần layout) nên về lý
@@ -161,3 +222,13 @@ describe('pickUniqueTableAnchorLine (wp-table-highlight.yaml Q2)', () => {
 // dựng Selection/Range thủ công trong jsdom — để ở phạm vi một test mount đầy
 // đủ sau này (như doc-redline-preview.test.tsx), không thêm ở đây để giữ file
 // này tập trung vào các hàm thuần theo đúng accept của spec.
+//
+// wp-text-highlight.yaml: cùng lý do, không có test riêng cho
+// `findPrecedingHeadingText` (chọn heading bao ngoài vùng chọn — "Tô đoạn
+// chọn"). Hàm đó dùng `container.querySelectorAll` + `Node.compareDocumentPosition`
+// trên vùng chọn thật (`window.getSelection()`), là một closure private của
+// component (không export). Test round-trip `sectionHeading` ở
+// `parseDocNotes` phía trên phủ được hình dạng dữ liệu (có/không heading);
+// hành vi CHỌN đúng heading gần nhất cần mount component thật + dựng
+// Selection/Range thủ công — cùng phạm vi "test mount đầy đủ sau này" như ghi
+// chú {row,col} ngay trên, đọc tay đã xác nhận logic đúng lúc viết.

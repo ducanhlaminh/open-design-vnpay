@@ -169,6 +169,19 @@ interface TableCellDraft {
   reason: string;
 }
 
+/** wp-text-highlight.yaml: nháp của một note "tô đoạn chọn" — ĐƯỜNG MỚI, song
+ *  song với `DraftAnnotation`/`TableCellDraft` chứ không dùng chung. Khác
+ *  `DraftAnnotation`: không sửa markdown (`changedMd: false`), không đòi đoạn
+ *  khớp DUY NHẤT trong mã nguồn (neo khớp mờ như note thường). Khác
+ *  `TableCellDraft`: neo bằng CHỮ (`selected`), không phải toạ độ ô.
+ *  `sectionHeading` (best-effort) thu hẹp phạm vi neo về đúng section khi tìm
+ *  được heading gần nhất đứng trước vùng chọn — xem `startTextHighlight`. */
+interface TextHighlightDraft {
+  selected: string;
+  reason: string;
+  sectionHeading?: string;
+}
+
 // Nhãn thao tác đọc được với người không rành thuật ngữ review — thay cho mã
 // kỹ thuật cũ ("UX writing", "Trường hợp biên"…). `gap`/`edge-case` đổi tên
 // hẳn ("Thiếu sót" → "Thiếu mô tả", "Trường hợp biên" → "Thiếu ngoại lệ") theo
@@ -1267,6 +1280,14 @@ export function DocRedlinePreview({
   const [tableCellError, setTableCellError] = useState('');
   const [selectionInTable, setSelectionInTable] = useState(false);
   const [tableCellAnchoredIds, setTableCellAnchoredIds] = useState<ReadonlySet<string>>(EMPTY_SET);
+  // wp-text-highlight.yaml: nháp/lỗi/trạng-thái-bật-nút của đường "Tô đoạn
+  // chọn" — tách hẳn khỏi `draft`/`draftError` (Sửa/Xoá/Thêm chữ) VÀ khỏi
+  // `tableCellDraft`/`tableCellError` (Tô ô bảng): must_not cấm đụng cả hai.
+  // `selectionNonEmpty` cập nhật trong CÙNG effect selectionchange bên dưới
+  // vốn tính `selectionInTable` (Q2) — khác điều kiện: không cần trong <table>.
+  const [textHighlightDraft, setTextHighlightDraft] = useState<TextHighlightDraft | null>(null);
+  const [textHighlightError, setTextHighlightError] = useState('');
+  const [selectionNonEmpty, setSelectionNonEmpty] = useState(false);
   // wp4.yaml mục 2: "Thêm sau mục…" — picker liệt kê heading của tài liệu,
   // tách khỏi `draft`/`draftError` vì nó là một bước CHỌN anchor, không phải
   // composer (composer mở SAU khi đã chọn xong, dùng lại y hệt `draft`).
@@ -2255,7 +2276,12 @@ export function DocRedlinePreview({
       const anchorNode = selection?.anchorNode ?? null;
       const container = docColRef.current;
       const anchorEl = anchorNode instanceof Element ? anchorNode : anchorNode?.parentElement ?? null;
-      setSelectionInTable(!!(anchorNode && container?.contains(anchorNode) && anchorEl?.closest('table')));
+      const inDocCol = !!(anchorNode && container?.contains(anchorNode));
+      setSelectionInTable(!!(inDocCol && anchorEl?.closest('table')));
+      // wp-text-highlight.yaml: bật nút "Tô đoạn chọn" — chỉ cần selection
+      // không rỗng nằm trong docColRef, KHÔNG cần trong <table> (khác
+      // selectionInTable ngay trên).
+      setSelectionNonEmpty(!!(inDocCol && selection && selection.toString().trim()));
     };
     document.addEventListener('selectionchange', check);
     check();
@@ -2438,6 +2464,74 @@ export function DocRedlinePreview({
     };
     const ok = await saveAction(id, () => ({ notes: [...notes, note], changedMd: false }));
     if (ok) setTableCellDraft(null);
+  }
+
+  /** wp-text-highlight.yaml: heading (h1..h6) gần nhất đứng TRƯỚC vùng chọn
+   *  trong `container` — best-effort thu hẹp phạm vi neo (xem
+   *  `startTextHighlight`). Không tìm được → `undefined` (neo toàn tài liệu
+   *  như note thường). Logic dính DOM (`compareDocumentPosition` so vị trí
+   *  node trong cây) nên KHÔNG tách được thành helper thuần test bằng jsdom
+   *  dựng tay — xem "not_done" trong báo cáo WP: kiểm bằng test round-trip
+   *  parseDocNotes (giữ `sectionHeading`) + đọc tay. */
+  function findPrecedingHeadingText(container: HTMLElement, anchorNode: Node): string | undefined {
+    const headings = Array.from(container.querySelectorAll<HTMLElement>('h1, h2, h3, h4, h5, h6'));
+    let best: HTMLElement | null = null;
+    for (const heading of headings) {
+      if (heading.compareDocumentPosition(anchorNode) & Node.DOCUMENT_POSITION_FOLLOWING) best = heading;
+    }
+    return best?.textContent?.trim() || undefined;
+  }
+
+  /** wp-text-highlight.yaml: tạo nháp "Tô đoạn chọn" từ vùng đang bôi — ĐƯỜNG
+   *  MỚI song song với `startUserAnnotation`, KHÔNG gọi `uniqueOccurrenceIndex`.
+   *  Đây là điểm mấu chốt của WP: đường này chỉ đánh dấu/ghi chú (không sửa
+   *  markdown) nên không đòi đoạn khớp DUY NHẤT trong mã nguồn — nó neo bằng
+   *  khớp mờ y hệt một note thường (`annotationHighlightSegments` →
+   *  `injectHighlights`/`fuzzyRegex`), không cần `changes.json` cắt đúng đoạn
+   *  nguồn để thay. */
+  function startTextHighlight() {
+    const selection = window.getSelection();
+    const selected = selection?.toString().trim() ?? '';
+    const anchorNode = selection?.anchorNode ?? null;
+    const container = docColRef.current;
+    if (!selected || !anchorNode || !container?.contains(anchorNode)) {
+      setTextHighlightError('Hãy bôi một đoạn chữ trong tài liệu.');
+      return;
+    }
+    // notePass injectHighlights cắt `anchor` qua đúng hàm này (xem docRender);
+    // một đoạn quá ngắn (1 từ, hoặc toàn ký tự markdown bị quoteSegments lọc
+    // sạch) sẽ ra mảng rỗng và không neo được gì — chặn ở đây thay vì lưu một
+    // note chết không bao giờ hiện `<mark>`.
+    if (annotationHighlightSegments(selected).length === 0) {
+      setTextHighlightError('Đoạn quá ngắn để đánh dấu (chọn ít nhất 2 từ).');
+      return;
+    }
+    const sectionHeading = findPrecedingHeadingText(container, anchorNode);
+    setTextHighlightError('');
+    setTextHighlightDraft({ selected, reason: '', sectionHeading });
+  }
+
+  /** wp-text-highlight.yaml: lưu nháp "Tô đoạn chọn" thành MỘT note trong
+   *  `notes.json` — cùng khuôn `createTableCellAnnotation` (không sửa
+   *  markdown, `changedMd: false`), khác ở chỗ `anchor` là chữ RENDER (không
+   *  `tableCells`) nên note này tự đi qua notePass injectHighlights sẵn có,
+   *  không cần effect render riêng. `kind: 'ux-writing'` — chọn MỘT kind hợp
+   *  lệ cho một ghi chú tự do người dùng gắn vào một đoạn chữ (đường này
+   *  không có "phép sửa" như `defaultUserKind` để suy loại theo). */
+  async function createTextHighlightAnnotation() {
+    if (!textHighlightDraft) return;
+    const id = uid('user');
+    const note: DocRedlineNote = {
+      id,
+      kind: 'ux-writing',
+      severity: 'minor',
+      anchor: textHighlightDraft.selected,
+      finding: textHighlightDraft.reason.trim() || 'Người dùng tự đánh dấu đoạn này.',
+      suggestion: '',
+      ...(textHighlightDraft.sectionHeading ? { sectionHeading: textHighlightDraft.sectionHeading } : {}),
+    };
+    const ok = await saveAction(id, () => ({ notes: [...notes, note], changedMd: false }));
+    if (ok) setTextHighlightDraft(null);
   }
 
   // Sơ đồ không đóng góp vào `anchored` qua text highlight. Mermaid lấy owner
@@ -2636,8 +2730,20 @@ export function DocRedlinePreview({
               >
                 Tô ô bảng
               </button>
+              {/* wp-text-highlight.yaml: đánh dấu/ghi chú một đoạn CHỮ, neo
+                  KHỚP MỜ — song song "Tô ô bảng", KHÔNG đòi đoạn duy nhất
+                  trong mã nguồn (khác ba nút Sửa/Xoá/Thêm ở trên). */}
+              <button
+                type="button"
+                disabled={!selectionNonEmpty}
+                title={selectionNonEmpty ? undefined : 'Bôi đen một đoạn chữ trong tài liệu để bật'}
+                onClick={startTextHighlight}
+              >
+                Tô đoạn chọn
+              </button>
               {draftError && !draft ? <span className={styles.toolbarError}>{draftError}</span> : null}
               {tableCellError && !tableCellDraft ? <span className={styles.toolbarError}>{tableCellError}</span> : null}
+              {textHighlightError && !textHighlightDraft ? <span className={styles.toolbarError}>{textHighlightError}</span> : null}
             </div>
             {headingPickerOpen ? (
               <div className={styles.headingPicker ?? ''} role="group" aria-label="Chọn mục để thêm sau">
@@ -2731,6 +2837,33 @@ export function DocRedlinePreview({
                     {busyId ? 'Đang lưu...' : 'Lưu thay đổi'}
                   </button>
                   <button type="button" disabled={busyId != null} onClick={() => { setTableCellDraft(null); setTableCellError(''); }}>Huỷ</button>
+                </div>
+              </div>
+            ) : null}
+            {/* wp-text-highlight.yaml: composer riêng cho "Tô đoạn chọn" —
+                cùng khuôn composer "Tô ô bảng" ngay trên (không sửa markdown,
+                chỉ một lý do), khác dữ liệu hiển thị: đoạn chữ đã chọn (cắt
+                gọn qua `refLabel` chỉ để HIỂN THỊ — dữ liệu lưu là
+                `textHighlightDraft.selected` nguyên vẹn) thay vì số ô. */}
+            {textHighlightDraft ? (
+              <div className={styles.annotationComposer} role="group" aria-label="Tô đoạn chọn">
+                <div className={styles.annotationComposerHead}>
+                  <strong>Tô đoạn đã chọn</strong>
+                  <button type="button" onClick={() => { setTextHighlightDraft(null); setTextHighlightError(''); }}>Đóng</button>
+                </div>
+                <p className={styles.selectedQuote}>“{refLabel(textHighlightDraft.selected)}”</p>
+                <input
+                  aria-label="Lý do"
+                  placeholder="Lý do (không bắt buộc)"
+                  value={textHighlightDraft.reason}
+                  onChange={(event) => setTextHighlightDraft((current) => current ? { ...current, reason: event.target.value } : current)}
+                />
+                {textHighlightError ? <p className={styles.error}>{textHighlightError}</p> : null}
+                <div className={styles.actions}>
+                  <button type="button" disabled={busyId != null} onClick={() => void createTextHighlightAnnotation()}>
+                    {busyId ? 'Đang lưu...' : 'Lưu thay đổi'}
+                  </button>
+                  <button type="button" disabled={busyId != null} onClick={() => { setTextHighlightDraft(null); setTextHighlightError(''); }}>Huỷ</button>
                 </div>
               </div>
             ) : null}
