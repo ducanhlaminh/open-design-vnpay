@@ -179,6 +179,14 @@ import { diagnoseClaudeCliFailure } from './claude-diagnostics.js';
 import { fetchClaudeUsage } from './claude-usage.js';
 import { renderHtmlToPdf } from './bas/drawio-render.js';
 import { finalizeFlowUx, prepareFlowUxInputs, type FlowIndexEntry } from './flow-ux/index.js';
+import {
+  canonicalizeRecoveredScreens,
+  parseScreenRecovery,
+  validateScreenRecovery,
+  type RecoveryScreensFile,
+  type ScreenRecoveryCell,
+} from './screen-recovery.js';
+import { createScreenFormatReporter } from './screen-format-reports.js';
 import { serveDrawioViewerJs } from './flow-ux/viewer-asset.js';
 import { ensureProposedMermaidHighlight } from './flow-ux/mermaid-highlight.js';
 import { loadCritiqueConfigFromEnv } from './critique/config.js';
@@ -571,6 +579,7 @@ import { EmptyTranscriptError, synthesizeHandoffPrompt } from './handoff-design.
 import { TranscriptExportLockedError } from './transcript-export.js';
 import { publishFeedback, pullMergedFeedback } from './feedback.js';
 import { confirmDocsReview } from './docs-review-feedback.js';
+import { validateComponentRecovery, validateFlowRecovery, validateReviewRecovery } from './pipeline-recovery.js';
 import { registerChatRoutes } from './chat-routes.js';
 import { registerStaticResourceRoutes } from './static-resource-routes.js';
 import { registerDesignSystemUpdateRoutes } from './design-system-update-routes.js';
@@ -663,6 +672,8 @@ import {
   isCompositionOwnedChange,
   findToolOutputNoise,
   buildEnrichKickoff,
+  inferredScreenReviewFinding,
+  type ReviewScreenReference,
 } from './docs-review-enrich.js';
 import {
   collectComponentCatalog,
@@ -681,6 +692,7 @@ import {
   wireframeRel,
   SCREEN_INPUTS_FILE,
   ROLE_MAP_FILE,
+  scanDocScreens,
   type RoleMapDoc,
   type ScreenComponentsDoc,
   type ScreenComponentsIndex,
@@ -689,7 +701,7 @@ import { buildScreenFlowArtifacts, SCREEN_FLOWS_DIR } from './screen-flow.js';
 // WP14: nối lớp 2 (trích màn bằng agent khi lớp 1 yếu) + lớp 3 (manifest +
 // overrides người dùng) vào khối docs-comp — xem docblock ở nơi dùng trong
 // runDocsComponentAuditFanout.
-import { needsAgentScreenExtract, validateDocScreenExtract, mergeExtractedScreens, DOC_SCREENS_FILE } from './screen-extract.js';
+import { validateDocScreenExtract, mergeExtractedScreens, DOC_SCREENS_FILE } from './screen-extract.js';
 import {
   parseScreensOverrides,
   applyScreenOverrides,
@@ -4824,6 +4836,11 @@ export async function startServer({
       }
     },
   });
+  // Unsupported document formats are useful even when the recovery agent
+  // succeeds. Freeze the full Markdown + referenced attachments through a
+  // separate durable outbox so Pipeline Studio can turn recurring formats
+  // into deterministic detectors later.
+  const screenFormatReporter = createScreenFormatReporter({ dataDir: RUNTIME_DATA_DIR });
   setPipelineFailureHook((info) => errorReporter.report(info));
   // Wire the upload-destination bridge to this db so multer can route
   // file uploads into baseDir-rooted projects' actual folders.
@@ -17344,11 +17361,13 @@ export async function startServer({
         let extractFailureReason: string | null = null;
 
         // ── Lượt trích màn từ tài liệu (lớp 2, WP14, kiến trúc 3 lớp 19/08) ──
-        // Kích hoạt CHỈ KHI: (a) KHÔNG màn nào trong screenInputs (lớp 1) có
-        // source == trang đó, VÀ (b) needsAgentScreenExtract báo trang có tín
-        // hiệu "danh sách/mô tả màn hình" mà lớp 1 tất định không quét ra mã
-        // nào. Rỗng → không lượt trích, không token, hành vi Y HỆT trước
-        // WP14 (must_not). Mô phỏng khuôn "Lượt 0 role-map" bên dưới:
+        // Kích hoạt cho MỌI trang chưa được một ScreenInput nào phủ. Tài liệu
+        // thực tế biểu diễn màn bằng heading, bảng, bold, ảnh hoặc văn xuôi;
+        // dùng một regex "tín hiệu heading" ở đây làm các trang format lạ bị
+        // bỏ qua dù feature tổng thể đã có màn từ trang khác. Agent được phép
+        // trả mảng rỗng nếu trang thật sự chỉ là ngữ cảnh, nhưng mỗi trang
+        // chưa phủ phải được chẩn đoán đúng một lần. Mô phỏng khuôn "Lượt 0
+        // role-map" bên dưới:
         // conversation riêng + task trong subConversations + design.runs.
         // create/start/wait + đọc file + normalize + FAIL-SHUT CỤC BỘ.
         const pagesNeedingExtract: DocPage[] = [];
@@ -17357,10 +17376,8 @@ export async function startServer({
           if (screenInputs.some((s) => s.source === page.mdPath)) continue;
           const md = await fs.promises.readFile(path.join(cwd, page.mdPath), 'utf8').catch(() => null);
           if (md == null) continue;
-          if (needsAgentScreenExtract(md)) {
-            pagesNeedingExtract.push(page);
-            extractMdBySource.set(page.mdPath, md);
-          }
+          pagesNeedingExtract.push(page);
+          extractMdBySource.set(page.mdPath, md);
         }
 
         let docScreenExtractTask: { id: string; title: string; status: 'queued' | 'running' | 'succeeded' | 'failed' } | null = null;
@@ -17376,7 +17393,7 @@ export async function startServer({
           });
 
           const extractKickoff =
-            `Run the "docs-screen-components" skill in EXTRACT mode for feature "${projectId}" (lượt trích màn hình từ tài liệu — lớp 1 quét tất định không ra mã nào dù trang có tín hiệu "danh sách/mô tả màn hình").` +
+            `Run the "docs-screen-components" skill in EXTRACT mode for feature "${projectId}" (lượt chẩn đoán coverage — lớp 1 chưa gắn được màn nào cho các trang này).` +
             ` CÁC TRANG cần đọc (đọc TỪNG trang, tìm MỌI màn hình tài liệu khai, bất kể cách trình bày — heading, dòng in đậm, hàng bảng…): ${pagesNeedingExtract.map((p) => `"${p.mdPath}"`).join(', ')}.` +
             ` "anchorText" của MỖI màn PHẢI là NGUYÊN VĂN CẢ MỘT DÒNG của trang, DUY NHẤT trong trang (khớp y nguyên sau khi trim khoảng trắng đầu/cuối) — daemon đối chiếu tất định: không tìm thấy, xuất hiện hơn một lần, hoặc chỉ nằm trong code fence → màn đó bị loại kèm lý do, KHÔNG suy diễn hộ, đừng diễn giải lại câu chữ. KHÔNG khai mục tài liệu (danh sách/mô tả/luồng màn hình) làm màn.` +
             ` Ghi ĐÚNG MỘT file "${DOC_SCREENS_FILE}" theo schema mục "Chế độ EXTRACT" của skill. KHÔNG ghi file nào khác, KHÔNG sửa trang.${graphNote}`;
@@ -17766,7 +17783,12 @@ export async function startServer({
           ? `một thẻ <style> chép NGUYÊN VĂN nội dung "${wireframeCssRel}" (Read nó rồi dán vào; thêm rule layout của riêng màn phía dưới), `
           : `một thẻ <style> tự viết vài rule tối thiểu cho .wf-web/.wf-mobile/.wf-card/.wf-component (khung xám, viền 1px, padding 16px — "${wireframeCssRel}" không copy được lần này), `;
 
-        const runOneScreen = async (s: (typeof screenInputs)[number], idx: number): Promise<'succeeded' | 'failed' | 'idle'> => {
+        const runOneScreen = async (
+          s: (typeof screenInputs)[number],
+          idx: number,
+          repairAttempt = 0,
+          previousErrors: string[] = [],
+        ): Promise<'succeeded' | 'failed' | 'idle'> => {
           const task = screenTasks[idx]!;
           const conversationId = task.id;
           task.status = 'running';
@@ -17801,7 +17823,11 @@ export async function startServer({
             mockupLine +
             ` Ghi ĐÚNG HAI file: (1) "${outRel}" theo schema "Chế độ SCREEN" trong skill (mọi element có "id" ổn định, "role", "ds" {component, anchor, variant?} hoặc null, "confidence", "provenance" text|flow|table|ds, "docType" nếu bảng tài liệu có khai, "why" khi cần; "nav": [{el, to}] cho các lối đi kể trên; "platform" = "${roleMap.platform}"); ` +
             `(2) "${wfRel}" — wireframe HTML tự chứa kiểu ux-spec: "<!doctype html>", ${cssLine}không <script>/<link>/ảnh; <body data-screen="${s.key}" data-layout="${roleMap.platform}">; DOM là bố cục THẬT của màn (header–thân–chân, hàng/cột, card lồng nhau theo criteria/examples.md), MỖI element trong JSON là một block mang data-el="<id>" (bắt buộc) + data-comp="<anchor>" khi có ds + data-nav="<SCREEN-KEY đích>" đúng như "nav"; text trong block = nhãn thật của element; không màu thương hiệu, không icon, không nội dung mẫu dài. ` +
-            `Không ghi file nào khác (không sửa flows/, docs/, criteria/, "${wireframeCssRel}", không tự ghi comp/index.json).${graphNote}${figmaDesktopNote}`;
+            `Không ghi file nào khác (không sửa flows/, docs/, criteria/, "${wireframeCssRel}", không tự ghi comp/index.json).${graphNote}${figmaDesktopNote}` +
+            (repairAttempt > 0
+              ? `\n\nĐÂY LÀ LƯỢT REPAIR DUY NHẤT. Lượt trước bị daemon từ chối vì: ${previousErrors.join(' | ')}. ` +
+                `Đọc lại hai file output hiện tại nếu còn, sửa đúng các lỗi trên và ghi đè ĐÚNG hai file được yêu cầu. Không mở rộng phạm vi.`
+              : '');
 
           const run = design.runs.create({
             projectId,
@@ -17878,6 +17904,9 @@ export async function startServer({
                     flowId: s.flowId,
                     source: s.source,
                     layoutSource: (s.mockups?.length ?? 0) > 0 ? 'doc-image' : 'agent',
+                    ...(s.provenance ? { provenance: s.provenance } : {}),
+                    ...(s.confidence !== undefined ? { confidence: s.confidence } : {}),
+                    ...(s.evidence ? { evidence: s.evidence } : {}),
                   };
                   await fs.promises.writeFile(path.join(cwd, outRel), JSON.stringify(doc, null, 2), 'utf8');
                   if (norm.wireframeHtml != null && norm.wireframeHtml !== wireframeHtml) {
@@ -17889,6 +17918,12 @@ export async function startServer({
             }
           }
           const status: 'succeeded' | 'failed' = doc != null ? 'succeeded' : 'failed';
+          if (status === 'failed' && !sawCancel && repairAttempt === 0) {
+            console.warn(`[docs-comp] screen "${s.name}" chưa đạt — chạy repair đúng 1 lần:`, errors);
+            task.status = 'queued';
+            persistTasks();
+            return runOneScreen(s, idx, 1, errors);
+          }
           if (status === 'failed') {
             // FAIL-SHUT cấp MÀN: file của màn chưa đạt không được nằm lại.
             await fs.promises.rm(path.join(cwd, outRel), { force: true }).catch(() => null);
@@ -17946,7 +17981,14 @@ export async function startServer({
         const failedScreens = results.filter((r): r is CompScreenResult => r?.status === 'failed').map((r) => ({ key: r.key, name: r.name, errors: r.errors }));
         const { index, summaryMd } = mergeScreenComponents(okDocs, inputs, failedScreens, new Date().toISOString());
         const anySucceeded = okDocs.length > 0;
-        const next: 'succeeded' | 'failed' = anySucceeded ? 'succeeded' : 'failed';
+        // Partial output is retained for review/recovery, but the stage must
+        // not turn green while any expected screen is unresolved.
+        const next: 'succeeded' | 'failed' = anySucceeded && failedScreens.length === 0 ? 'succeeded' : 'failed';
+        if (failedScreens.length > 0) {
+          const recoveryDir = path.join(cwd, 'recovery', 'dr-comp');
+          await fs.promises.mkdir(recoveryDir, { recursive: true });
+          await fs.promises.writeFile(path.join(recoveryDir, 'inputs.json'), `${JSON.stringify({ ...inputs, screens: screenInputs }, null, 2)}\n`, 'utf8');
+        }
         if (anySucceeded) {
           await fs.promises.writeFile(path.join(cwd, 'comp/index.json'), JSON.stringify(index, null, 2), 'utf8');
           await fs.promises.writeFile(path.join(cwd, 'comp/summary.md'), summaryMd, 'utf8');
@@ -17976,12 +18018,43 @@ export async function startServer({
         // conversations can be green when validation rejected every screen)
         // and hand them to the error report.
         const failureDetail = next === 'failed' ? fanoutFailureDetail(failedScreens.map((f) => ({ name: f.name || f.key, errors: f.errors ?? [] }))) : null;
+        const recovery = failedScreens.length > 0
+          ? {
+              schemaVersion: 1 as const,
+              kind: 'screen' as const,
+              state: 'needs-assistance' as const,
+              updatedAt: Date.now(),
+              units: failedScreens.map((failed) => {
+                const screenIndex = screenInputs.findIndex((screen) => screen.key === failed.key);
+                const task = screenTasks[screenIndex]!;
+                return {
+                  id: failed.key,
+                  title: failed.name || failed.key,
+                  conversationId: task.id,
+                  errors: failed.errors ?? [],
+                };
+              }),
+            }
+          : null;
+        if (recovery) {
+          for (const unit of recovery.units) {
+            upsertMessage(db, unit.conversationId, {
+              id: `pipeline-recovery-ready-${randomUUID()}`,
+              role: 'assistant',
+              content:
+                `Recovery workspace đã mở cho màn ${unit.id}. Output đạt của các màn khác đã được giữ nguyên. ` +
+                `Bạn có thể trao đổi thêm nhiều lượt trong hội thoại này. Khi đủ ngữ cảnh, hãy yêu cầu tôi tạo lại ` +
+                `"${screenDocRel(unit.id)}" và "${wireframeRel(unit.id)}" đúng contract; sau đó quay lại Pipeline và bấm “Kiểm tra & tiếp tục”. ` +
+                `Daemon vẫn sẽ validate tất định, chat không thể bỏ qua validator.`,
+            });
+          }
+        }
         if (failureDetail) {
           attachStageFailureContext(projectId, pipelineId, {
             agentId,
             model: modelPrefs.model ?? null,
             reasoning: modelPrefs.reasoning ?? null,
-            outputs: `docs-comp: 0/${screenInputs.length} màn đạt (validation sau fan-out)\n${failureDetail.list}`,
+            outputs: `docs-comp: ${okDocs.length}/${screenInputs.length} màn đạt (validation sau fan-out)\n${failureDetail.list}`,
             finalStatus: 'failed',
             workflowId: wfDir,
             skillId: def.skillId ?? null,
@@ -17992,11 +18065,17 @@ export async function startServer({
         setProjectPipelineStatus(db, projectId, pipelineId, {
           status: next,
           subConversations: tasks.map((t) => ({ ...t })),
-          ...(failureDetail ? { error: `Không màn nào đạt kiểm tra sau khi rà soát (${screenInputs.length} màn) — ${failureDetail.first}` } : {}),
+          ...(recovery ? { recovery } : {}),
+          ...(failureDetail
+            ? { error: `${okDocs.length}/${screenInputs.length} màn đạt; phần còn lại cần hỗ trợ trong recovery chat — ${failureDetail.first}` }
+            : {}),
         });
+        if (next === 'succeeded') {
+          await fs.promises.rm(path.join(cwd, 'recovery', 'dr-comp'), { recursive: true, force: true }).catch(() => null);
+        }
         void commitHistory(projectRoot, { kind: 'run', pipelineId, status: next, by: historyActor() }).catch(() => null);
         console.log(`[docs-comp] fan-out done: ${okDocs.length}/${screenInputs.length} screens → ${next}`);
-        if (failureDetail) console.warn(`[docs-comp] every screen failed validation:\n${failureDetail.list}`);
+        if (failureDetail) console.warn(`[docs-comp] screen recovery required:\n${failureDetail.list}`);
         return next;
       } catch (error) {
         // FAIL-SHUT ở OUTER catch — dọn output của mọi màn chưa đạt; không màn
@@ -18423,6 +18502,8 @@ export async function startServer({
           // (destructure từ `unit`), không phải của hàm này — nên phải truyền
           // vào thay vì đọc closure.
           pageSections: DocPageSection[] = [],
+          repairAttempt = 0,
+          previousErrors: string[] = [],
         ): Promise<{ ok: boolean; canceled: boolean; error?: string }> => {
           const conversationId = task.id;
           task.status = 'running';
@@ -18472,7 +18553,11 @@ export async function startServer({
             `and every finding you could NOT fix by editing text to "${secNotesRel}" as a JSON array of DocNote objects. ` +
             `TUYỆT ĐỐI KHÔNG chèn chuỗi chú giải "[Rà soát …]" (hay bất kỳ chú giải nào) vào lát cắt — daemon đánh hỏng CẢ TRANG nếu phát hiện; nhận xét không sửa được bằng chữ phải đi vào "${secNotesRel}". ` +
             `Do NOT review any other page or section, and do NOT write review/index.json or review/summary.md — the pipeline aggregates those from every section's files.${graphNote}` +
-            (enrichKickoff ? `\n\n${enrichKickoff}` : '');
+            (enrichKickoff ? `\n\n${enrichKickoff}` : '') +
+            (repairAttempt > 0
+              ? `\n\nĐÂY LÀ LƯỢT REPAIR DUY NHẤT. Lượt trước bị daemon từ chối vì: ${previousErrors.join(' | ')}. ` +
+                `Chỉ sửa lại lát và hai JSON của section này để giải quyết đúng các lỗi trên; không mở rộng phạm vi.`
+              : '');
           const run = design.runs.create({
             projectId,
             conversationId,
@@ -18518,6 +18603,13 @@ export async function startServer({
             task.status = 'succeeded';
             persistTasks();
             return { ok: true, canceled: false };
+          }
+          if (final.status !== 'canceled' && repairAttempt === 0) {
+            const runError = `Section "${sec.heading || 'Mở đầu'}": agent run kết thúc với trạng thái "${final.status}".`;
+            console.warn(`[docs-review] ${runError} Chạy repair đúng 1 lần.`);
+            task.status = 'queued';
+            persistTasks();
+            return runOneSectionOfPage(pg, sec, task, enrichKickoff, pageSections, 1, [runError]);
           }
           task.status = 'failed';
           persistTasks();
@@ -18623,16 +18715,25 @@ export async function startServer({
               // kiểm nào bắt được. Chạy bảng trước giữ lát còn NGUYÊN số dòng
               // như lúc `mapScreensToSections` tính `insertAfterLine`; sơ đồ
               // chạy sau vẫn đúng chỗ vì nó không phụ thuộc chỉ số dòng.
-              const screensBySection = new Map<number, Array<{ key: string; name: string }>>();
-              const unplacedScreens: string[] = [];
+              const screensBySection = new Map<number, ReviewScreenReference[]>();
+              const unplacedScreens: Array<string | ReviewScreenReference> = [];
               if (compIndex && Array.isArray(compIndex.screens)) {
                 const screenNames = new Map(compIndex.screens.map((s) => [s.key, s.name] as const));
+                const screenRefs = new Map<string, ReviewScreenReference>(
+                  compIndex.screens.map((screen) => [screen.key, {
+                    key: screen.key,
+                    name: screen.name,
+                    ...(screen.provenance ? { provenance: screen.provenance } : {}),
+                    ...(screen.confidence !== undefined ? { confidence: screen.confidence } : {}),
+                    ...(screen.evidence ? { evidence: screen.evidence } : {}),
+                  }]),
+                );
                 const pageScreenKeys = compIndex.screens
                   .filter((s) => normEnrichSrc(s.source) === thisPageSrc)
                   .map((s) => s.key);
                 if (pageScreenKeys.length > 0) {
                   const { placed, unplaced } = mapScreensToSections(sections, pageLines, pageScreenKeys);
-                  unplacedScreens.push(...unplaced);
+                  unplacedScreens.push(...unplaced.map((key) => screenRefs.get(key) ?? key));
                   // WP8b — daemon TỰ CHÈN bảng thẳng vào lát (không còn nháp
                   // markdown riêng cho agent tự chèn), bằng
                   // insertCompositionTable — nhiều bảng cùng lát PHẢI chèn
@@ -18645,7 +18746,7 @@ export async function startServer({
                     let sliceText = await fs.promises.readFile(secSliceAbs, 'utf8').catch(() => null);
                     if (sliceText == null) continue;
                     const sortedEntries = [...entries].sort((a, b) => b.insertAfterLine - a.insertAfterLine);
-                    const kickoffEntries: Array<{ key: string; name: string }> = [];
+                    const kickoffEntries: ReviewScreenReference[] = [];
                     for (const entry of sortedEntries) {
                       try {
                         const screenJsonRaw = await fs.promises.readFile(
@@ -18677,7 +18778,13 @@ export async function startServer({
                         const tableEntries = tablesBySection.get(sectionIndex) ?? [];
                         tableEntries.push({ key: entry.key, draftBlock: systemChange!.quote ?? '', change: systemChange! });
                         tablesBySection.set(sectionIndex, tableEntries);
-                        kickoffEntries.push({ key: entry.key, name: screenDoc.name });
+                        kickoffEntries.push({
+                          key: entry.key,
+                          name: screenDoc.name,
+                          ...(screenDoc.provenance ? { provenance: screenDoc.provenance } : {}),
+                          ...(screenDoc.confidence !== undefined ? { confidence: screenDoc.confidence } : {}),
+                          ...(screenDoc.evidence ? { evidence: screenDoc.evidence } : {}),
+                        });
                       } catch (screenError) {
                         console.debug(
                           `[docs-review] enrich skipped: màn "${entry.key}" của trang "${pg.mdPath}":`,
@@ -18928,7 +19035,7 @@ export async function startServer({
                     .catch(() => null),
                 );
               }
-              const revisedPageDraft = rebuildPageFromSlices(
+              let revisedPageDraft = rebuildPageFromSlices(
                 revisedSlices.map((s, i) => s ?? baseSlices[i]!),
                 pageEol,
               );
@@ -18937,6 +19044,7 @@ export async function startServer({
               const basePrimes: Array<string | undefined> = new Array(sections.length);
               const keptChanges: DocChange[] = [];
               const keptNotes: DocNote[] = [];
+              const repairedSections = new Set<number>();
 
               for (let si = 0; si < sections.length; si += 1) {
                 const sec = sections[si]!;
@@ -19067,6 +19175,45 @@ export async function startServer({
 
                 const taskIdx = taskIndexBySection[idx]![si]!;
                 if (secErrors.length > 0) {
+                  if (!repairedSections.has(sec.index) && !canceled) {
+                    // Một lỗi schema/diff/anchor chỉ được sửa đúng một lần.
+                    // Khôi phục baseline trước khi giao lại để agent không
+                    // phải đoán phần nào của output hỏng cần giữ lại.
+                    repairedSections.add(sec.index);
+                    await fs.promises.writeFile(
+                      path.join(cwd, sectionSlicePath(reviewRel, sec.index)),
+                      baseSlices[si]!,
+                      'utf8',
+                    );
+                    await fs.promises.rm(path.join(cwd, sectionOutputPath(reviewRel, sec.index, 'changes')), { force: true }).catch(() => null);
+                    await fs.promises.rm(path.join(cwd, sectionOutputPath(reviewRel, sec.index, 'notes')), { force: true }).catch(() => null);
+                    console.warn(
+                      `[docs-review] section "${sec.heading || 'Mở đầu'}" chưa đạt validation — chạy repair đúng 1 lần:`,
+                      secErrors,
+                    );
+                    const repair = await sectionSlots.run(() => runOneSectionOfPage(
+                      pg,
+                      sec,
+                      tasks[taskIdx]!,
+                      enrichKickoffBySection.get(sec.index) ?? '',
+                      sections,
+                      1,
+                      secErrors,
+                    ));
+                    if (repair.canceled) sawCancel = true;
+                    if (repair.ok) {
+                      revisedSlices[si] = await fs.promises
+                        .readFile(path.join(cwd, sectionSlicePath(reviewRel, sec.index)), 'utf8')
+                        .catch(() => null);
+                      revisedPageDraft = rebuildPageFromSlices(
+                        revisedSlices.map((value, i) => value ?? baseSlices[i]!),
+                        pageEol,
+                      );
+                      si -= 1;
+                      continue;
+                    }
+                    if (repair.error) secErrors.push(`Repair thất bại: ${repair.error}`);
+                  }
                   // Section hỏng: khôi phục lát về baseline đã enrich (KHÔNG
                   // giữ sửa đổi của agent), bỏ changes/notes của section này —
                   // đây là điểm khác biệt cốt lõi với validate cấp trang cũ.
@@ -19113,7 +19260,30 @@ export async function startServer({
               // sysChanges (sơ đồ + bảng, quote đã cập nhật cho section đạt)
               // nối trước changes agent giữ lại từ các section đạt.
               changes = [...sysChanges, ...keptChanges];
-              notes = keptNotes;
+              const inferredGapNotes: DocNote[] = (compIndex?.screens ?? [])
+                .filter((screen) => normEnrichSrc(screen.source) === normEnrichSrc(pg.mdPath))
+                .map((screen) => inferredScreenReviewFinding({
+                  key: screen.key,
+                  name: screen.name,
+                  ...(screen.provenance ? { provenance: screen.provenance } : {}),
+                  ...(screen.confidence !== undefined ? { confidence: screen.confidence } : {}),
+                  ...(screen.evidence ? { evidence: screen.evidence } : {}),
+                }))
+                .filter((finding): finding is NonNullable<typeof finding> => finding != null)
+                .map((finding) => {
+                  const anchor = finding.anchorText ?? '';
+                  return {
+                    id: `sys-inferred-screen-${finding.key}`,
+                    kind: 'gap' as const,
+                    severity: 'major' as const,
+                    rule_id: finding.ruleId,
+                    anchor,
+                    finding: finding.message,
+                    suggestion: `Bổ sung mục mô tả tường minh cho màn “${finding.name}”: mục đích, trạng thái, nội dung, hành vi và điều hướng.`,
+                    ...(!anchor || !original.includes(anchor) ? { anchor_unresolved: true as const } : {}),
+                  };
+                });
+              notes = [...keptNotes, ...inferredGapNotes];
 
               // Cổng unique TOÀN TRANG — lưới cuối, đặt TRƯỚC nhánh
               // đạt/hỏng (writeFile ở dưới đọc `errors.length` để quyết định
@@ -19343,10 +19513,13 @@ export async function startServer({
         // Merge: daemon-owned, no LLM.
         const { index, summaryMd } = mergeChangeReports(results);
 
-        // Don't-fail-the-whole-stage-for-one-page: succeed as long as at
-        // least one page validated cleanly; fail only if every page failed.
         const anySucceeded = results.some((r) => r.status === 'succeeded');
-        const next: 'succeeded' | 'failed' = anySucceeded ? 'succeeded' : 'failed';
+        const incompleteResults = results.filter(
+          (result) => result.status !== 'succeeded' || (result.sectionsFailed?.length ?? 0) > 0,
+        );
+        // Keep successful pages/sections, but expose a recovery workspace and
+        // stop the chain until every page and section is covered.
+        const next: 'succeeded' | 'failed' = anySucceeded && incompleteResults.length === 0 ? 'succeeded' : 'failed';
         if (anySucceeded) {
           await fs.promises.mkdir(path.join(cwd, 'review'), { recursive: true });
           await fs.promises.writeFile(path.join(cwd, 'review/index.json'), JSON.stringify(index, null, 2), 'utf8');
@@ -19371,13 +19544,64 @@ export async function startServer({
         // So the generic "see the step's conversation" text points nowhere;
         // name the real per-page reasons in the stage error and hand them
         // to the error report (attachStageFailureContext) as well.
-        const failureDetail = next === 'failed' ? fanoutFailureDetail(results.map((r) => ({ name: r.page, errors: r.errors ?? [] }))) : null;
+        const failureItems = incompleteResults.map((result) => ({
+          name: result.page,
+          errors: [
+            ...(result.errors ?? []),
+            ...(result.sectionsFailed ?? []).flatMap((section) => section.errors.map((error) => `${section.heading || `s${section.index}`}: ${error}`)),
+          ],
+        }));
+        const failureDetail = next === 'failed' ? fanoutFailureDetail(failureItems) : null;
+        const recoveryUnits = incompleteResults.flatMap((result) => {
+          const pageIndex = results.indexOf(result);
+          const unit = pageUnits[pageIndex];
+          if (!unit) return [];
+          const failedSectionIndexes = result.sectionsFailed?.length
+            ? new Set(result.sectionsFailed.map((section) => section.index))
+            : new Set(unit.sections.map((section) => section.index));
+          return unit.sections.flatMap((section, sectionPosition) => {
+            if (!failedSectionIndexes.has(section.index)) return [];
+            const taskIndex = taskIndexBySection[pageIndex]?.[sectionPosition];
+            const task = taskIndex === undefined ? undefined : tasks[taskIndex];
+            if (!task) return [];
+            const sectionErrors = result.sectionsFailed?.find((failed) => failed.index === section.index)?.errors
+              ?? result.errors
+              ?? ['Section chưa đạt coverage.'];
+            return [{
+              id: `${result.docPath}#s${section.index}`,
+              title: `${result.page} · ${section.heading || 'Mở đầu'}`,
+              conversationId: task.id,
+              errors: sectionErrors,
+            }];
+          });
+        });
+        const recovery = recoveryUnits.length > 0
+          ? {
+              schemaVersion: 1 as const,
+              kind: 'section' as const,
+              state: 'needs-assistance' as const,
+              units: recoveryUnits,
+              updatedAt: Date.now(),
+            }
+          : null;
+        if (recovery) {
+          for (const unit of recovery.units) {
+            upsertMessage(db, unit.conversationId, {
+              id: `pipeline-recovery-ready-${randomUUID()}`,
+              role: 'assistant',
+              content:
+                `Recovery workspace đã mở cho ${unit.title}. Các trang/section đã đạt được giữ nguyên. ` +
+                `Hãy trao đổi thêm nhiều lượt để làm rõ yêu cầu, rồi sửa đúng bản review và sidecar changes/notes của trang này. ` +
+                `Khi hoàn tất, quay lại Pipeline và bấm “Kiểm tra & tiếp tục”; daemon sẽ dựng lại review/index.json và validate toàn bộ trang.`,
+            });
+          }
+        }
         if (failureDetail) {
           attachStageFailureContext(projectId, pipelineId, {
             agentId,
             model: modelPrefs.model ?? null,
             reasoning: modelPrefs.reasoning ?? null,
-            outputs: `docs-review: 0/${results.length} trang đạt (validation sau fan-out)\n${failureDetail.list}`,
+            outputs: `docs-review: ${results.filter((result) => result.status === 'succeeded').length}/${results.length} trang đạt (validation sau fan-out)\n${failureDetail.list}`,
             finalStatus: 'failed',
             workflowId: wfDir,
             skillId: def.skillId ?? null,
@@ -19388,11 +19612,12 @@ export async function startServer({
         setProjectPipelineStatus(db, projectId, pipelineId, {
           status: next,
           subConversations: tasks.map((t) => ({ ...t })),
-          ...(failureDetail ? { error: `Không trang nào đạt kiểm tra sau khi rà soát (${results.length} trang) — ${failureDetail.first}. Chi tiết: ${DOCS_REVIEW_FAILURE_NOTE}` } : {}),
+          ...(recovery ? { recovery } : {}),
+          ...(failureDetail ? { error: `${results.filter((result) => result.status === 'succeeded').length}/${results.length} trang đạt; phần còn lại cần hỗ trợ trong recovery chat — ${failureDetail.first}.` } : {}),
         });
         void commitHistory(projectRoot, { kind: 'run', pipelineId, status: next, by: historyActor() }).catch(() => null);
         console.log(`[docs-review] fan-out done: ${results.filter((r) => r.status === 'succeeded').length}/${pages.length} pages reviewed → ${next}`);
-        if (failureDetail) console.warn(`[docs-review] every page failed validation:\n${failureDetail.list}`);
+        if (failureDetail) console.warn(`[docs-review] section recovery required:\n${failureDetail.list}`);
         return next;
       } catch (error) {
         // FAIL-SHUT — see the block comment above this function. The stage
@@ -22277,6 +22502,9 @@ export async function startServer({
             ? 'idle'
             : 'failed';
         let finalizeError: string | null = null;
+        let recoveryErrorCode: string | null = null;
+        let screenFormatObservationId: string | null = null;
+        let interactiveRecovery: import('@open-design/contracts').PipelineRecoveryWorkspace | null = null;
         // dr-flow (docs-flow-ux): the agent emitted small JSON files; the daemon
         // now applies patch.json -> proposed.drawio, derives flowchart.json and
         // rebuilds flows/index.json. A finalize failure IS a stage failure —
@@ -22284,8 +22512,257 @@ export async function startServer({
         if (next === 'succeeded' && def.skillId === 'docs-flow-ux' && pipelineCwd) {
           const runCwd = wfDir ? path.join(pipelineCwd, wfDir) : pipelineCwd;
           try {
-            const fin = await finalizeFlowUx(runCwd);
+            let fin = await finalizeFlowUx(runCwd);
             console.log(`[flow-ux] ${projectId}: finalized ${fin.index.length} flow(s)${fin.warnings.length ? ` — ${fin.warnings.length} warning(s): ${fin.warnings.join(' | ')}` : ''}`);
+
+            // Every flow needs at least one canonical screen mapping before it
+            // is a valid input for dr-comp. Check coverage PER FLOW: a single
+            // healthy flow must not hide another flow whose document format
+            // was not recognised. Ask for one evidence-backed recovery pass,
+            // validate it deterministically, then rebuild the canonical index.
+            // Exactly one pass prevents loops.
+            const screenCount = () => fin.index.reduce((sum, entry) => sum + entry.screens.length, 0);
+            const uncoveredFlowIds = () => fin.index.filter((entry) => entry.screens.length === 0).map((entry) => entry.id);
+            const recoveryTargets = uncoveredFlowIds();
+            const missingFlowTopology = fin.index.length === 0;
+            if (missingFlowTopology || recoveryTargets.length > 0) {
+              const pages = await listDocPages(runCwd);
+              const markdownBySource: Record<string, string> = {};
+              for (const page of pages) {
+                const markdown = await fs.promises.readFile(path.join(runCwd, page.mdPath), 'utf8').catch(() => null);
+                if (markdown != null) markdownBySource[page.mdPath] = markdown;
+              }
+
+              const recoveryRel = 'flows/_screen-recovery.json';
+              await fs.promises.rm(path.join(runCwd, recoveryRel), { force: true }).catch(() => null);
+              const recoveryConversationId = `pipeline-conv-${randomUUID()}`;
+              const recoveryAssistantId = `pipeline-assistant-${randomUUID()}`;
+              const recoveryTitle = 'Khôi phục màn hình từ format tài liệu lạ';
+              insertConversation(db, {
+                id: recoveryConversationId,
+                projectId,
+                title: `${def.name} · ${recoveryTitle}`,
+                createdAt: Date.now(),
+                updatedAt: Date.now(),
+              });
+              const recoveryRun = design.runs.create({
+                projectId,
+                conversationId: recoveryConversationId,
+                assistantMessageId: recoveryAssistantId,
+                clientRequestId: `docs-flow-recovery-${randomUUID()}`,
+                agentId,
+              });
+              const recoveryTask = { id: recoveryConversationId, title: recoveryTitle, status: 'running' as 'running' | 'succeeded' | 'failed' };
+              setProjectPipelineStatus(db, projectId, pipelineId, { status: 'running', subConversations: [{ ...recoveryTask }] });
+              const recoveryKickoff =
+                `Run the "docs-flow-ux" skill in RECOVERY mode for feature "${projectId}". ` +
+                (missingFlowTopology
+                  ? `The first dr-flow finalize produced no flow topology. Diagnose the document and create one or more canonical text-only flow folders with as-is.mmd, screens.json and ux-review.json. `
+                  : `The first dr-flow finalize left ${recoveryTargets.length}/${fin.index.length} flow(s) without a valid screen: ${recoveryTargets.map((id) => `"${id}"`).join(', ')}. `) +
+                `Read every page listed here: ${pages.map((page) => `"${page.mdPath}"`).join(', ') || '(none)'}, plus flows/_inputs.json and each as-is diagram/cells file. ` +
+                `Diagnose every user-visible screen regardless of whether the document uses headings, bold text, tables, lists, images, or prose. ` +
+                (missingFlowTopology
+                  ? `Do not invent evidence; when the topology is supported, write only the canonical flow folder files described above. Otherwise make no artifact.`
+                  : `Only recover the uncovered flow ids listed above. Write exactly "${recoveryRel}" using RECOVERY schema v1. Do not modify any other file; return candidates: [] when evidence is insufficient.`);
+              activeRuns.add(recoveryRun);
+              upsertMessage(db, recoveryConversationId, { id: `pipeline-user-${recoveryRun.id}`, role: 'user', content: recoveryKickoff });
+              upsertMessage(db, recoveryConversationId, {
+                id: recoveryAssistantId,
+                role: 'assistant',
+                content: '',
+                agentId,
+                agentName: getAgentDef(agentId)?.name ?? agentId,
+                runId: recoveryRun.id,
+                runStatus: 'queued',
+                startedAt: Date.now(),
+              });
+              design.runs.start(recoveryRun, () => startChatRun({
+                agentId,
+                projectId,
+                conversationId: recoveryConversationId,
+                assistantMessageId: recoveryAssistantId,
+                clientRequestId: recoveryRun.clientRequestId,
+                skillId: def.skillId,
+                ...(wfDir ? { cwdSubdir: wfDir } : {}),
+                model: modelPrefs.model ?? null,
+                reasoning: modelPrefs.reasoning ?? null,
+                message: recoveryKickoff,
+                promptProfile: 'pipeline',
+                pipelineUsesDesignSystem: def.acceptsDesignSystem === true,
+              }, recoveryRun));
+              const recoveryFinal = await design.runs.wait(recoveryRun);
+              activeRuns.delete(recoveryRun);
+              db.prepare(`UPDATE messages SET run_status = ?, ended_at = ? WHERE id = ?`)
+                .run(recoveryFinal.status, Date.now(), recoveryAssistantId);
+
+              const parseIssues: string[] = [];
+              let accepted: ReturnType<typeof validateScreenRecovery>['accepted'] = [];
+              let rejected: ReturnType<typeof validateScreenRecovery>['rejected'] = [];
+              if (recoveryFinal.status !== 'succeeded') {
+                parseIssues.push(`Recovery agent kết thúc với trạng thái "${recoveryFinal.status}".`);
+              } else {
+                const raw = await fs.promises.readFile(path.join(runCwd, recoveryRel), 'utf8').catch(() => null);
+                if (raw == null) parseIssues.push(`Recovery agent không ghi "${recoveryRel}".`);
+                else {
+                  const parsed = parseScreenRecovery(raw);
+                  parseIssues.push(...parsed.issues);
+                  if (parsed.document) {
+                    const flows: Record<string, { cells: ScreenRecoveryCell[] }> = {};
+                    for (const entry of fin.index) {
+                      const cellsRaw = await fs.promises.readFile(path.join(runCwd, 'flows', entry.id, 'cells.json'), 'utf8').catch(() => null);
+                      let cells: ScreenRecoveryCell[] = [];
+                      if (cellsRaw != null) {
+                        try {
+                          const parsedCells = JSON.parse(cellsRaw) as unknown;
+                          if (Array.isArray(parsedCells)) {
+                            cells = parsedCells
+                              .filter((cell): cell is Record<string, unknown> => !!cell && typeof cell === 'object' && !Array.isArray(cell))
+                              .map((cell) => ({
+                                id: typeof cell.id === 'string' ? cell.id : '',
+                                label: typeof cell.label === 'string' ? cell.label : '',
+                                ...(typeof cell.kind === 'string' ? { kind: cell.kind } : {}),
+                              }))
+                              .filter((cell) => cell.id.length > 0);
+                          }
+                        } catch {
+                          cells = [];
+                        }
+                      }
+                      if (cells.length === 0 && entry.files?.flowchart) {
+                        try {
+                          const chart = JSON.parse(await fs.promises.readFile(path.join(runCwd, entry.files.flowchart), 'utf8')) as {
+                            nodes?: Array<{ id?: unknown; label?: unknown; type?: unknown }>;
+                          };
+                          cells = (chart.nodes ?? [])
+                            .map((node) => ({
+                              id: typeof node.id === 'string' ? node.id : '',
+                              label: typeof node.label === 'string' ? node.label : '',
+                              ...(typeof node.type === 'string' ? { type: node.type } : {}),
+                            }))
+                            .filter((cell) => cell.id.length > 0);
+                        } catch {
+                          cells = [];
+                        }
+                      }
+                      flows[entry.id] = { cells };
+                    }
+                    const validation = validateScreenRecovery(parsed.document, { markdownBySource, flows });
+                    const targetSet = new Set(recoveryTargets);
+                    accepted = validation.accepted.filter((candidate) => targetSet.has(candidate.flowId));
+                    rejected = [
+                      ...validation.rejected,
+                      ...validation.accepted
+                        .filter((candidate) => !targetSet.has(candidate.flowId))
+                        .map((candidate, index) => ({
+                          index,
+                          candidate,
+                          reasons: [`Flow "${candidate.flowId}" đã có screen trước recovery — không được ghi đè coverage hợp lệ.`],
+                        })),
+                    ];
+                  }
+                }
+              }
+
+              if (accepted.length > 0) {
+                for (const entry of fin.index) {
+                  const recovered = accepted.filter((screen) => screen.flowId === entry.id);
+                  if (recovered.length === 0) continue;
+                  const screensPath = path.join(runCwd, 'flows', entry.id, 'screens.json');
+                  let existing: RecoveryScreensFile = {};
+                  try {
+                    existing = JSON.parse(await fs.promises.readFile(screensPath, 'utf8')) as RecoveryScreensFile;
+                  } catch {
+                    existing = {};
+                  }
+                  await fs.promises.writeFile(
+                    screensPath,
+                    `${JSON.stringify(canonicalizeRecoveredScreens(existing, recovered), null, 2)}\n`,
+                    'utf8',
+                  );
+                }
+                fin = await finalizeFlowUx(runCwd);
+              } else if (missingFlowTopology && recoveryFinal.status === 'succeeded') {
+                // In no-topology mode the recovery agent writes canonical
+                // text-only flow folders, not _screen-recovery.json.
+                fin = await finalizeFlowUx(runCwd);
+              }
+
+              const remainingUncovered = uncoveredFlowIds();
+              const recoveredCount = screenCount();
+              recoveryTask.status = fin.index.length > 0 && remainingUncovered.length === 0 ? 'succeeded' : 'failed';
+              setProjectPipelineStatus(db, projectId, pipelineId, { status: 'running', subConversations: [{ ...recoveryTask }] });
+
+              // Send the full original Markdown and referenced local files for
+              // both successful and unsuccessful fallback attempts. Upload is
+              // background/fail-soft; the returned id links a failure report.
+              const [versionInfo, reportConfig] = await Promise.all([
+                readCurrentAppVersionInfo().catch(() => ({ version: '0.0.0', channel: 'unknown', packaged: isPackagedRuntime(), platform: process.platform, arch: process.arch })),
+                readAppConfig(RUNTIME_DATA_DIR).catch(() => ({})),
+              ]);
+              const scannerTrace = {
+                trigger: 'uncovered-flow',
+                screensFound: recoveredCount,
+                recoveryTargets,
+                remainingUncovered,
+                pages: pages.map((page) => ({ source: page.mdPath, deterministicScreens: scanDocScreens(markdownBySource[page.mdPath] ?? '').length })),
+                flows: fin.index.map((entry) => ({ id: entry.id, kind: entry.kind, warnings: entry.screensDropped?.length ?? 0 })),
+              };
+              screenFormatObservationId = screenFormatReporter.report({
+                projectId,
+                ...(getProject(db, projectId)?.name ? { projectName: getProject(db, projectId)!.name } : {}),
+                workflowId: workflowDirForPipeline(pipelineId) ?? 'docs-review',
+                stageId: pipelineId,
+                severity: fin.index.length > 0 && remainingUncovered.length === 0 ? 'info' : 'error',
+                app: { version: versionInfo.version, channel: versionInfo.channel, packaged: versionInfo.packaged },
+                installationId: typeof reportConfig.installationId === 'string' && reportConfig.installationId ? reportConfig.installationId : 'unknown-install',
+                scannerTrace,
+                recovery: {
+                  accepted: JSON.parse(JSON.stringify(accepted)) as never[],
+                  rejected: JSON.parse(JSON.stringify([...rejected, ...parseIssues.map((reason) => ({ reason }))])) as never[],
+                },
+                projectRoot: runCwd,
+                sources: pages.map((page) => page.mdPath),
+              });
+
+              if (fin.index.length === 0 || remainingUncovered.length > 0) {
+                recoveryErrorCode = 'DR_FLOW_UNSUPPORTED_SCREEN_FORMAT';
+                const unresolvedIds = fin.index.length === 0 ? ['__flow-discovery__'] : remainingUncovered;
+                interactiveRecovery = {
+                  schemaVersion: 1,
+                  kind: 'flow',
+                  state: 'needs-assistance',
+                  updatedAt: Date.now(),
+                  units: unresolvedIds.map((flowId) => ({
+                    id: flowId,
+                    title: flowId === '__flow-discovery__' ? 'Xác định flow và màn hình' : `Flow ${flowId}`,
+                    conversationId: recoveryConversationId,
+                    errors: [
+                      flowId === '__flow-discovery__'
+                        ? 'Agent chưa xác định được topology luồng. Hãy trao đổi thêm trong chat rồi tạo flow Mermaid cùng screens.json có evidence.'
+                        : `Agent chưa nhận diện được screen hợp lệ cho flow "${flowId}". Hãy trao đổi thêm trong chat rồi cập nhật screens.json của flow.`,
+                    ],
+                  })),
+                };
+                upsertMessage(db, recoveryConversationId, {
+                  id: `pipeline-recovery-ready-${randomUUID()}`,
+                  role: 'assistant',
+                  content:
+                    `Recovery workspace đã mở cho phần chưa được phủ: ${unresolvedIds.join(', ')}. ` +
+                    `Bạn có thể trao đổi với tôi nhiều lượt để chỉ rõ tài liệu đang biểu diễn màn hình ở đâu. ` +
+                    `Khi đã đủ ngữ cảnh, hãy yêu cầu tôi cập nhật flows/<flow-id>/screens.json bằng evidence thật; ` +
+                    `sau đó quay lại Pipeline và bấm “Kiểm tra & tiếp tục”. Daemon sẽ finalize và validate lại, không bỏ qua evidence gate.`,
+                });
+                finalizeError =
+                  (fin.index.length === 0
+                    ? 'Không nhận diện được topology luồng sau fallback agent. '
+                    : `Không nhận diện đủ màn hình sau fallback agent; flow chưa được phủ: ${remainingUncovered.join(', ')}. `) +
+                  `Mở recovery chat để bổ sung ngữ cảnh, sau đó bấm Kiểm tra & tiếp tục. ` +
+                  `Đã gửi tài liệu và diagnostics với mã #${screenFormatObservationId}.`;
+                next = 'failed';
+              } else {
+                console.log(`[flow-ux] ${projectId}: recovery +${recoveredCount} screen(s), format observation #${screenFormatObservationId}`);
+              }
+            }
           } catch (error) {
             finalizeError = `Hoàn tất sơ đồ luồng thất bại: ${String((error as Error)?.message ?? error)}`;
             console.warn('[flow-ux] finalize failed:', error);
@@ -22340,6 +22817,8 @@ export async function startServer({
               exitCode: finalStatus.exitCode ?? null,
               signal: finalStatus.signal ?? null,
               errorCode: finalStatus.errorCode ?? null,
+              ...(recoveryErrorCode ? { errorCode: recoveryErrorCode } : {}),
+              ...(screenFormatObservationId ? { screenFormatObservationId } : {}),
               durationMs:
                 typeof finalStatus.updatedAt === 'number' && typeof finalStatus.createdAt === 'number'
                   ? finalStatus.updatedAt - finalStatus.createdAt
@@ -22362,6 +22841,7 @@ export async function startServer({
         // updates the gate; the user uploads when ready.
         setProjectPipelineStatus(db, projectId, pipelineId, {
           status: next,
+          ...(interactiveRecovery ? { recovery: interactiveRecovery } : {}),
           // Agent-run failure: prefer the run's OWN error (design.runs' error
           // text — see extractErrorDetails in runs.ts, e.g. an agent CLI
           // crash or an MCP/tool failure), then the wireframe-gate-specific
@@ -23337,9 +23817,53 @@ export async function startServer({
 
   // Shared pipeline deps — passed to both the pipeline routes and the remote
   // project registry routes (both type their `pipelines` as the full PipelineDeps).
+  const validatePipelineRecovery = async (projectId: string, pipelineId: string) => {
+    const state = getProjectPipelineState(db, projectId)[pipelineId];
+    const recovery = state?.recovery;
+    if (!recovery) throw new Error('Pipeline không có recovery workspace đang hoạt động.');
+    const projectRoot = await ensureProject(PROJECTS_DIR, projectId);
+    const wfDir = workflowDirForPipeline(pipelineId);
+    const cwd = wfDir ? path.join(projectRoot, wfDir) : projectRoot;
+    setProjectPipelineStatus(db, projectId, pipelineId, {
+      recovery: { ...recovery, state: 'validating', updatedAt: Date.now() },
+    });
+    const result = pipelineId === 'dr-flow'
+      ? await validateFlowRecovery(cwd)
+      : pipelineId === 'dr-comp'
+        ? await validateComponentRecovery(cwd)
+        : pipelineId === 'dr-review'
+          ? await validateReviewRecovery(cwd)
+          : { ok: false, issues: [`Bước "${pipelineId}" chưa hỗ trợ recovery workspace.`], repaired: [] };
+    if (result.ok) {
+      setProjectPipelineStatus(db, projectId, pipelineId, {
+        status: 'succeeded',
+        recovery: null,
+        subConversations: (state?.subConversations ?? []).map((task) => ({ ...task, status: 'succeeded' })),
+      });
+      void commitHistory(projectRoot, {
+        kind: 'run',
+        pipelineId,
+        status: 'succeeded',
+        note: 'validated from multi-turn recovery workspace',
+        by: historyActor(),
+      }).catch(() => null);
+    } else {
+      const units = recovery.units.map((unit) => {
+        const matched = result.issues.filter((issue) => issue.includes(unit.id));
+        return { ...unit, errors: matched.length > 0 ? matched : unit.errors };
+      });
+      setProjectPipelineStatus(db, projectId, pipelineId, {
+        recovery: { ...recovery, state: 'needs-assistance', units, updatedAt: Date.now() },
+        error: `Recovery chưa đạt kiểm tra: ${result.issues[0] ?? 'coverage chưa đầy đủ'}`,
+      });
+    }
+    return result;
+  };
+
   const pipelineDeps = {
     runPipeline,
     runWorkflowAll,
+    validateRecovery: validatePipelineRecovery,
     // UX knowledge base (media-store backed): status resolves the active KB
     // source; push uploads a local KB folder to the store (content-hash sync).
     uxKbStatus: () => resolveUxKbDir(RUNTIME_DATA_DIR),

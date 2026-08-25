@@ -381,13 +381,75 @@ Khi `flows/_inputs.json` báo không có sơ đồ: bạn **vẽ MỘT sơ đồ
 - Tài liệu thuần định nghĩa dữ liệu, không mô tả thao tác nào → nói rõ là không
   tìm thấy luồng trong `ux-review.json` (summary) và không nặn ra sơ đồ ba node.
 
+## Chế độ RECOVERY (daemon yêu cầu tìm lại màn hình)
+
+Chỉ vào chế độ này khi prompt của daemon ghi rõ **RECOVERY**. Scanner tất định
+đã không nhận ra màn hình vì tài liệu có thể dùng heading, bảng, chữ đậm hoặc
+cách trình bày chưa được hỗ trợ. Đây là lượt thu thập bằng chứng, không phải
+lượt đánh giá hay sửa luồng.
+
+- Đọc toàn bộ các trang Markdown mà daemon chỉ định và đối chiếu với
+  `flows/_inputs.json`, `flows/<FLOW-ID>/cells.json` hoặc `as-is.mmd` hiện có.
+- Khi prompt nói các flow có thật nhưng thiếu screen: chỉ ghi đúng **một file**
+  `flows/_screen-recovery.json`; không ghi hay sửa `screens.json`,
+  `ux-review.json`, `patch.json`, `as-is.*`, `proposed.*`, `cells.json`,
+  `flowchart.json`, `_inputs.json` hoặc `index.json`.
+- Ngoại lệ **no-topology recovery**: nếu prompt nói finalize tạo `0 flow`,
+  không có flow/cell thật để `_screen-recovery.json` tham chiếu. Khi đó quay
+  về đúng contract **text-only** ngay trên: tạo `flows/<FLOW-ID>/as-is.mmd`,
+  `screens.json`, `ux-review.json` từ bằng chứng tài liệu; không tạo
+  `_screen-recovery.json`. Không đủ bằng chứng thì không ghi artifact nào.
+- Mỗi candidate phải chỉ tới source và flow có thật, chỉ dùng cell của sơ đồ
+  **as-is**. Cấm dùng node chỉ tồn tại trong đề xuất (`od-*`, `OD_*`).
+- Không bịa màn từ bước start/end, backend, API, Billing, SDK hoặc NCC. Nếu
+  không có bằng chứng UI kiểm chứng được, trả `candidates: []`; đây là kết quả
+  hợp lệ và an toàn.
+
+Schema v1:
+
+```json
+{
+  "schema_version": 1,
+  "candidates": [
+    {
+      "flowId": "FLOW-mua-sim-du-lich",
+      "name": "Thông tin thanh toán",
+      "source": "docs-feature/sim/2.1-PRD-Mua-SIM.md",
+      "cells": ["pay", "confirm"],
+      "confidence": 0.92,
+      "reason": "Heading và hai node hiện trạng cùng mô tả thao tác trên màn thanh toán.",
+      "anchorText": "## SCR-005 — Thông tin thanh toán",
+      "diagramEvidence": [
+        { "cellId": "pay", "label": "Màn Thông tin thanh toán" }
+      ]
+    }
+  ]
+}
+```
+
+Quy tắc evidence:
+
+- Candidate bắt buộc có ít nhất một trong `anchorText` hoặc
+  `diagramEvidence`; `cells` là danh sách cell as-is cần gắn cùng màn.
+- `anchorText` phải là **nguyên văn đúng một dòng, xuất hiện đúng một lần và
+  nằm ngoài code fence** trong file `source`. Không rút gọn, sửa chính tả hay
+  tự dựng heading.
+- Mỗi `{cellId,label}` phải khớp nguyên văn một cell có thật trong diagram
+  as-is; `cellId` đó cũng phải có trong `cells`.
+- `confidence` là số từ `0` đến `1`; `reason` giải thích ngắn vì sao evidence
+  đó chứng minh đây là màn hình, không dùng reason thay evidence.
+- Nhiều cell cùng diễn ra trên một màn phải nằm trong **một candidate**. Không
+  tạo nhiều tên/mã màn cho cùng một anchor chỉ để gắn từng cell.
+
 ## Hard rules
 
-- **Chỉ ghi vào `flows/<FLOW-ID>/`** (`ux-review.json`, `patch.json` hoặc
-  `proposed.mmd`, `screens.json`; text-only thêm `as-is.mmd`). Không ghi
-  `flowchart.json`, `docs/`, `docs-feature/`, `review/`. Không sửa `as-is.*`
-  daemon đã tạo, `cells.json`, `_inputs.json`. Không tự tạo `proposed.drawio`
-  hay `index.json` — daemon làm sau khi bạn xong.
+- Ngoài RECOVERY, **chỉ ghi vào `flows/<FLOW-ID>/`** (`ux-review.json`,
+  `patch.json` hoặc `proposed.mmd`, `screens.json`; text-only thêm
+  `as-is.mmd`). RECOVERY chỉ ghi `flows/_screen-recovery.json`, trừ ngoại lệ
+  no-topology đã nêu ở mục RECOVERY.
+  Không ghi `flowchart.json`, `docs/`, `docs-feature/`, `review/`. Không sửa
+  `as-is.*` daemon đã tạo, `cells.json`, `_inputs.json`. Không tự tạo
+  `proposed.drawio` hay `index.json` — daemon làm sau khi bạn xong.
 - Screen-flow dưới `comp/screen-flows/` là artifact do daemon của bước
   `dr-comp` dựng từ kết quả đã xác thực. Không tự tạo, sửa hoặc chép các file
   trong thư mục đó ở bước này.

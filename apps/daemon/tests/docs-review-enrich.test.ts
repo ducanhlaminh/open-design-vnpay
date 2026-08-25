@@ -18,6 +18,7 @@ import {
   findToolOutputNoise,
   truncateAtWordBoundary,
   shortComponentDesc,
+  inferredScreenReviewFinding,
 } from '../src/docs-review-enrich.js';
 import { splitSections, validateChanges } from '../src/docs-review.js';
 import { SCREEN_COMPONENTS_SCHEMA_VERSION, type ScreenComponentsDoc, type RoleMapDoc } from '../src/screen-components.js';
@@ -646,6 +647,55 @@ test('buildEnrichKickoff: pageDiagramChanged → nhắc mọi section của tran
   const text = buildEnrichKickoff({ pageDiagramChanged: [{ flowId: 'FLOW-3-1-luong-so-do' }] });
   assert.ok(text.includes('flows/FLOW-3-1-luong-so-do/proposed.mmd'));
   assert.ok(text.includes("kind flow, rule_id flows/FLOW-3-1-luong-so-do/ux-review.json"));
+});
+
+test('WP32c: inferred screen luôn là gap tài liệu; anchor thật được giữ nhưng diagram-only không tạo anchor/change giả', () => {
+  const withAnchor = inferredScreenReviewFinding({
+    key: 'prd__AUTO-a1',
+    name: 'Xác nhận',
+    provenance: 'inferred-flow',
+    evidence: { source: 'docs/prd.md', anchorText: 'Người dùng xác nhận giao dịch.' },
+  });
+  assert.deepEqual(withAnchor, {
+    key: 'prd__AUTO-a1',
+    name: 'Xác nhận',
+    kind: 'gap',
+    ruleId: 'comp/prd__AUTO-a1.screen.json',
+    message: 'Màn “Xác nhận” được suy luận từ luồng; tài liệu chưa mô tả màn này một cách tường minh.',
+    anchorText: 'Người dùng xác nhận giao dịch.',
+  });
+
+  const diagramOnly = inferredScreenReviewFinding({
+    key: 'prd__AUTO-a2',
+    name: 'Kết quả',
+    provenance: 'inferred-flow',
+    evidence: {
+      source: 'docs/prd.md',
+      diagramEvidence: [{ cellId: 'result', label: 'Kết quả' }],
+    },
+  });
+  assert.ok(diagramOnly);
+  assert.equal(diagramOnly.kind, 'gap');
+  assert.equal('anchorText' in diagramOnly, false);
+  assert.equal('change' in diagramOnly, false);
+
+  assert.equal(inferredScreenReviewFinding({ key: 'prd__SCR-1', name: 'Explicit', provenance: 'document' }), null);
+  assert.equal(inferredScreenReviewFinding({ key: 'prd__SCR-2', name: 'Legacy' }), null);
+});
+
+test('WP32c: kickoff không false-green inferred screen và cấm phát minh anchor/change khi chỉ có diagram evidence', () => {
+  const text = buildEnrichKickoff({
+    unplacedScreens: [
+      {
+        key: 'prd__AUTO-a2',
+        name: 'Kết quả',
+        provenance: 'inferred-flow',
+        evidence: { source: 'docs/prd.md', diagramEvidence: [{ cellId: 'result', label: 'Kết quả' }] },
+      },
+    ],
+  });
+  assert.ok(text.includes('khoảng trống tài liệu'));
+  assert.ok(text.includes('KHÔNG tạo anchor/change'));
 });
 
 /* ── (7) insertCompositionTable / parseCompositionBlock / reconcileCompositionTable

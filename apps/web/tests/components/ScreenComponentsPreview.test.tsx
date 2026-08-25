@@ -323,6 +323,33 @@ describe('ScreenComponentsPreview', () => {
     await waitFor(() => expect(screen.getByTestId('element-list')).toBeTruthy());
     expect(screen.getByTestId('el-appbar').textContent).toContain('OK');
   });
+
+  it('WP32c: inferred-flow hiện badge “Suy luận từ luồng”; document/flow/vắng field giữ badge cũ', async () => {
+    seed();
+    FILES[`docs-review/comp/${K1}.screen.json`] = JSON.stringify({
+      ...DOC1,
+      provenance: 'inferred-flow',
+      confidence: 0.82,
+      evidence: { source: 'docs-feature/PRD-Mua-SIM.md', diagramEvidence: [{ cellId: 'confirm', label: 'Xác nhận' }] },
+    });
+    render(<ScreenComponentsPreview projectId="p1" file={file(`docs-review/comp/${K1}.screen.json`)} />);
+    await waitFor(() => expect(screen.getByTestId('screen-provenance-badge').textContent).toBe('Suy luận từ luồng'));
+    cleanup();
+
+    FILES[`docs-review/comp/${K1}.screen.json`] = JSON.stringify({ ...DOC1, provenance: 'document' });
+    render(<ScreenComponentsPreview projectId="p1" file={file(`docs-review/comp/${K1}.screen.json`)} />);
+    await waitFor(() => expect(screen.queryByTestId('screen-provenance-badge')).toBeNull());
+    cleanup();
+
+    FILES[`docs-review/comp/${K1}.screen.json`] = JSON.stringify({ ...DOC1, provenance: 'flow' });
+    render(<ScreenComponentsPreview projectId="p1" file={file(`docs-review/comp/${K1}.screen.json`)} />);
+    await waitFor(() => expect(screen.queryByTestId('screen-provenance-badge')).toBeNull());
+    cleanup();
+
+    FILES[`docs-review/comp/${K1}.screen.json`] = JSON.stringify(DOC1);
+    render(<ScreenComponentsPreview projectId="p1" file={file(`docs-review/comp/${K1}.screen.json`)} />);
+    await waitFor(() => expect(screen.queryByTestId('screen-provenance-badge')).toBeNull());
+  });
 });
 
 // WP25b (.tmp/pipeline/wp25-plan.md, Spec WP25b) — "Dựng trong Figma" per màn:

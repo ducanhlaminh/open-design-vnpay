@@ -1981,6 +1981,25 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
     }
   });
 
+  // Multi-turn recovery workspace: the user may chat as many turns as needed
+  // in the failed unit's existing conversation. This endpoint does not ask an
+  // agent again; it deterministically validates/merges what that conversation
+  // wrote and only unlocks the stage when coverage is complete.
+  app.post('/api/pipelines/:id/recovery/validate', async (req, res) => {
+    try {
+      const projectId = typeof req.body?.projectId === 'string' ? req.body.projectId : '';
+      if (!projectId) return res.status(400).json({ error: 'projectId is required' });
+      if (!getProject(db, projectId)) return res.status(404).json({ error: 'project not found' });
+      if (!getPipelineDef(req.params.id)) return res.status(404).json({ error: 'pipeline not found' });
+      const state = getProjectPipelineState(db, projectId)[req.params.id];
+      if (!state?.recovery) return res.status(409).json({ error: 'pipeline has no active recovery workspace' });
+      const result = await ctx.pipelines.validateRecovery(projectId, req.params.id);
+      return res.status(result.ok ? 200 : 422).json(result);
+    } catch (err) {
+      return res.status(500).json({ error: String((err as Error)?.message ?? err) });
+    }
+  });
+
   // ── BAS gateway proxy (pipeline-1 source picker) ───────────────────────────
   // Server-side reads from the BAS MCP gateway so the bearer token never reaches
   // the browser and there is no CORS. `ctx.pipelines.bas.*` resolves the endpoint

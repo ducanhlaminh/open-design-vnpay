@@ -249,6 +249,10 @@ export interface PipelineView {
    * the FE shows it as "Đã gửi báo cáo lỗi #id" so a designer can quote it.
    */
   errorReportId?: string;
+  /** Interactive, multi-turn recovery workspace for a partial/unsupported
+   * stage. Successful units remain on disk; each unresolved unit points to
+   * the conversation where the user can clarify the document with the agent. */
+  recovery?: PipelineRecoveryWorkspace;
 }
 
 export interface PipelinesResponse {
@@ -964,6 +968,23 @@ export interface PipelineRunState {
   /** Id of the error report sent to the developers for the last failed run
    *  (see PipelineErrorReport); cleared together with `error`. */
   errorReportId?: string;
+  recovery?: PipelineRecoveryWorkspace;
+}
+
+export interface PipelineRecoveryUnit {
+  /** Stable stage-local identity (flow id, screen key, or page/section key). */
+  id: string;
+  title: string;
+  conversationId: string;
+  errors: string[];
+}
+
+export interface PipelineRecoveryWorkspace {
+  schemaVersion: 1;
+  kind: 'flow' | 'screen' | 'section';
+  state: 'needs-assistance' | 'validating';
+  units: PipelineRecoveryUnit[];
+  updatedAt: number;
 }
 
 export interface PipelineSubConversation {

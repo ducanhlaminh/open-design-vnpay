@@ -71,6 +71,9 @@ export interface StageFailureContext {
   validation?: Array<{ item: string; code: string; detail: string }> | null;
   /** Directory whose file listing (names/sizes only) goes into the report. */
   outputsDir?: string | null;
+  /** Observation uploaded by screen-format recovery, linked into the error
+   *  report without embedding any document content here. */
+  screenFormatObservationId?: string | null;
 }
 
 const pendingContext = new Map<string, { at: number; ctx: StageFailureContext }>();
@@ -868,6 +871,7 @@ export function createErrorReporter(options: ErrorReporterOptions): ErrorReporte
       tasks: taskCounts(info.subConversations),
       validation: ctx?.validation && ctx.validation.length > 0 ? ctx.validation : null,
       outputsListing: outputsListing ? scrub(outputsListing) : null,
+      ...(ctx?.screenFormatObservationId ? { screenFormatObservationId: ctx.screenFormatObservationId } : {}),
     };
     const fingerprint = computeFingerprint(info.pipelineId, { validation: ctx?.validation ?? null, errorCode: ctx?.errorCode ?? null, error: errorText });
     return { agent, stage, env, fingerprint };

@@ -28,6 +28,7 @@ import { findEmbeddedMermaid, isMermaidFlowchart, looksLikeMermaid, replaceCreat
 // tái dùng parseMermaidEdgesLoose export ở file này) an toàn ở ESM vì cả hai
 // phía chỉ gọi hàm nhau BÊN TRONG thân hàm, không ở top-level module.
 import { ensureProposedMermaidHighlight } from './mermaid-highlight.js';
+import type { ScreenMetadata } from '../screen-recovery.js';
 
 export type FlowKind = 'drawio' | 'mermaid' | 'text';
 
@@ -77,7 +78,7 @@ export interface FlowIndexEntry {
   /** Trang gốc trong attachment draw.io nhiều trang. `index` là zero-based,
    * giống FlowInput.page. Optional để đọc được index sinh bởi bản cũ. */
   page?: { index: number; name: string; count: number };
-  screens: { key: string; name: string }[];
+  screens: Array<{ key: string; name: string } & Partial<ScreenMetadata>>;
   note?: string;
   verdict?: UxReview['verdict'];
   findings?: number;
@@ -505,6 +506,8 @@ interface ScreensFile {
    *  agent names the flow and points at the page it was distilled from. */
   title?: string;
   source?: string;
+  /** Optional recovery provenance keyed by canonical SCREEN-KEY. */
+  meta?: Record<string, ScreenMetadata>;
 }
 
 function normalizeReview(raw: unknown, flowId: string): UxReview | null {
@@ -554,14 +557,18 @@ function normalizeReview(raw: unknown, flowId: string): UxReview | null {
   };
 }
 
-function screensOf(doc: FlowchartDoc | null, names: Record<string, string>): { key: string; name: string }[] {
+function screensOf(
+  doc: FlowchartDoc | null,
+  names: Record<string, string>,
+  meta: Record<string, ScreenMetadata> = {},
+): Array<{ key: string; name: string } & Partial<ScreenMetadata>> {
   if (!doc) return [];
   const seen = new Set<string>();
-  const out: { key: string; name: string }[] = [];
+  const out: Array<{ key: string; name: string } & Partial<ScreenMetadata>> = [];
   for (const n of doc.nodes) {
     if (!n.screen || seen.has(n.screen)) continue;
     seen.add(n.screen);
-    out.push({ key: n.screen, name: names[n.screen] ?? n.screen });
+    out.push({ key: n.screen, name: names[n.screen] ?? n.screen, ...(meta[n.screen] ?? {}) });
   }
   return out;
 }
@@ -857,7 +864,7 @@ export async function finalizeFlowUx(cwd: string): Promise<FinalizeResult> {
     if (flowchart && flowchart.nodes.length) {
       await writeJson(path.join(flowsDir, `${input.id}.flowchart.json`), flowchart);
       entry.files!.flowchart = `flows/${input.id}.flowchart.json`;
-      entry.screens = screensOf(flowchart, names);
+      entry.screens = screensOf(flowchart, names, screensFile.meta ?? {});
     }
     // Mapping màn bị bỏ (id lạ / trỏ vào cạnh mà hai đầu không dùng được /
     // chỉ có ở bản đề xuất patch.json chưa vào flowchart) — mapping trực tiếp
@@ -912,7 +919,7 @@ export async function finalizeFlowUx(cwd: string): Promise<FinalizeResult> {
       title: typeof doc.title === 'string' ? doc.title : id,
       source: typeof doc.source === 'string' ? doc.source : '',
       kind: 'text',
-      screens: screensOf(doc, screensFile.names ?? {}),
+      screens: screensOf(doc, screensFile.names ?? {}, screensFile.meta ?? {}),
       files: { flowchart: `flows/${f}` },
     };
     const reviewRaw = await readJson<unknown>(path.join(dir, 'ux-review.json'));

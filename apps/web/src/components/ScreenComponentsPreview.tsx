@@ -32,6 +32,12 @@ import styles from './ScreenComponentsPreview.module.css';
 export type ScreenPlatform = 'mobile' | 'web';
 export type ScreenConfidence = 'high' | 'medium' | 'low';
 export type ScreenProvenance = 'text' | 'flow' | 'table' | 'ds';
+export type ScreenOriginProvenance = 'document' | 'flow' | 'inferred-flow';
+export interface ScreenOriginEvidence {
+  source: string;
+  anchorText?: string;
+  diagramEvidence?: Array<{ cellId: string; label: string }>;
+}
 
 // WP24b (.tmp/pipeline/wp24b.yaml): screen.json 2.1 thêm elements[].content và
 // layoutSource, do daemon ghi (WP24a chạy song song). Khai LOCAL ở đây — chờ
@@ -61,6 +67,9 @@ export interface ScreenDocView {
   warnings: string[];
   /** Nguồn của bố cục & nội dung (WP24, doc 2.1). Vắng ở doc 2.0 cũ. */
   layoutSource?: 'doc-image' | 'agent';
+  provenance?: ScreenOriginProvenance;
+  confidence?: number;
+  evidence?: ScreenOriginEvidence;
 }
 
 const LAYOUT_SOURCE_BADGE: Record<'doc-image' | 'agent', string> = {
@@ -111,6 +120,7 @@ interface FigmaRef {
 const CONFIDENCE_LABEL: Record<ScreenConfidence, string> = { high: 'Tin cậy cao', medium: 'Tin cậy vừa', low: 'Tin cậy thấp' };
 const PROVENANCE_LABEL: Record<ScreenProvenance, string> = { text: 'Tài liệu', flow: 'Luồng', table: 'Bảng cấu trúc', ds: 'Design System' };
 const PLATFORM_LABEL: Record<ScreenPlatform, string> = { mobile: 'Mobile', web: 'Web' };
+const SCREEN_ORIGIN_PROVENANCES = new Set<ScreenOriginProvenance>(['document', 'flow', 'inferred-flow']);
 
 const SCREEN_FILE_RE = /^(.*?)comp\/([^/]+)\.screen\.json$/i;
 const INDEX_FILE_RE = /^(.*?)comp\/index\.json$/i;
@@ -198,6 +208,23 @@ export function parseScreenDoc(raw: string, fallbackKey: string): ScreenDocView 
   }
   const platform = str(o.platform) === 'web' ? 'web' : 'mobile';
   const layoutSource = str(o.layoutSource);
+  const originProvenance = str(o.provenance) as ScreenOriginProvenance;
+  let evidence: ScreenOriginEvidence | undefined;
+  if (o.evidence && typeof o.evidence === 'object' && !Array.isArray(o.evidence)) {
+    const e = o.evidence as Record<string, unknown>;
+    const source = str(e.source);
+    if (source) {
+      evidence = { source };
+      if (str(e.anchorText)) evidence.anchorText = str(e.anchorText);
+      if (Array.isArray(e.diagramEvidence)) {
+        const diagramEvidence = e.diagramEvidence
+          .filter((item): item is Record<string, unknown> => !!item && typeof item === 'object' && !Array.isArray(item))
+          .map((item) => ({ cellId: str(item.cellId), label: str(item.label) }))
+          .filter((item) => item.cellId && item.label);
+        if (diagramEvidence.length) evidence.diagramEvidence = diagramEvidence;
+      }
+    }
+  }
   return {
     key: str(o.key) || fallbackKey,
     name: str(o.name),
@@ -209,6 +236,11 @@ export function parseScreenDoc(raw: string, fallbackKey: string): ScreenDocView 
     notes: strList(o.notes),
     warnings: strList(o.warnings),
     ...(layoutSource === 'doc-image' || layoutSource === 'agent' ? { layoutSource } : {}),
+    ...(SCREEN_ORIGIN_PROVENANCES.has(originProvenance) ? { provenance: originProvenance } : {}),
+    ...(typeof o.confidence === 'number' && Number.isFinite(o.confidence) && o.confidence >= 0 && o.confidence <= 1
+      ? { confidence: o.confidence }
+      : {}),
+    ...(evidence ? { evidence } : {}),
   };
 }
 
@@ -789,6 +821,11 @@ export function ScreenComponentsPreview({ projectId, file }: { projectId: string
             {doc?.source ? (
               <span>
                 Nguồn: <code>{doc.source}</code>
+              </span>
+            ) : null}
+            {doc?.provenance === 'inferred-flow' ? (
+              <span className={`${styles.layoutSource} ${styles.layoutSourceAgent}`} data-testid="screen-provenance-badge">
+                Suy luận từ luồng
               </span>
             ) : null}
             {doc?.flowId ? (

@@ -163,6 +163,118 @@ export async function readDocsReviewMetricsPages(workflowRoot: string): Promise<
   return { pages, digest: hash.digest('hex') };
 }
 
+type ReviewIndexPage = {
+  page?: unknown;
+  doc_path?: unknown;
+  review_path?: unknown;
+  status?: unknown;
+  sections_total?: unknown;
+  sections_failed?: unknown;
+};
+
+async function readJsonObject(absolute: string): Promise<Record<string, unknown> | null> {
+  try {
+    const parsed = JSON.parse(await fs.readFile(absolute, 'utf8')) as unknown;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
+  } catch {
+    return null;
+  }
+}
+
+async function readJsonValue(absolute: string): Promise<unknown> {
+  try {
+    return JSON.parse(await fs.readFile(absolute, 'utf8')) as unknown;
+  } catch {
+    return null;
+  }
+}
+
+/** Final workflow invariant: a receipt must never be published from a partial
+ * run. Earlier stages intentionally retain successful per-unit artifacts for
+ * inspection, so their directories can exist while one flow/screen/section
+ * failed. This gate checks the daemon-owned indexes instead of inferring
+ * completion from "some output exists". */
+export async function assertDocsReviewCoverageComplete(workflowRoot: string): Promise<void> {
+  const issues: string[] = [];
+
+  const flows = await readJsonValue(path.join(workflowRoot, 'flows', 'index.json'));
+  const flowEntries = Array.isArray(flows)
+    ? flows
+    : flows && typeof flows === 'object' && !Array.isArray(flows) && Array.isArray((flows as Record<string, unknown>).flows)
+      ? (flows as Record<string, unknown>).flows as unknown[]
+      : null;
+  if (!flowEntries || flowEntries.length === 0) {
+    issues.push('dr-flow chưa có flow hợp lệ');
+  } else {
+    const uncovered = flowEntries
+      .flatMap((entry) => {
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return ['?'];
+        const record = entry as Record<string, unknown>;
+        return !Array.isArray(record.screens) || record.screens.length === 0
+          ? [typeof record.id === 'string' ? record.id : '?']
+          : [];
+      });
+    if (uncovered.length > 0) issues.push(`dr-flow còn flow chưa có màn: ${uncovered.join(', ')}`);
+  }
+
+  const comp = await readJsonObject(path.join(workflowRoot, 'comp', 'index.json'));
+  const completedScreens = Array.isArray(comp?.screens) ? comp.screens : null;
+  const failedScreens = Array.isArray(comp?.failed) ? comp.failed : [];
+  if (!completedScreens || completedScreens.length === 0) issues.push('dr-comp chưa có màn hình hoàn tất');
+  if (failedScreens.length > 0) issues.push(`dr-comp còn ${failedScreens.length} màn hình lỗi`);
+
+  const inputs = await readJsonObject(path.join(workflowRoot, 'comp', '_inputs.json'));
+  const expectedScreens = Array.isArray(inputs?.screens) ? inputs.screens : [];
+  if (!inputs || !Array.isArray(inputs.screens) || inputs.screens.length === 0) {
+    issues.push('dr-comp thiếu manifest màn hình đầu vào');
+  }
+  if (expectedScreens.length > 0 && completedScreens) {
+    const completedKeys = new Set(completedScreens.flatMap((screen) =>
+      screen && typeof screen === 'object' && !Array.isArray(screen) && typeof (screen as Record<string, unknown>).key === 'string'
+        ? [(screen as Record<string, unknown>).key as string]
+        : [],
+    ));
+    const missingKeys = expectedScreens.flatMap((screen) =>
+      screen && typeof screen === 'object' && !Array.isArray(screen) && typeof (screen as Record<string, unknown>).key === 'string'
+        && !completedKeys.has((screen as Record<string, unknown>).key as string)
+        ? [(screen as Record<string, unknown>).key as string]
+        : [],
+    );
+    if (missingKeys.length > 0) issues.push(`dr-comp thiếu output cho màn: ${missingKeys.join(', ')}`);
+  }
+
+  const review = await readJsonObject(path.join(workflowRoot, 'review', 'index.json'));
+  const reviewPages = Array.isArray(review?.pages) ? review.pages as ReviewIndexPage[] : null;
+  if (!reviewPages || reviewPages.length === 0) {
+    issues.push('dr-review chưa có index trang hoàn tất');
+  } else {
+    const failedPages = reviewPages.filter((page) => page?.status !== 'succeeded');
+    const partialPages = reviewPages.filter((page) =>
+      typeof page?.sections_failed === 'number' && page.sections_failed > 0,
+    );
+    const missingOutputs: string[] = [];
+    for (const page of reviewPages) {
+      if (typeof page?.review_path !== 'string' || !page.review_path.endsWith('.md')) {
+        missingOutputs.push(typeof page?.doc_path === 'string' ? page.doc_path : '?');
+        continue;
+      }
+      const changesRel = page.review_path.replace(/\.md$/i, '.changes.json');
+      try {
+        await fs.access(path.join(workflowRoot, changesRel));
+      } catch {
+        missingOutputs.push(page.review_path);
+      }
+    }
+    if (failedPages.length > 0) issues.push(`dr-review còn ${failedPages.length} trang lỗi`);
+    if (partialPages.length > 0) issues.push(`dr-review còn ${partialPages.length} trang có section lỗi`);
+    if (missingOutputs.length > 0) issues.push(`dr-review thiếu output trang: ${missingOutputs.join(', ')}`);
+  }
+
+  if (issues.length > 0) {
+    throw new Error(`Chưa thể xác nhận Review tài liệu vì coverage chưa đầy đủ: ${issues.join('; ')}.`);
+  }
+}
+
 function cleanSegment(value: string): string {
   const clean = value.trim().replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
   if (!clean || clean === '.' || clean === '..') throw new Error('Identifier không hợp lệ');
@@ -180,6 +292,7 @@ export async function confirmDocsReview(input: {
   now?: number;
   client?: UploadClient;
 }): Promise<ConfirmDocsReviewResponse> {
+  await assertDocsReviewCoverageComplete(input.workflowRoot);
   const { pages, digest } = await readDocsReviewMetricsPages(input.workflowRoot);
   const metrics = aggregateDocsReviewMetrics(pages);
   const confirmationId = cleanSegment(input.confirmationId || digest.slice(0, 24));

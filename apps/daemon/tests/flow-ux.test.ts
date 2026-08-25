@@ -172,7 +172,21 @@ test('prepare → (agent) → finalize: drawio + mermaid nhúng; proposed.drawio
       path.join(fdir, 'ux-review.json'),
       JSON.stringify({ summary: 'thiếu phản hồi', findings: [{ severity: 'major', title: 'Timeout mù', reason: 'x', cells: { asIs: ['timeout'], proposed: ['od-n1'] }, change: 'added' }, { severity: 'lạ', title: 'nhỏ', reason: 'y' }] }),
     );
-    fs.writeFileSync(path.join(fdir, 'screens.json'), JSON.stringify({ cells: { s1: 'doc2__SCR-001' }, names: { 'doc2__SCR-001': 'Trang chủ' }, note: 'ghi chú' }));
+    fs.writeFileSync(
+      path.join(fdir, 'screens.json'),
+      JSON.stringify({
+        cells: { s1: 'doc2__SCR-001' },
+        names: { 'doc2__SCR-001': 'Trang chủ' },
+        note: 'ghi chú',
+        meta: {
+          'doc2__SCR-001': {
+            provenance: 'inferred-flow',
+            confidence: 0.82,
+            evidence: { source: 'docs-feature/sim/doc2.md', diagramEvidence: [{ cellId: 's1', label: 'Trang chủ' }] },
+          },
+        },
+      }),
+    );
     const mdir = path.join(cwd, 'flows', 'FLOW-luong-nguoi-dung');
     fs.writeFileSync(path.join(mdir, 'ux-review.json'), JSON.stringify({ verdict: 'good', summary: 'ok', findings: [] }));
     // Một luồng text-only agent tự viết.
@@ -190,7 +204,13 @@ test('prepare → (agent) → finalize: drawio + mermaid nhúng; proposed.drawio
     assert.equal(d.verdict, 'needs-improvement'); // suy từ severity khi agent quên verdict
     assert.equal(d.findings, 2);
     assert.equal(d.note, 'ghi chú');
-    assert.deepEqual(d.screens, [{ key: 'doc2__SCR-001', name: 'Trang chủ' }]);
+    assert.deepEqual(d.screens, [{
+      key: 'doc2__SCR-001',
+      name: 'Trang chủ',
+      provenance: 'inferred-flow',
+      confidence: 0.82,
+      evidence: { source: 'docs-feature/sim/doc2.md', diagramEvidence: [{ cellId: 's1', label: 'Trang chủ' }] },
+    }]);
     assert.equal(d.patchSkipped?.length, 1);
     const proposed = fs.readFileSync(path.join(fdir, 'proposed.drawio'), 'utf8');
     assert.equal((proposed.match(/<diagram /g) ?? []).length, 2);

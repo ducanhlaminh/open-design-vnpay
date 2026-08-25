@@ -32,7 +32,13 @@
  */
 
 import type { DocChange, DocChangeKind, DocChangeSeverity, DocSection } from './docs-review.js';
-import { splitScreenKey, type RoleMapDoc, type ScreenComponentsDoc } from './screen-components.js';
+import {
+  splitScreenKey,
+  type RoleMapDoc,
+  type ScreenComponentsDoc,
+  type ScreenOriginEvidence,
+  type ScreenOriginProvenance,
+} from './screen-components.js';
 
 /* ── 1. Sơ đồ mermaid ────────────────────────────────────────────────────── */
 
@@ -1211,6 +1217,46 @@ export function findToolOutputNoise(text: string): string[] {
 
 /* ── 5. Kickoff bổ sung cho section agent ────────────────────────────────── */
 
+export interface ReviewScreenReference {
+  key: string;
+  name: string;
+  provenance?: ScreenOriginProvenance;
+  confidence?: number;
+  evidence?: ScreenOriginEvidence;
+}
+
+/** WP32: inferred screen không bao giờ được dùng làm bằng chứng rằng tài liệu
+ * đã mô tả đủ màn. Trả finding gap tất định để caller đưa vào review. Chỉ
+ * chuyển tiếp anchor nguyên văn đã được recovery validator xác nhận; evidence
+ * chỉ từ diagram tuyệt đối không tạo anchor hay DocChange giả. */
+export function inferredScreenReviewFinding(screen: ReviewScreenReference): {
+  key: string;
+  name: string;
+  kind: 'gap';
+  ruleId: string;
+  message: string;
+  anchorText?: string;
+} | null {
+  if (screen.provenance !== 'inferred-flow') return null;
+  const finding: {
+    key: string;
+    name: string;
+    kind: 'gap';
+    ruleId: string;
+    message: string;
+    anchorText?: string;
+  } = {
+    key: screen.key,
+    name: screen.name,
+    kind: 'gap',
+    ruleId: `comp/${screen.key}.screen.json`,
+    message: `Màn “${screen.name}” được suy luận từ luồng; tài liệu chưa mô tả màn này một cách tường minh.`,
+  };
+  const anchorText = screen.evidence?.anchorText?.trim();
+  if (anchorText) finding.anchorText = anchorText;
+  return finding;
+}
+
 /** Soạn đoạn kickoff (tiếng Việt) NỐI THÊM vào kickoff gốc của một section —
  *  server.ts gọi hàm này với đúng phần dữ liệu liên quan tới section đó (một
  *  section không dính gì tới flows/comp thì mọi trường đều `undefined` và hàm
@@ -1229,8 +1275,8 @@ export function findToolOutputNoise(text: string): string[] {
 export function buildEnrichKickoff(input: {
   diagramInThisSlice?: { flowId: string };
   pageDiagramChanged?: Array<{ flowId: string }>;
-  screensInThisSlice?: Array<{ key: string; name: string }>;
-  unplacedScreens?: string[];
+  screensInThisSlice?: ReviewScreenReference[];
+  unplacedScreens?: Array<string | ReviewScreenReference>;
 }): string {
   const parts: string[] = [];
 
@@ -1249,21 +1295,41 @@ export function buildEnrichKickoff(input: {
     );
   }
 
-  for (const { key, name } of input.screensInThisSlice ?? []) {
+  for (const screen of input.screensInThisSlice ?? []) {
+    const { key, name } = screen;
     parts.push(
       `Lát của bạn ĐÃ CÓ bảng «Cấu thành màn hình (Design System) — ${name}» (nguồn comp/${key}.screen.json) do daemon chèn sẵn ngay sau mockup của màn. ` +
         `Với bảng này bạn CHỈ được sửa ô của hai cột 'Vai trò / dùng để' và 'Ghi chú' — đối chiếu bảng field ngay dưới rồi viết lại ngắn gọn bằng tiếng Việt, Edit từng hàng một; ` +
         `KHÔNG thêm/xoá hàng, KHÔNG sửa các cột khác, KHÔNG sửa dòng tiêu đề đậm và dòng caption \`*Nguồn: comp/…*\`, KHÔNG dùng ký tự \`|\` trong ô (dùng '/' hoặc ';'). ` +
         `KHÔNG khai change cho việc sửa ô của bảng này — daemon tự đối soát và ghi nhận; nếu bảng và bảng field mâu thuẫn thì ghi note kind component, rule_id comp/${key}.screen.json.`,
     );
+    if (screen.provenance === 'inferred-flow') {
+      const hasAnchor = !!screen.evidence?.anchorText?.trim();
+      parts.push(
+        `Màn “${name}” là Suy luận từ luồng, phải ghi finding/note gap rằng đây là khoảng trống tài liệu; ` +
+          (hasAnchor
+            ? 'chỉ dùng đúng anchorText nguyên văn trong evidence, không coi anchor đó là mô tả màn explicit.'
+            : 'evidence chỉ đến từ diagram: KHÔNG tạo anchor/change vào tài liệu, KHÔNG phát minh câu mô tả màn.'),
+      );
+    }
   }
 
   const unplaced = input.unplacedScreens ?? [];
   if (unplaced.length > 0) {
+    const labels = unplaced.map((screen) => (typeof screen === 'string' ? screen : screen.key));
     parts.push(
-      `Các màn sau có kết quả comp nhưng không định vị được mục trong tài liệu: ${unplaced.join(', ')} — ` +
+      `Các màn sau có kết quả comp nhưng không định vị được mục trong tài liệu: ${labels.join(', ')} — ` +
         'nếu section của bạn mô tả màn đó thì ghi note gap (không chèn bảng).',
     );
+    for (const screen of unplaced) {
+      if (typeof screen === 'string' || screen.provenance !== 'inferred-flow') continue;
+      parts.push(
+        `Màn “${screen.name}” là Suy luận từ luồng và vẫn phải có finding/note khoảng trống tài liệu; ` +
+          (screen.evidence?.anchorText?.trim()
+            ? 'chỉ được neo finding vào đúng anchorText nguyên văn trong evidence.'
+            : 'evidence chỉ đến từ diagram: KHÔNG tạo anchor/change vào tài liệu, KHÔNG phát minh câu neo.'),
+      );
+    }
   }
 
   if (parts.length > 0) {

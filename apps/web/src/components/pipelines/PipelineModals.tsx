@@ -2798,6 +2798,8 @@ export function PipelineStatusModal({
   const [run, setRun] = useState<ChatRunStatusResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [canceling, setCanceling] = useState(false);
+  const [validatingRecovery, setValidatingRecovery] = useState(false);
+  const [recoveryError, setRecoveryError] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const [taskTab, setTaskTab] = useState<'all' | 'running' | 'queued' | 'succeeded' | 'failed'>('all');
   // A status tab that has emptied out (e.g. all "running" finished) falls back
@@ -2861,6 +2863,29 @@ export function PipelineStatusModal({
     }
   };
 
+  const validateRecovery = async () => {
+    if (!pipeline.recovery || validatingRecovery) return;
+    setValidatingRecovery(true);
+    setRecoveryError(null);
+    try {
+      const response = await fetch(`/api/pipelines/${encodeURIComponent(pipeline.id)}/recovery/validate`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ projectId }),
+      });
+      const body = await response.json().catch(() => ({})) as { error?: string; issues?: string[] };
+      if (!response.ok) {
+        throw new Error(body.issues?.join('\n') || body.error || `status ${response.status}`);
+      }
+      onRefresh();
+    } catch (err) {
+      setRecoveryError(err instanceof Error ? err.message : String(err));
+      onRefresh();
+    } finally {
+      setValidatingRecovery(false);
+    }
+  };
+
   return (
     <PlModal
       title={`Status · ${pipeline.name}`}
@@ -2886,12 +2911,56 @@ export function PipelineStatusModal({
               <span>{canceling ? 'Canceling…' : 'Cancel run'}</span>
             </button>
           ) : null}
+          {pipeline.recovery ? (
+            <button
+              type="button"
+              className="pl-btn pl-btn--primary"
+              data-testid="pipeline-recovery-validate"
+              onClick={() => void validateRecovery()}
+              disabled={validatingRecovery}
+            >
+              <Icon name={validatingRecovery ? 'spinner' : 'check'} size={14} />
+              <span>{validatingRecovery ? 'Đang kiểm tra…' : 'Kiểm tra & tiếp tục'}</span>
+            </button>
+          ) : null}
           <button type="button" className="pl-btn pl-btn--primary" onClick={onClose}>
             Close
           </button>
         </>
       }
     >
+      {pipeline.recovery ? (
+        <div className="pl-status-detail" data-testid="pipeline-recovery-workspace">
+          <div className="pl-status-detail__badge pl-status--failed">
+            <Icon name="comment" size={14} />
+            <span>Cần hỗ trợ · {pipeline.recovery.units.length} phần chưa xong</span>
+          </div>
+          <p className="pl-status-detail__hint">
+            Mở hội thoại của từng phần để trao đổi nhiều lượt với agent. Khi đã bổ sung đủ ngữ cảnh,
+            quay lại đây và bấm “Kiểm tra & tiếp tục”. Kết quả đã đạt vẫn được giữ nguyên.
+          </p>
+          <ul className="pl-fanout-list">
+            {pipeline.recovery.units.map((unit) => (
+              <li key={`${unit.id}:${unit.conversationId}`}>
+                <button
+                  type="button"
+                  className="pl-fanout-item pl-fanout-item--failed"
+                  onClick={() => onOpenTask?.(unit.conversationId)}
+                >
+                  <span className="pl-fanout-item__icon pl-fanout-item__icon--failed" aria-hidden="true">
+                    <Icon name="comment" size={13} />
+                  </span>
+                  <span className="pl-fanout-item__name">{unit.title}</span>
+                  <span className="pl-fanout-item__status">Mở recovery chat</span>
+                  <Icon name="chevron-right" size={13} />
+                </button>
+                {unit.errors[0] ? <p className="pl-status-detail__hint">{unit.errors[0]}</p> : null}
+              </li>
+            ))}
+          </ul>
+          {recoveryError ? <pre className="pl-status-detail__error">{recoveryError}</pre> : null}
+        </div>
+      ) : null}
       {tasks.length > 0 ? (
         <div className="pl-status-detail">
           <div className="pl-fanout-summary">

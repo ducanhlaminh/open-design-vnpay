@@ -53,6 +53,15 @@ export interface ScreenNav {
   condition?: string;
 }
 
+/** WP32: nguồn canonical của một màn ở tầng flow/recovery. Field optional ở
+ * mọi reader để artifact cũ tiếp tục chạy như trước. */
+export type ScreenOriginProvenance = 'document' | 'flow' | 'inferred-flow';
+export interface ScreenOriginEvidence {
+  source: string;
+  anchorText?: string;
+  diagramEvidence?: Array<{ cellId: string; label: string }>;
+}
+
 export interface ScreenInput {
   key: string;
   name: string;
@@ -92,6 +101,10 @@ export interface ScreenInput {
    *  ở hai module song song (WP12/WP13a) vì file này đang bị WP11 sửa cùng
    *  lúc. Cho agent/người đọc biết vì sao `steps`/`navOut`/`navIn` rỗng. */
   origin?: 'flow' | 'doc' | 'agent' | 'user';
+  /** WP32: provenance/evidence canonical từ flows/index.json[].screens[]. */
+  provenance?: ScreenOriginProvenance;
+  confidence?: number;
+  evidence?: ScreenOriginEvidence;
 }
 
 export interface ScreenComponentsInputs {
@@ -165,6 +178,10 @@ export interface ScreenComponentsDoc {
    *  (server.ts, chỗ ghi đè key/name/flowId/source) — nó tự biết đã đưa ảnh
    *  vào kickoff hay chưa, không hỏi agent để tránh ảo giác. */
   layoutSource?: 'doc-image' | 'agent';
+  /** WP32: daemon truyền nguyên metadata của ScreenInput vào manifest. */
+  provenance?: ScreenOriginProvenance;
+  confidence?: number;
+  evidence?: ScreenOriginEvidence;
 }
 
 // ── Prepare ────────────────────────────────────────────────────────────────
@@ -838,6 +855,7 @@ export async function prepareScreenComponentInputs(
         .filter((f) => (f.cells?.asIs ?? []).some((c) => cellScreen.get(c) === s.key))
         .map((f) => ({ id: f.id, severity: f.severity, title: f.title, ...(f.recommendation ? { recommendation: f.recommendation } : {}) }));
       const platformHint: 'mobile' | 'web' = md && MOBILE_HINT_RE.test(md) ? 'mobile' : 'web';
+      const originMetadata = parseScreenOriginMetadata(s as unknown as Record<string, unknown>);
       const input: ScreenInput = {
         key: s.key,
         name: s.name,
@@ -851,6 +869,7 @@ export async function prepareScreenComponentInputs(
         findings,
         platformHint,
         origin: 'flow',
+        ...originMetadata,
       };
       if (section) {
         input.section = { heading: section.heading, startLine: section.startLine, endLine: section.endLine, excerpt: section.excerpt };
@@ -961,6 +980,37 @@ const CONTENT_KEYS = new Set(['text', 'secondary', 'value', 'badge', 'items']);
 const CONTENT_STR_MAX = 160;
 const CONTENT_ITEMS_MAX = 12;
 const LAYOUT_SOURCES = new Set(['doc-image', 'agent']);
+const SCREEN_ORIGIN_PROVENANCES = new Set<ScreenOriginProvenance>(['document', 'flow', 'inferred-flow']);
+
+function parseScreenOriginMetadata(raw: Record<string, unknown>): {
+  provenance?: ScreenOriginProvenance;
+  confidence?: number;
+  evidence?: ScreenOriginEvidence;
+} {
+  const out: { provenance?: ScreenOriginProvenance; confidence?: number; evidence?: ScreenOriginEvidence } = {};
+  const provenance = str(raw.provenance) as ScreenOriginProvenance;
+  if (SCREEN_ORIGIN_PROVENANCES.has(provenance)) out.provenance = provenance;
+  if (typeof raw.confidence === 'number' && Number.isFinite(raw.confidence) && raw.confidence >= 0 && raw.confidence <= 1) {
+    out.confidence = raw.confidence;
+  }
+  if (raw.evidence && typeof raw.evidence === 'object' && !Array.isArray(raw.evidence)) {
+    const e = raw.evidence as Record<string, unknown>;
+    const source = str(e.source);
+    if (source) {
+      const evidence: ScreenOriginEvidence = { source };
+      if (str(e.anchorText)) evidence.anchorText = str(e.anchorText);
+      if (Array.isArray(e.diagramEvidence)) {
+        const cells = e.diagramEvidence
+          .filter((item): item is Record<string, unknown> => !!item && typeof item === 'object' && !Array.isArray(item))
+          .map((item) => ({ cellId: str(item.cellId), label: str(item.label) }))
+          .filter((item) => item.cellId && item.label);
+        if (cells.length) evidence.diagramEvidence = cells;
+      }
+      out.evidence = evidence;
+    }
+  }
+  return out;
+}
 
 /** WP24a: lọc `elements[].content` theo đúng 5 khoá {text, secondary, value,
  *  badge, items} — khoá lạ hoặc kiểu sai bị BỎ (không hard-fail), kèm cảnh
@@ -1225,6 +1275,7 @@ export function parseScreenComponentsDoc(raw: string): { doc: ScreenComponentsDo
     source: str(o.source) || null,
     elements,
     nav,
+    ...parseScreenOriginMetadata(o),
   };
   if (Array.isArray(o.notes)) doc.notes = o.notes.filter((n): n is string => typeof n === 'string');
   // WP24a: layoutSource là siêu dữ liệu daemon TỰ GHI ĐÈ sau normalize
@@ -1425,6 +1476,9 @@ export interface ScreenComponentsIndexEntry {
   navOut: string[];
   /** WP24a: chép nguyên từ ScreenComponentsDoc.layoutSource — xem docblock ở đó. */
   layoutSource?: 'doc-image' | 'agent';
+  provenance?: ScreenOriginProvenance;
+  confidence?: number;
+  evidence?: ScreenOriginEvidence;
 }
 
 export interface ScreenComponentsIndex {
@@ -1458,6 +1512,9 @@ export function mergeScreenComponents(
     files: { screen: screenDocRel(d.key), wireframe: wireframeRel(d.key) },
     navOut: [...new Set(d.nav.map((n) => n.to))],
     ...(d.layoutSource ? { layoutSource: d.layoutSource } : {}),
+    ...(d.provenance ? { provenance: d.provenance } : {}),
+    ...(d.confidence !== undefined ? { confidence: d.confidence } : {}),
+    ...(d.evidence ? { evidence: d.evidence } : {}),
   }));
   const index: ScreenComponentsIndex = { schema_version: SCREEN_COMPONENTS_SCHEMA_VERSION, generatedAt, roleMap: ROLE_MAP_FILE, screens, failed };
 

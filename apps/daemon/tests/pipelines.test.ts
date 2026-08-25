@@ -254,6 +254,18 @@ test('listPipelineStatus surfaces error ONLY alongside a failed status — a sta
   assert.equal(viewOf(views, 'docs-map').error, undefined);
 });
 
+test('listPipelineStatus surfaces the active multi-turn recovery workspace', () => {
+  const recovery = {
+    schemaVersion: 1 as const,
+    kind: 'flow' as const,
+    state: 'needs-assistance' as const,
+    updatedAt: 1,
+    units: [{ id: 'login', title: 'Login', conversationId: 'c1', errors: ['missing'] }],
+  };
+  const view = viewOf(listPipelineStatus({ 'dr-flow': { status: 'failed', recovery } }), 'dr-flow');
+  assert.deepEqual(view.recovery, recovery);
+});
+
 test('deriveStateFromKgsFiles marks a stage succeeded when it has ≥1 KGS file', () => {
   const state = deriveStateFromKgsFiles([
     { stage: 'docs', path: 'docs-to-ui/docs/jira/A.md', status: 'ACTIVE' },

@@ -3,13 +3,33 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs/promises';
-import { aggregateDocsReviewMetrics, confirmDocsReview, readDocsReviewMetricsPages } from '../src/docs-review-feedback.js';
+import { aggregateDocsReviewMetrics, assertDocsReviewCoverageComplete, confirmDocsReview, readDocsReviewMetricsPages } from '../src/docs-review-feedback.js';
 import { parseDocReviewAnnotationFile } from '@open-design/contracts';
 import { closeDatabase, insertProject, openDatabase } from '../src/db.js';
 import { registerPipelineRoutes } from '../src/pipeline-routes.js';
 
 const dirs: string[] = [];
 afterEach(async () => Promise.all(dirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true }))));
+
+async function writeCompleteCoverage(root: string, page = 'docs/one.md'): Promise<void> {
+  const changesPath = path.join(root, 'review', page.replace(/\.md$/i, '.changes.json'));
+  await Promise.all([
+    fs.mkdir(path.join(root, 'flows'), { recursive: true }),
+    fs.mkdir(path.join(root, 'comp'), { recursive: true }),
+    fs.mkdir(path.dirname(changesPath), { recursive: true }),
+  ]);
+  await fs.access(changesPath).catch(() => fs.writeFile(changesPath, '[]'));
+  await Promise.all([
+    fs.writeFile(path.join(root, 'flows', 'index.json'), JSON.stringify([
+      { id: 'flow-1', screens: [{ key: 'SCREEN-1', name: 'Screen 1' }] },
+    ])),
+    fs.writeFile(path.join(root, 'comp', '_inputs.json'), JSON.stringify({ screens: [{ key: 'SCREEN-1' }] })),
+    fs.writeFile(path.join(root, 'comp', 'index.json'), JSON.stringify({ screens: [{ key: 'SCREEN-1' }], failed: [] })),
+    fs.writeFile(path.join(root, 'review', 'index.json'), JSON.stringify({
+      pages: [{ page: 'One', doc_path: page, review_path: `review/${page}`, status: 'succeeded', sections_total: 1, sections_failed: 0 }],
+    })),
+  ]);
+}
 
 describe('docs-review feedback metrics', () => {
   it('normalizes legacy changes and attributes user edits without losing agent operations', () => {
@@ -60,6 +80,7 @@ describe('docs-review feedback metrics', () => {
     const review = path.join(root, 'review', 'docs');
     await fs.mkdir(review, { recursive: true });
     await fs.writeFile(path.join(review, 'one.changes.json'), JSON.stringify([{ id: 'a', quote: 'new', reason: 'r' }]));
+    await writeCompleteCoverage(root);
     const uploads: Array<{ stage: string; filePath: string; body: string }> = [];
     const result = await confirmDocsReview({
       projectId: 'p1', workflowRoot: root, installationId: 'install/1', user: 'u', channel: 'dev',
@@ -171,6 +192,7 @@ describe('docs-review feedback metrics', () => {
     const review = path.join(root, 'review', 'docs');
     await fs.mkdir(review, { recursive: true });
     await fs.writeFile(path.join(review, 'one.changes.json'), JSON.stringify([{ id: 'a', quote: 'private document text', reason: 'r' }]));
+    await writeCompleteCoverage(root);
     const input = {
       projectId: 'p1', workflowRoot: root, installationId: 'install-1', user: 'u', channel: 'dev' as const,
       confirmationId: 'retry-1', now: 123,
@@ -182,6 +204,27 @@ describe('docs-review feedback metrics', () => {
     const completed = await confirmDocsReview({ ...input, client: { uploadFile: async () => {} } as never });
     expect(completed.mediaPath).toBe('docs-review-feedback/install-1/retry-1.json');
     expect(JSON.stringify(completed.artifact)).not.toContain('private document text');
+  });
+
+  it('blocks final confirmation when any flow, screen, page, or section remains uncovered', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'od-doc-review-coverage-'));
+    dirs.push(root);
+    await writeCompleteCoverage(root);
+    await expect(assertDocsReviewCoverageComplete(root)).resolves.toBeUndefined();
+
+    await fs.writeFile(path.join(root, 'flows', 'index.json'), JSON.stringify([
+      { id: 'flow-ok', screens: [{ key: 'SCREEN-1' }] },
+      { id: 'flow-missing', screens: [] },
+    ]));
+    await fs.writeFile(path.join(root, 'comp', 'index.json'), JSON.stringify({
+      screens: [],
+      failed: [{ key: 'SCREEN-1', errors: ['bad schema'] }],
+    }));
+    await fs.writeFile(path.join(root, 'review', 'index.json'), JSON.stringify({
+      pages: [{ status: 'succeeded', sections_total: 2, sections_failed: 1 }],
+    }));
+
+    await expect(assertDocsReviewCoverageComplete(root)).rejects.toThrow(/flow-missing.*màn hình lỗi.*section lỗi/);
   });
 });
 

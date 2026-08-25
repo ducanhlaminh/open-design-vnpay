@@ -1708,8 +1708,9 @@ export function PipelinesView() {
   };
 
   const openChat = (p: PipelineView) => {
-    if (!p.lastConversationId) return;
-    navigate({ kind: 'project', projectId, conversationId: p.lastConversationId, fileName: null });
+    const conversationId = p.recovery?.units[0]?.conversationId ?? p.lastConversationId;
+    if (!conversationId) return;
+    navigate({ kind: 'project', projectId, conversationId, fileName: null });
   };
 
   const hasProjects = projects.length > 0;
@@ -2526,7 +2527,7 @@ export function PipelinesView() {
             const isRunning = p.status === 'running';
             const isActive = isRunning || isQueued;
             const meta = metaFor(p.id);
-            const canChat = !!p.lastConversationId;
+            const canChat = !!(p.recovery?.units[0]?.conversationId ?? p.lastConversationId);
             const hasRunInfo = Boolean(p.updatedAt || p.lastInput || p.lastSource || p.lastRunId);
             const infoOpen = infoForId === p.id;
             const histOpen = historyForId === p.id;
@@ -2553,7 +2554,12 @@ export function PipelinesView() {
               },
             };
             const chatItem: OverflowMenuItem | null = canChat
-              ? { key: 'chat', label: 'Mở hội thoại', icon: 'comment', onClick: () => openChat(p) }
+              ? {
+                  key: 'chat',
+                  label: p.recovery ? 'Mở recovery chat' : 'Mở hội thoại',
+                  icon: 'comment',
+                  onClick: () => openChat(p),
+                }
               : null;
             // "Tải file lên" — deliberately separate from Run: proceedRun's
             // dispatch is a mutually-exclusive if/else keyed on
@@ -2637,8 +2643,8 @@ export function PipelinesView() {
                 // Task 5: "Xem lỗi" chỉ ĐỌC (mở modal Status ở chế độ lỗi) —
                 // không phá gì, nên không còn tô đỏ như trước.
                 <button type="button" className="pl-btn" onClick={() => setStatusFor(p)}>
-                  <Icon name="info" size={14} />
-                  <span>Xem lỗi</span>
+                  <Icon name={p.recovery ? 'comment' : 'info'} size={14} />
+                  <span>{p.recovery ? 'Cần hỗ trợ' : 'Xem lỗi'}</span>
                 </button>
               );
               overflowItems = [
@@ -2714,7 +2720,7 @@ export function PipelinesView() {
                     <div className="pl-step__heading">
                       <span className="pl-step__name">{p.name}</span>
                       <span className={`pl-status pl-status--${isSkipped ? 'skipped' : p.status}`}>
-                        {isSkipped ? 'Bỏ qua' : (STATUS_LABEL[p.status] ?? p.status)}
+                        {isSkipped ? 'Bỏ qua' : p.recovery ? 'Cần hỗ trợ' : (STATUS_LABEL[p.status] ?? p.status)}
                       </span>
                       {isNext ? <span className="pl-step__next">Bước tiếp theo</span> : null}
                       {/* Multi-target: chấm trạng thái THEO TARGET của riêng

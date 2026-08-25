@@ -1412,6 +1412,7 @@ export function listPipelineStatus(
       // from an earlier failed run never survives onto a later succeeded run.
       ...(run?.status === 'failed' && run.error ? { error: run.error } : {}),
       ...(run?.status === 'failed' && run.errorReportId ? { errorReportId: run.errorReportId } : {}),
+      ...(run?.recovery ? { recovery: run.recovery } : {}),
     };
   });
 }

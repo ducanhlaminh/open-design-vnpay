@@ -3,7 +3,7 @@
 // "Xem lỗi" shows the id of the error report the daemon sent to the
 // developers (PipelineView.errorReportId) — both when there is no run row to
 // poll (fail-fast validation) and alongside a failed run.
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PipelineView } from '@open-design/contracts';
 
@@ -67,5 +67,38 @@ describe('PipelineStatusModal error report id', () => {
       />,
     );
     expect(screen.queryByText(/Đã gửi báo cáo lỗi/)).toBeNull();
+  });
+
+  it('opens a multi-turn recovery conversation and validates only on explicit action', async () => {
+    const onOpenTask = vi.fn();
+    const onRefresh = vi.fn();
+    render(
+      <PipelineStatusModal
+        pipeline={pipeline({
+          recovery: {
+            schemaVersion: 1,
+            kind: 'flow',
+            state: 'needs-assistance',
+            updatedAt: 1,
+            units: [{ id: 'flow-login', title: 'Flow đăng nhập', conversationId: 'recovery-conv', errors: ['Chưa thấy screen'] }],
+          },
+        })}
+        projectId="P1"
+        onClose={() => {}}
+        onOpenChat={null}
+        onOpenTask={onOpenTask}
+        onRefresh={onRefresh}
+      />,
+    );
+    expect(screen.getByTestId('pipeline-recovery-workspace')).toBeTruthy();
+    fireEvent.click(screen.getByText('Mở recovery chat'));
+    expect(onOpenTask).toHaveBeenCalledWith('recovery-conv');
+
+    fireEvent.click(screen.getByTestId('pipeline-recovery-validate'));
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith(
+      '/api/pipelines/docs/recovery/validate',
+      expect.objectContaining({ method: 'POST' }),
+    ));
+    await waitFor(() => expect(onRefresh).toHaveBeenCalled());
   });
 });

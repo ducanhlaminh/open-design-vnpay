@@ -91,6 +91,7 @@ describe('createErrorReporter', () => {
       finalStatus: 'failed',
       stderrTail: 'x-api-key: abc123 boom',
       workflowId: 'docs-review',
+      screenFormatObservationId: 'obs-screen-123',
     });
     const id = reporter.report({ projectId: 'P1', pipelineId: 'dr-review', error: 'Bước chạy thất bại', lastRunId: undefined });
     expect(id).toMatch(/^[0-9a-f]{8}$/);
@@ -112,6 +113,7 @@ describe('createErrorReporter', () => {
     expect(r.stderrTail).not.toContain('abc123');
     expect(r.logTail).toContain('STAGE NOT SUCCEEDED run=run-1');
     expect(r.logTail).not.toContain('sk-live-SECRET');
+    expect(r.stage?.screenFormatObservationId).toBe('obs-screen-123');
     // Outbox drained after a successful send.
     expect(readdirSync(path.join(dataDir, ERROR_REPORTS_OUTBOX_DIR))).toEqual([]);
   });

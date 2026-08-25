@@ -698,6 +698,7 @@ interface PipelineRunStateRow {
   /** Id of the error report sent to the developers for the LAST failed run
    *  (error-reports.ts). Cleared together with `error`. */
   errorReportId?: string | undefined;
+  recovery?: import('@open-design/contracts').PipelineRecoveryWorkspace | undefined;
 }
 
 /** Fired from setProjectPipelineStatus for every transition INTO `failed`
@@ -753,6 +754,7 @@ export function setProjectPipelineStatus(
     lastSource?: unknown;
     lastPlatform?: string;
     subConversations?: Array<{ id: string; title: string; status: string }>;
+    recovery?: import('@open-design/contracts').PipelineRecoveryWorkspace | null;
     /** Short reason THIS patch's failure happened — only meaningful alongside
      *  `status: 'failed'`. See the invariant note on PipelineRunStateRow.error. */
     error?: string;
@@ -800,9 +802,14 @@ export function setProjectPipelineStatus(
       errorReportId = null;
     }
   }
+  const nextRecovery: import('@open-design/contracts').PipelineRecoveryWorkspace | undefined =
+    patch.recovery === null
+      ? undefined
+      : patch.recovery ?? (patch.status !== undefined ? undefined : prev.recovery);
   pipelines[pipelineId] = {
     ...prev,
     ...patch,
+    recovery: nextRecovery,
     ...(clearsError ? { error: undefined, errorReportId: undefined } : {}),
     ...(newFailure ? { errorReportId: errorReportId ?? undefined } : {}),
     updatedAt: Date.now(),

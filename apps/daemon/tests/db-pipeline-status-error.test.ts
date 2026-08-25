@@ -95,4 +95,22 @@ describe('setProjectPipelineStatus error field', () => {
     expect(state.docs?.status).toBe('failed');
     expect(state.docs?.error).toBe('first reason');
   });
+
+  it('persists a recovery workspace across chat/validation patches and clears it on success', () => {
+    const recovery = {
+      schemaVersion: 1 as const,
+      kind: 'flow' as const,
+      state: 'needs-assistance' as const,
+      updatedAt: 1,
+      units: [{ id: 'login', title: 'Login', conversationId: 'c1', errors: ['missing'] }],
+    };
+    setProjectPipelineStatus(db, 'PROJ', 'dr-flow', { status: 'failed', error: 'needs help', recovery });
+    setProjectPipelineStatus(db, 'PROJ', 'dr-flow', {
+      recovery: { ...recovery, state: 'validating', updatedAt: 2 },
+    });
+    expect(getProjectPipelineState(db, 'PROJ')['dr-flow']?.recovery?.state).toBe('validating');
+
+    setProjectPipelineStatus(db, 'PROJ', 'dr-flow', { status: 'succeeded', recovery: null });
+    expect(getProjectPipelineState(db, 'PROJ')['dr-flow']?.recovery).toBeUndefined();
+  });
 });

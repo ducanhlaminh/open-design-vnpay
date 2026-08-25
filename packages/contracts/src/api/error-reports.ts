@@ -124,6 +124,9 @@ export interface ErrorReportStageContext {
   /** "path  size  mtime" lines of what is on disk under the stage's output
    *  dir at report time (names only, never content). */
   outputsListing: string | null;
+  /** Full-document screen-format observation associated with this failure.
+   *  Optional so reports produced before screen recovery remain valid. */
+  screenFormatObservationId?: string | null;
 }
 
 export interface ErrorReportEnvContext {

@@ -155,6 +155,13 @@ export interface PipelineDeps {
      * from its asynchronous start response. */
     docsReviewConfirmation?: Promise<ConfirmDocsReviewResponse>;
   }>;
+  /** Deterministically validate and merge artifacts edited through a
+   * multi-turn recovery conversation. Never starts another automatic agent
+   * loop; unresolved issues are returned to the same workspace. */
+  validateRecovery(
+    projectId: string,
+    pipelineId: string,
+  ): Promise<{ ok: boolean; issues: string[]; repaired: string[] }>;
   /** UX knowledge base (media-store backed, see ux-kb-sync.ts): status
    * resolves the active KB source (env → media cache → home folder); push
    * uploads a local KB folder to the store so every machine syncs it before

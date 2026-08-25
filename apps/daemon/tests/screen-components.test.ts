@@ -1284,3 +1284,72 @@ test('normalizeScreenComponentsDoc: lỗi cứng chỉ khi key sai / thiếu wir
   assert.ok(r.warnings.some((w) => w.includes('doctype')));
   assert.deepEqual(r.doc.warnings, r.warnings);
 });
+
+test('WP32c: inferred provenance/confidence/evidence đi từ flows/index vào ScreenInput và parser screen manifest giữ metadata optional', async () => {
+  await mkdir(join(cwd, 'flows', 'FLOW-recovered'), { recursive: true });
+  await mkdir(join(cwd, 'docs'), { recursive: true });
+  await writeFile(join(cwd, 'docs', 'prd.md'), '# Tài liệu\n\nNgười dùng xác nhận giao dịch.\n', 'utf8');
+  await writeFile(
+    join(cwd, 'flows', 'index.json'),
+    JSON.stringify([
+      {
+        id: 'FLOW-recovered',
+        title: 'Luồng phục hồi',
+        source: 'docs/prd.md',
+        kind: 'mermaid',
+        screens: [
+          {
+            key: 'prd__AUTO-ab12',
+            name: 'Xác nhận giao dịch',
+            provenance: 'inferred-flow',
+            confidence: 0.82,
+            evidence: {
+              source: 'docs/prd.md',
+              diagramEvidence: [{ cellId: 'confirm', label: 'Xác nhận giao dịch' }],
+            },
+          },
+        ],
+      },
+    ]),
+    'utf8',
+  );
+
+  const inputs = await prepareScreenComponentInputs(cwd, { pages: [{ mdPath: 'docs/prd.md', page: 'PRD' }] });
+  assert.equal(inputs.screens.length, 1);
+  assert.equal(inputs.screens[0]!.provenance, 'inferred-flow');
+  assert.equal(inputs.screens[0]!.confidence, 0.82);
+  assert.deepEqual(inputs.screens[0]!.evidence, {
+    source: 'docs/prd.md',
+    diagramEvidence: [{ cellId: 'confirm', label: 'Xác nhận giao dịch' }],
+  });
+
+  const parsed = parseScreenComponentsDoc(
+    JSON.stringify({
+      ...GOOD_DOC,
+      provenance: 'inferred-flow',
+      confidence: 0.82,
+      evidence: { source: 'docs/prd.md', anchorText: 'Người dùng xác nhận giao dịch.' },
+    }),
+  );
+  assert.ok('doc' in parsed);
+  assert.equal(parsed.doc.provenance, 'inferred-flow');
+  assert.equal(parsed.doc.confidence, 0.82);
+  assert.deepEqual(parsed.doc.evidence, {
+    source: 'docs/prd.md',
+    anchorText: 'Người dùng xác nhận giao dịch.',
+  });
+
+  const legacy = parseScreenComponentsDoc(JSON.stringify(GOOD_DOC));
+  assert.ok('doc' in legacy);
+  assert.equal(legacy.doc.provenance, undefined);
+  assert.equal(legacy.doc.confidence, undefined);
+  assert.equal(legacy.doc.evidence, undefined);
+
+  const merged = mergeScreenComponents([parsed.doc], inputs, [], '2026-08-25T00:00:00Z');
+  assert.equal(merged.index.screens[0]!.provenance, 'inferred-flow');
+  assert.equal(merged.index.screens[0]!.confidence, 0.82);
+  assert.deepEqual(merged.index.screens[0]!.evidence, {
+    source: 'docs/prd.md',
+    anchorText: 'Người dùng xác nhận giao dịch.',
+  });
+});
