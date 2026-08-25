@@ -1464,6 +1464,9 @@
    lại bên dưới, xem mountFlowDiagramHosts trong DocRedlinePreview.tsx). Bọc
    trong <mark data-change-id> nên toàn khối tham gia MỌI cơ chế mark sẵn có
    (chọn/nổi/cuộn) mà không đổi injectHighlights. */
+.htmlChunk {
+  display: contents;
+}
 .mermaidHost {
   display: block;
   margin: 10px 0;

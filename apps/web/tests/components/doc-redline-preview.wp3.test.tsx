@@ -470,7 +470,7 @@ describe('DocRedlinePreview — N1 (wp3b.yaml): changes.json về sau text', () 
     );
   });
 
-  it('bám article đã commit và quét lại khi lượt đầu chưa thấy fence', async () => {
+  it('render Mermaid bằng React dù DOM query hậu kỳ không thấy fence', async () => {
     vi.resetModules();
     mockDiagramProject();
     const originalQuerySelectorAll = Element.prototype.querySelectorAll;
@@ -478,9 +478,7 @@ describe('DocRedlinePreview — N1 (wp3b.yaml): changes.json về sau text', () 
     const querySpy = vi.spyOn(Element.prototype, 'querySelectorAll').mockImplementation(function (this: Element, selectors: string) {
       if (selectors === 'pre > code.language-mermaid') {
         diagramFenceScans += 1;
-        if (diagramFenceScans === 1) {
-          return originalQuerySelectorAll.call(document.createElement('div'), selectors);
-        }
+        return originalQuerySelectorAll.call(document.createElement('div'), selectors);
       }
       return originalQuerySelectorAll.call(this, selectors);
     });
@@ -497,7 +495,8 @@ describe('DocRedlinePreview — N1 (wp3b.yaml): changes.json về sau text', () 
         },
         { timeout: 2000 },
       );
-      expect(diagramFenceScans).toBeGreaterThanOrEqual(2);
+      // Đường render chính không còn cần scan/mutate fence sau commit.
+      expect(diagramFenceScans).toBe(0);
     } finally {
       querySpy.mockRestore();
     }

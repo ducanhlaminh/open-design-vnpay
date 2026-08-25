@@ -516,6 +516,63 @@ function extractMermaidFenceBody(text: string | undefined): string | null {
   return m ? (m[1] ?? '').replace(/\s+$/, '') : null;
 }
 
+type MermaidDocumentPart =
+  | { kind: 'html'; html: string }
+  | { kind: 'mermaid'; code: string; changeId: string | null };
+
+function decodeEscapedHtmlText(value: string): string {
+  return value
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, '&');
+}
+
+/** Tách fence Mermaid khỏi HTML an toàn để React render nó như component thật.
+ *  Đây là đường render chính, không còn chèn host sau commit bằng effect/portal:
+ *  nếu React đã hiện được HTML tài liệu thì Mermaid cũng chắc chắn có node.
+ *  Các đoạn HTML còn lại vẫn là output đã sanitize của markdown renderer. */
+function splitMermaidDocumentHtml(html: string, owners: DocRedlineChange[]): MermaidDocumentPart[] {
+  const fenceRe = /<pre><code class="language-mermaid">([\s\S]*?)<\/code><\/pre>/gi;
+  const headingRe = /<h[1-6]\b[^>]*>([\s\S]*?)<\/h[1-6]>/gi;
+  const parts: MermaidDocumentPart[] = [];
+  const headings: string[] = [];
+  const consumedOwners = new Set<string>();
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = fenceRe.exec(html)) !== null) {
+    const before = html.slice(cursor, match.index);
+    if (before) parts.push({ kind: 'html', html: before });
+    headingRe.lastIndex = 0;
+    let headingMatch: RegExpExecArray | null;
+    while ((headingMatch = headingRe.exec(before)) !== null) {
+      headings.push(decodeEscapedHtmlText((headingMatch[1] ?? '').replace(/<[^>]+>/g, '')).trim());
+    }
+
+    const code = decodeEscapedHtmlText(match[1] ?? '');
+    const ordinal = headings.length - 1;
+    const candidates = owners.filter(
+      (owner) => !consumedOwners.has(owner.id) && extractMermaidFenceBody(owner.quote)?.trim() === code.trim(),
+    );
+    const owner = candidates.find((candidate) => {
+      const start = candidate.sectionStartHeadingOrdinal;
+      const end = candidate.sectionEndHeadingOrdinalExclusive;
+      if (start != null || end != null) return (start == null || ordinal >= start) && (end == null || ordinal < end);
+      if (candidate.sectionHeading == null) return true;
+      const expected = candidate.sectionHeading.trim().replace(/^#{1,6}\s*/, '');
+      return (headings[ordinal] ?? '').localeCompare(expected, 'vi', { sensitivity: 'base' }) === 0;
+    });
+    if (owner) consumedOwners.add(owner.id);
+    parts.push({ kind: 'mermaid', code, changeId: owner?.id ?? null });
+    cursor = match.index + match[0].length;
+  }
+  const tail = html.slice(cursor);
+  if (tail || parts.length === 0) parts.push({ kind: 'html', html: tail });
+  return parts;
+}
+
 /** Đợi cột tài liệu gắn đủ host Mermaid và SVG trước khi chụp DOM để in.
  *  `window.print()` chụp đồng bộ tại thời điểm gọi; nếu dynamic import Mermaid
  *  chưa xong thì PDF sẽ giữ code thô hoặc khung rỗng. Timeout là fail-soft:
@@ -1153,7 +1210,6 @@ export function DocRedlinePreview({
   // được giao sau khi node đích đã commit, nên đây là lifecycle đáng tin cậy để
   // dựng Mermaid/Draw.io hosts.
   const [docArticleNode, setDocArticleNode] = useState<HTMLElement | null>(null);
-  const [diagramMountRevision, setDiagramMountRevision] = useState(0);
   // Phần tử mục trong rail, theo change id — dùng để cuộn rail tới mục tương
   // ứng khi người dùng bấm một vùng bôi trong tài liệu.
   const itemsByChangeRef = useRef<Map<string, HTMLElement>>(new Map());
@@ -1533,6 +1589,19 @@ export function DocRedlinePreview({
 
   const docHtml = docRender?.html ?? null;
   const anchored = docRender?.matched ?? EMPTY_SET;
+  const mermaidDocumentParts = useMemo(
+    () => splitMermaidDocumentHtml(
+      docHtml ?? '',
+      previewMode === 'changes'
+        ? changes.filter((change) => change.kind === 'flow-diagram' && change.status !== 'dismissed' && !hiddenAnnotationIds.has(change.id))
+        : [],
+    ),
+    [docHtml, previewMode, changes, hiddenAnnotationIds],
+  );
+  const anchoredMermaidIds = useMemo(
+    () => new Set(mermaidDocumentParts.flatMap((part) => part.kind === 'mermaid' && part.changeId ? [part.changeId] : [])),
+    [mermaidDocumentParts],
+  );
   const markCount = docHtml?.match(/<mark /g)?.length ?? 0;
   // Đếm theo phép sửa, không đếm tổng: "12 chỗ sửa" không nói được rằng 9 trong
   // số đó chỉ là thêm chữ mới, mà đó chính là thứ quyết định người review phải
@@ -1590,17 +1659,6 @@ export function DocRedlinePreview({
   // `renderMarkdownToSafeHtml` (dùng chung với FileViewer) đã dựng fence
   // ```mermaid thành <pre><code class="language-mermaid">mã thô</code></pre>
   // — KHÔNG có sơ đồ sống. Mượn đúng khuôn `mountMarkdownMermaidHosts` của
-  // FileViewer.tsx (không import được — vòng import, xem docblock đầu file):
-  // chèn một host trước block, gập mã nguồn vào <details>, rồi portal
-  // <MermaidDiagram> vào host ở một lượt render kế tiếp.
-  //
-  // Host của change `flow-diagram` KHỚP ĐƯỢC là một <mark data-change-id> chứ
-  // không phải <div> trơn: nhờ vậy toàn khối ăn theo MIỄN PHÍ mọi cơ chế mark
-  // đã có (chọn/nổi/cuộn/uỷ quyền click ở effect dưới) — không phải thêm một
-  // listener nào, không đổi injectHighlights.
-  const [diagramMounts, setDiagramMounts] = useState<
-    Array<{ host: HTMLElement; changeId: string | null; code: string }>
-  >([]);
   // 'proposed' (mặc định) render `quote`; 'original' render `before` — CHỈ đổi
   // những gì đang hiện, không ghi gì ra tài liệu (khác hẳn dismiss).
   const [diagramView, setDiagramView] = useState<Record<string, 'proposed' | 'original'>>({});
@@ -1617,110 +1675,9 @@ export function DocRedlinePreview({
   useEffect(() => {
     const container = docArticleNode;
     if (!container) {
-      setDiagramMounts([]);
       setDrawioMounts([]);
       return;
     }
-    const mermaidHostClass = (styles.mermaidHost ?? '').trim();
-    const codes = Array.from(container.querySelectorAll<HTMLElement>('pre > code.language-mermaid'));
-    // Runtime đóng gói có thể commit `dangerouslySetInnerHTML` muộn hơn lượt
-    // passive effect đầu tiên của cột Quick result. Khi đó ref đã có nhưng query
-    // trả rỗng; các dependency chuỗi không đổi nữa nên effect cũ không bao giờ
-    // tự chạy lại. Theo dõi DOM cho tới khi fence xuất hiện và thêm một lượt
-    // kiểm tra ở frame kế tiếp để khép cả hai timing (commit đồng bộ nhưng query
-    // sớm, hoặc subtree được gắn muộn).
-    let retryFrame: number | null = null;
-    let fenceObserver: MutationObserver | null = null;
-    if (codes.length === 0) {
-      const requestRescan = () => setDiagramMountRevision((revision) => revision + 1);
-      // Một frame dự phòng là đủ; các thay đổi DOM đến muộn hơn được observer
-      // bắt. Chặn theo revision để tài liệu thật sự không có Mermaid không tạo
-      // vòng render vô hạn.
-      if (diagramMountRevision === 0) retryFrame = window.requestAnimationFrame(requestRescan);
-      fenceObserver = new MutationObserver(() => {
-        if (container.querySelector('pre > code.language-mermaid')) {
-          fenceObserver?.disconnect();
-          fenceObserver = null;
-          requestRescan();
-        }
-      });
-      fenceObserver.observe(container, { childList: true, subtree: true });
-    }
-    const mounts: Array<{ host: HTMLElement; changeId: string | null; code: string }> = [];
-    const mutations: Array<{ parent: HTMLElement; pre: HTMLElement; host: HTMLElement; details: HTMLDetailsElement }> = [];
-    const consumedOwners = new Set<string>();
-    const headings = Array.from(container.querySelectorAll<HTMLElement>('h1, h2, h3, h4, h5, h6'));
-    const diagramOwners = previewMode === 'changes'
-      ? changes.filter((c) => c.kind === 'flow-diagram' && c.status !== 'dismissed' && annotationVisible(c.id))
-      : [];
-
-    const headingOrdinalFor = (element: HTMLElement): number => {
-      let ordinal = -1;
-      for (let i = 0; i < headings.length; i += 1) {
-        const heading = headings[i]!;
-        if (heading.compareDocumentPosition(element) & Node.DOCUMENT_POSITION_FOLLOWING) ordinal = i;
-        else break;
-      }
-      return ordinal;
-    };
-
-    const ownerContainsHeading = (owner: DocRedlineChange, ordinal: number): boolean => {
-      const start = owner.sectionStartHeadingOrdinal;
-      const end = owner.sectionEndHeadingOrdinalExclusive;
-      if (start != null || end != null) {
-        return (start == null || ordinal >= start) && (end == null || ordinal < end);
-      }
-      if (owner.sectionHeading == null) return true;
-      const currentHeading = ordinal >= 0 ? headings[ordinal]?.textContent?.trim() ?? '' : '';
-      const expectedHeading = owner.sectionHeading.trim().replace(/^#{1,6}\s*/, '');
-      return currentHeading.localeCompare(expectedHeading, 'vi', { sensitivity: 'base' }) === 0;
-    };
-
-    for (const codeEl of codes) {
-      const pre = codeEl.parentElement;
-      const parent = pre?.parentElement;
-      if (!pre || !parent) continue;
-      const rawCode = codeEl.textContent ?? '';
-      if (!rawCode.trim()) continue;
-      const ordinal = headingOrdinalFor(pre);
-      const matchingOwners = diagramOwners.filter(
-        (c) => !consumedOwners.has(c.id) && extractMermaidFenceBody(c.quote)?.trim() === rawCode.trim(),
-      );
-      const owner = matchingOwners.find((candidate) => ownerContainsHeading(candidate, ordinal));
-      if (owner) consumedOwners.add(owner.id);
-      const host = document.createElement(owner ? 'mark' : 'div');
-      // B1 (wp3b.yaml): CHỈ host có owner mới được sơn/bấm được — một sơ đồ
-      // KHÔNG thuộc change nào (ví dụ ảnh minh hoạ có sẵn trong tài liệu, không
-      // qua rà soát) không phải là một vùng bôi, nên không được ăn theo class
-      // hl/hlOff, style nội tuyến (nền vàng + cursor pointer), hay
-      // data-change-id — nó chỉ là khung hiển thị trơn (mermaidHostClass) cho
-      // sơ đồ sống portal vào.
-      if (owner) {
-        const on = paint.edit;
-        host.className = `${mermaidHostClass} ${on ? styles.hl ?? '' : styles.hlOff ?? ''}`.trim();
-        host.setAttribute('style', on ? HL_INLINE_STYLE : HL_OFF_INLINE_STYLE);
-        host.dataset.changeId = owner.id;
-      } else {
-        host.className = mermaidHostClass;
-      }
-      parent.insertBefore(host, pre);
-      // Gập mã nguồn xuống dưới một <details>, cùng khuôn <mark>-trước-<pre>
-      // với mountMarkdownMermaidHosts của FileViewer.tsx — khác một chỗ: cột
-      // này không có nút copy-khối-code (MARKDOWN_CODE_BLOCK_ATTR) như
-      // FileViewer, nên mã nguồn gập lại chỉ đọc/chọn tay được, không có nút
-      // riêng. Không thêm nút đó ở đây — ngoài phạm vi `do` của WP3.
-      const details = document.createElement('details');
-      details.className = 'md-mermaid__source';
-      const summary = document.createElement('summary');
-      summary.textContent = 'Mermaid';
-      details.appendChild(summary);
-      parent.insertBefore(details, pre);
-      details.appendChild(pre);
-      mounts.push({ host, changeId: owner?.id ?? null, code: rawCode });
-      mutations.push({ parent, pre, host, details });
-    }
-    setDiagramMounts(mounts);
-
     // Sơ đồ draw.io (mục D wp-drreview-drawio-preview.yaml) — daemon chỉ để
     // lại MỘT dòng caption marker (renderMarkdownToSafeHtml giữ `*…*` thành
     // <em>, xem replaceDrawioInSlice trong docs-review-enrich.ts), không có
@@ -1751,48 +1708,10 @@ export function DocRedlinePreview({
       drawioMutations.push({ host });
     }
     setDrawioMounts(drawioMountsNext);
-    // N1 (wp3b.yaml): `loading` PHẢI có trong deps, không chỉ `docHtml`. Cột
-    // tài liệu (nên cả `docColRef.current`) chỉ THỰC SỰ có mặt trong DOM khi
-    // `!loading` (xem nhánh `{loading ? … : <div className={styles.wrap}>…}`
-    // ở JSX bên dưới) — nhưng `docHtml` có thể đã đổi giá trị TỪ TRƯỚC lúc đó
-    // (editedText resolve trước changes.json). Nếu giá trị CHUỖI của `docHtml`
-    // ở lượt đó tình cờ TRÙNG HỆT lượt effect chạy lần đầu (== so sánh theo
-    // GIÁ TRỊ chuỗi, không theo tham chiếu) — đúng trường hợp một tài liệu chỉ
-    // có change sơ đồ, từ B2 không còn đưa segment chữ vào injectHighlights
-    // nên changes.json về sau không đổi lấy một ký tự nào của docHtml — thì
-    // effect bị React coi là "deps không đổi" và KHÔNG chạy lại đúng lúc
-    // `docColRef.current` mới thực sự khác null, nên host chẳng bao giờ được
-    // chèn. Thêm `loading` buộc effect chạy lại đúng lượt nó chuyển
-    // true → false, bất kể `docHtml` có đổi ký tự nào hay không.
     return () => {
-      if (retryFrame != null) window.cancelAnimationFrame(retryFrame);
-      fenceObserver?.disconnect();
-      for (const { parent, pre, host, details } of mutations) {
-        if (details.parentElement === parent) parent.insertBefore(pre, details);
-        details.remove();
-        host.remove();
-      }
       for (const { host } of drawioMutations) host.remove();
     };
-  }, [docArticleNode, diagramMountRevision, docHtml, loading, previewMode, changes, hiddenAnnotationIds]);
-
-  // (d, review WP3b): effect RIÊNG chỉ đồng bộ class + style nội tuyến của
-  // host ĐÃ CHÈN theo `paint.edit` — KHÔNG gộp vào effect chèn host phía
-  // trên. Một tài liệu CHỈ có
-  // change sơ đồ giữ `docHtml` NGUYÊN VĂN qua mọi lượt bật/tắt paint (B2:
-  // sơ đồ không còn đóng góp mark chữ vào docHtml — xem N1 phía trên), nên
-  // lượt bật/tắt paint không cần dựng lại host. Effect này chỉ SỬA host đã
-  // tồn tại trong `diagramMounts`, không tạo/xoá gì, nên an toàn để chạy lại
-  // theo `paint.edit`.
-  useEffect(() => {
-    const mermaidHostClass = (styles.mermaidHost ?? '').trim();
-    for (const m of diagramMounts) {
-      if (!m.changeId) continue; // sơ đồ mồ côi (B1) không được sơn
-      const on = paint.edit;
-      m.host.className = `${mermaidHostClass} ${on ? styles.hl ?? '' : styles.hlOff ?? ''}`.trim();
-      m.host.setAttribute('style', on ? HL_INLINE_STYLE : HL_OFF_INLINE_STYLE);
-    }
-  }, [diagramMounts, paint.edit]);
+  }, [docArticleNode, docHtml, loading]);
 
   // Cùng lý do như effect ngay trên, cho host draw.io (mục D wp-drreview-
   // drawio-preview.yaml) — tách effect riêng vì `drawioMounts` là state khác,
@@ -2267,14 +2186,12 @@ export function DocRedlinePreview({
     }));
   }
 
-  // B2 (wp3b.yaml), vế (1): sơ đồ mermaid không còn đóng góp vào `anchored`
-  // (bỏ segment chữ khỏi injectHighlights — xem `requests` phía trên), nên
-  // phải tự xét riêng: có HOST khớp được với change này (diagramMounts —
-  // mermaid, hoặc drawioMounts — draw.io, mục D wp-drreview-drawio-preview.yaml)
-  // thì coi là neo được, dù `anchored.has(c.id)` giờ luôn false với loại này.
+  // Sơ đồ không đóng góp vào `anchored` qua text highlight. Mermaid lấy owner
+  // trực tiếp từ phần React đã tách; Draw.io vẫn có host theo marker. Có một
+  // trong hai thì change sơ đồ được coi là neo thành công.
   const isAnchored = (c: DocRedlineChange) =>
     c.kind === 'flow-diagram'
-      ? diagramMounts.some((m) => m.changeId === c.id) || drawioMounts.some((m) => m.changeId === c.id)
+      ? anchoredMermaidIds.has(c.id) || drawioMounts.some((m) => m.changeId === c.id)
       : anchored.has(c.id);
 
   const navigationItems = useMemo<RedlineNavigationItem[]>(() => {
@@ -2290,7 +2207,7 @@ export function DocRedlinePreview({
       .filter((change) => change.kind !== 'flow-diagram' || kindFilter.diagram)
       .filter((change) => !isComponentTableChange(change) || kindFilter.compTable)
       .map((change) => ({ id: change.id, anchored: isAnchored(change), dismissed: change.status === 'dismissed' }));
-  }, [previewMode, notes, changes, anchored, diagramMounts, drawioMounts, kindFilter, hiddenAnnotationIds]);
+  }, [previewMode, notes, changes, anchored, anchoredMermaidIds, drawioMounts, kindFilter, hiddenAnnotationIds]);
   const navigationPosition = getNavigationPosition(navigationItems, selectedId);
   function navigate(direction: 'previous' | 'next') {
     const id = getAdjacentNavigationId(navigationItems, selectedId, direction);
@@ -2551,14 +2468,28 @@ export function DocRedlinePreview({
                   role="tabpanel"
                   aria-labelledby={`doc-redline-document-${previewMode}-tab`}
                   className="markdown-rendered"
-                  dangerouslySetInnerHTML={{ __html: docHtml ?? '' }}
-                />
-                {/* Sơ đồ mermaid sống, portal vào các host đã chèn trong
-                    docHtml (xem effect dựng diagramMounts ở trên). */}
-                {diagramMounts.map((m, i) =>
-                  createPortal(
-                    <>
-                      {m.changeId ? (
+                >
+                  {mermaidDocumentParts.map((part, i) => {
+                    if (part.kind === 'html') {
+                      return <div key={`html-${i}`} className={styles.htmlChunk ?? ''} dangerouslySetInnerHTML={{ __html: part.html }} />;
+                    }
+                    const Host = part.changeId ? 'mark' : 'div';
+                    const hostClass = part.changeId
+                      ? `${styles.mermaidHost ?? ''} ${paint.edit ? styles.hl ?? '' : styles.hlOff ?? ''}`.trim()
+                      : styles.mermaidHost ?? '';
+                    const hostStyle = part.changeId
+                      ? paint.edit
+                        ? { backgroundColor: 'rgba(245,158,11,.38)', outline: '1px solid rgba(245,158,11,.85)', borderRadius: 3, cursor: 'pointer' }
+                        : { backgroundColor: 'transparent', color: 'inherit', cursor: 'pointer' }
+                      : undefined;
+                    return (
+                      <div key={`mermaid-${i}`} className={styles.htmlChunk ?? ''}>
+                        <Host
+                          className={hostClass}
+                          style={hostStyle}
+                          {...(part.changeId ? { 'data-change-id': part.changeId } : {})}
+                        >
+                          {part.changeId ? (
                         <div className={styles.diagramToggle ?? ''} role="group" aria-label="Xem sơ đồ gốc hay đề xuất">
                           {/* WP-drreview-mmd-color-badge: badge "Sơ đồ đề
                               xuất" + chú giải 3 màu ở ĐẦU hàng — sơ đồ được
@@ -2576,20 +2507,20 @@ export function DocRedlinePreview({
                           </span>
                           <button
                             type="button"
-                            className={diagramView[m.changeId] !== 'original' ? styles.diagramToggleOn ?? '' : undefined}
+                            className={diagramView[part.changeId] !== 'original' ? styles.diagramToggleOn ?? '' : undefined}
                             onClick={(ev) => {
                               ev.stopPropagation();
-                              setDiagramView((prev) => ({ ...prev, [m.changeId as string]: 'proposed' }));
+                              setDiagramView((prev) => ({ ...prev, [part.changeId as string]: 'proposed' }));
                             }}
                           >
                             ◉ Đề xuất
                           </button>
                           <button
                             type="button"
-                            className={diagramView[m.changeId] === 'original' ? styles.diagramToggleOn ?? '' : undefined}
+                            className={diagramView[part.changeId] === 'original' ? styles.diagramToggleOn ?? '' : undefined}
                             onClick={(ev) => {
                               ev.stopPropagation();
-                              setDiagramView((prev) => ({ ...prev, [m.changeId as string]: 'original' }));
+                              setDiagramView((prev) => ({ ...prev, [part.changeId as string]: 'original' }));
                             }}
                           >
                             ○ Gốc
@@ -2611,13 +2542,17 @@ export function DocRedlinePreview({
                           → sơ đồ (kể cả node đã tô màu) tàng hình. Bọc trong khung
                           cao cố định như .drawioFrame để sơ đồ hiện đúng. */}
                       <div className={styles.mermaidFrame ?? ''}>
-                        <MermaidDiagram code={activeDiagramCode(m)} initialFit="width" />
+                        <MermaidDiagram code={activeDiagramCode(part)} initialFit="width" />
                       </div>
-                    </>,
-                    m.host,
-                    `diagram-${i}`,
-                  ),
-                )}
+                        </Host>
+                        <details className="md-mermaid__source">
+                          <summary>Mermaid</summary>
+                          <pre><code className="language-mermaid">{part.code}</code></pre>
+                        </details>
+                      </div>
+                    );
+                  })}
+                </article>
                 {/* Sơ đồ draw.io sống, portal vào host chèn NGAY SAU đoạn
                     marker (xem effect dựng drawioMounts + docblock
                     DrawioDiagramHost ở trên). */}
