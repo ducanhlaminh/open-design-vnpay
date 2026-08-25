@@ -21,7 +21,7 @@
 // chỉ hiện ra thành chữ. Cũng KHÔNG mổ DOM sau khi render như bản trước: cách
 // đó phụ thuộc ref đã gắn chưa và React có dựng lại nút hay không, cả hai đều
 // đã thực sự làm vùng bôi biến mất.
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
 import { createPortal } from 'react-dom';
 import type {
@@ -1075,6 +1075,12 @@ export function DocRedlinePreview({
   const [hiddenAnnotationIds, setHiddenAnnotationIds] = useState<Set<string>>(new Set());
   const pendingSelectionRef = useRef<{ id: string; source: 'document' | 'rail' } | null>(null);
   const docColRef = useRef<HTMLDivElement | null>(null);
+  const [docColumnNode, setDocColumnNode] = useState<HTMLDivElement | null>(null);
+  const [diagramMountRevision, setDiagramMountRevision] = useState(0);
+  const bindDocColumn = useCallback((node: HTMLDivElement | null) => {
+    docColRef.current = node;
+    setDocColumnNode(node);
+  }, []);
   // Phần tử mục trong rail, theo change id — dùng để cuộn rail tới mục tương
   // ứng khi người dùng bấm một vùng bôi trong tài liệu.
   const itemsByChangeRef = useRef<Map<string, HTMLElement>>(new Map());
@@ -1534,7 +1540,7 @@ export function DocRedlinePreview({
   >([]);
 
   useEffect(() => {
-    const container = docColRef.current;
+    const container = docColumnNode;
     if (!container) {
       setDiagramMounts([]);
       setDrawioMounts([]);
@@ -1542,6 +1548,29 @@ export function DocRedlinePreview({
     }
     const mermaidHostClass = (styles.mermaidHost ?? '').trim();
     const codes = Array.from(container.querySelectorAll<HTMLElement>('pre > code.language-mermaid'));
+    // Runtime đóng gói có thể commit `dangerouslySetInnerHTML` muộn hơn lượt
+    // passive effect đầu tiên của cột Quick result. Khi đó ref đã có nhưng query
+    // trả rỗng; các dependency chuỗi không đổi nữa nên effect cũ không bao giờ
+    // tự chạy lại. Theo dõi DOM cho tới khi fence xuất hiện và thêm một lượt
+    // kiểm tra ở frame kế tiếp để khép cả hai timing (commit đồng bộ nhưng query
+    // sớm, hoặc subtree được gắn muộn).
+    let retryFrame: number | null = null;
+    let fenceObserver: MutationObserver | null = null;
+    if (codes.length === 0) {
+      const requestRescan = () => setDiagramMountRevision((revision) => revision + 1);
+      // Một frame dự phòng là đủ; các thay đổi DOM đến muộn hơn được observer
+      // bắt. Chặn theo revision để tài liệu thật sự không có Mermaid không tạo
+      // vòng render vô hạn.
+      if (diagramMountRevision === 0) retryFrame = window.requestAnimationFrame(requestRescan);
+      fenceObserver = new MutationObserver(() => {
+        if (container.querySelector('pre > code.language-mermaid')) {
+          fenceObserver?.disconnect();
+          fenceObserver = null;
+          requestRescan();
+        }
+      });
+      fenceObserver.observe(container, { childList: true, subtree: true });
+    }
     const mounts: Array<{ host: HTMLElement; changeId: string | null; code: string }> = [];
     const mutations: Array<{ parent: HTMLElement; pre: HTMLElement; host: HTMLElement; details: HTMLDetailsElement }> = [];
     const consumedOwners = new Set<string>();
@@ -1661,6 +1690,8 @@ export function DocRedlinePreview({
     // chèn. Thêm `loading` buộc effect chạy lại đúng lượt nó chuyển
     // true → false, bất kể `docHtml` có đổi ký tự nào hay không.
     return () => {
+      if (retryFrame != null) window.cancelAnimationFrame(retryFrame);
+      fenceObserver?.disconnect();
       for (const { parent, pre, host, details } of mutations) {
         if (details.parentElement === parent) parent.insertBefore(pre, details);
         details.remove();
@@ -1668,7 +1699,7 @@ export function DocRedlinePreview({
       }
       for (const { host } of drawioMutations) host.remove();
     };
-  }, [docHtml, loading, previewMode, changes, hiddenAnnotationIds]);
+  }, [docColumnNode, diagramMountRevision, docHtml, loading, previewMode, changes, hiddenAnnotationIds]);
 
   // (d, review WP3b): effect RIÊNG chỉ đồng bộ class + style nội tuyến của
   // host ĐÃ CHÈN theo `paint.edit` — KHÔNG gộp vào effect chèn host phía
@@ -2391,7 +2422,7 @@ export function DocRedlinePreview({
               </div>
             ) : null}
             <div className={`${styles.grid} ${panelOpen ? '' : styles.gridFull ?? ''}`}>
-              <div className={styles.docCol} ref={docColRef}>
+              <div className={styles.docCol} ref={bindDocColumn}>
                 <div className={`${styles.docToolbarWp3 ?? ''} ${styles.modeToolbar ?? ''}`}>
                   <DocRedlineModeControls
                     mode={previewMode}

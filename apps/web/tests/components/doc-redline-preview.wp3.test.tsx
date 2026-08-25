@@ -448,6 +448,37 @@ describe('DocRedlinePreview — N1 (wp3b.yaml): changes.json về sau text', () 
       { timeout: 2000 },
     );
   });
+
+  it('quét lại fence khi cột tài liệu vừa gắn vào DOM nhưng lượt quét đầu chưa thấy node', async () => {
+    vi.resetModules();
+    mockDiagramProject();
+    const originalQuerySelectorAll = Element.prototype.querySelectorAll;
+    let diagramFenceScans = 0;
+    const querySpy = vi.spyOn(Element.prototype, 'querySelectorAll').mockImplementation(function (this: Element, selectors: string) {
+      if (selectors === 'pre > code.language-mermaid') {
+        diagramFenceScans += 1;
+        if (diagramFenceScans === 1) {
+          return originalQuerySelectorAll.call(document.createElement('div'), selectors);
+        }
+      }
+      return originalQuerySelectorAll.call(this, selectors);
+    });
+
+    try {
+      const { DocRedlinePreview: Comp } = await import('../../src/components/DocRedlinePreview');
+      const { container } = render(<Comp projectId="p1" file={DIAGRAM_FILE} />);
+
+      await waitFor(
+        () => {
+          expect(container.querySelector('[class*="mermaidHost"]')).not.toBeNull();
+        },
+        { timeout: 2000 },
+      );
+      expect(diagramFenceScans).toBeGreaterThanOrEqual(2);
+    } finally {
+      querySpy.mockRestore();
+    }
+  });
 });
 
 // ── Fixture 5: F — khuôn thẻ 3-dòng cho một thẻ agent kiểu SỬA "bình thường"
