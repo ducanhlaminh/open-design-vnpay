@@ -902,10 +902,10 @@ export function FileViewer({
   if ((file.kind === 'text' || file.kind === 'code') && isComponentAuditFile(file)) {
     return <ComponentAuditPreview projectId={projectId} file={file} />;
   }
-  // dr-comp bản 2.0 ("Màn hình → Component"): `comp/<SCREEN-KEY>.screen.json`
-  // và `comp/index.json` mở khung rail màn hình + wireframe HTML + panel
-  // component DS (ScreenComponentsPreview). Cùng lý do gate 'code' như trên.
-  if ((file.kind === 'text' || file.kind === 'code') && isScreenComponentsFile(file)) {
+  // dr-comp: screen docs, index và artefact `comp/screen-flows/**` đều mở cùng
+  // khung rail + screen-flow + wireframe. Regex của helper đủ hẹp nên không
+  // gate theo kind (file `.drawio` có thể được daemon phân loại khác JSON).
+  if (isScreenComponentsFile(file)) {
     return <ScreenComponentsPreview projectId={projectId} file={file} />;
   }
   // Manifest-declared markdown artifacts AND plain .md files (pipeline docs —

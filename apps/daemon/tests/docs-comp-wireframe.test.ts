@@ -66,3 +66,20 @@ test('re-run dr-comp CÓ xoá comp/_screens.json + comp/_doc-screens.json (ảnh
     assert.equal(relClearedByRegen(rel, new Set(['dr-comp']), 'docs-review'), true, rel);
   }
 });
+
+test('screen-flow daemon-owned nằm trong comp/: thuộc dr-comp, bị dọn khi re-run; flows/ vẫn thuộc dr-flow', () => {
+  for (const rel of [
+    'docs-review/comp/screen-flows/index.json',
+    'docs-review/comp/screen-flows/FLOW-mua-sim.screen-flow.json',
+    'docs-review/comp/screen-flows/FLOW-mua-sim.drawio',
+  ]) {
+    assert.deepEqual(stagesForOutput(rel).map((d) => d.id), ['dr-comp'], rel);
+    assert.equal(relClearedByRegen(rel, new Set(['dr-comp']), 'docs-review'), true, rel);
+  }
+
+  for (const rel of ['docs-review/flows/index.json', 'docs-review/flows/FLOW-mua-sim/as-is.drawio']) {
+    assert.deepEqual(stagesForOutput(rel).map((d) => d.id), ['dr-flow'], rel);
+    assert.equal(relClearedByRegen(rel, new Set(['dr-comp']), 'docs-review'), false, rel);
+  }
+  assert.equal(relClearedByRegen('docs-review/screens-overrides.json', new Set(['dr-comp']), 'docs-review'), false);
+});

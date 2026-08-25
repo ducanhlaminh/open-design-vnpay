@@ -320,7 +320,7 @@ test('prepare: trang do ingest Confluence mới viết (ảnh SVG + fence ```mer
 // ── Sự cố #5d13309f: dr-flow nuốt mapping màn trỏ vào cạnh, patch bỏ near là
 // cạnh, sơ đồ mồ côi vẫn tốn lượt agent, warnings không tới người dùng. ──────
 
-test('resolveScreenCells: mapping vào cạnh quy về node đích/nguồn; id lạ và node decision bị dropped có lý do', () => {
+test('resolveScreenCells: mapping vào cạnh quy về node đích/nguồn; explicit decision mapping được giữ; id lạ vẫn dropped', () => {
   const nodes = [
     { id: 'a', type: 'start' as const },
     { id: 'b', type: 'action' as const },
@@ -335,13 +335,10 @@ test('resolveScreenCells: mapping vào cạnh quy về node đích/nguồn; id l
     { nodes, edges },
     { e1: 'doc__MH1', e2: 'doc__MH2', zzz: 'doc__MH3', c: 'doc__MH4' },
   );
-  assert.deepEqual(byNode, { b: 'doc__MH1', d: 'doc__MH2' });
+  assert.deepEqual(byNode, { b: 'doc__MH1', d: 'doc__MH2', c: 'doc__MH4' });
   assert.deepEqual(
     dropped.sort((x, y) => x.cell.localeCompare(y.cell)),
-    [
-      { cell: 'c', key: 'doc__MH4', reason: 'node loại quyết định (decision) không phải màn' },
-      { cell: 'zzz', key: 'doc__MH3', reason: 'không có trong sơ đồ' },
-    ],
+    [{ cell: 'zzz', key: 'doc__MH3', reason: 'không có trong sơ đồ' }],
   );
 });
 
@@ -675,7 +672,7 @@ test('App-pool (docs-app/): sau khi lọc hết bởi luật mới, inputs rỗn
   }
 });
 
-test('finalizeFlowUx: screens.json khai mapping hỏng (id lạ + node decision) → entry.screens rỗng, screensDropped đủ, flows/_warnings.json được ghi', async () => {
+test('finalizeFlowUx: screens.json explicit map C_Type decision→Trang chủ được giữ; id lạ vẫn warning/drop như cũ', async () => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'od-flow-ux-dropped-'));
   try {
     const fdir = path.join(cwd, 'flows', 'FLOW-x');
@@ -683,13 +680,13 @@ test('finalizeFlowUx: screens.json khai mapping hỏng (id lạ + node decision)
     const graphXml = `<mxGraphModel><root>
 <mxCell id="0"/><mxCell id="1" parent="0"/>
 <mxCell id="v1" value="Bắt đầu" style="ellipse;" vertex="1" parent="1"><mxGeometry x="0" y="0" width="80" height="40" as="geometry"/></mxCell>
-<mxCell id="v2" value="Quyết định" style="rhombus;" vertex="1" parent="1"><mxGeometry x="200" y="0" width="80" height="40" as="geometry"/></mxCell>
+<mxCell id="C_Type" value="Chọn loại SIM" style="rhombus;" vertex="1" parent="1"><mxGeometry x="200" y="0" width="80" height="40" as="geometry"/></mxCell>
 <mxCell id="v3" value="Kết thúc" style="ellipse;" vertex="1" parent="1"><mxGeometry x="400" y="0" width="80" height="40" as="geometry"/></mxCell>
-<mxCell id="e1" edge="1" parent="1" source="v1" target="v2"><mxGeometry relative="1" as="geometry"/></mxCell>
-<mxCell id="e2" edge="1" parent="1" source="v2" target="v3"><mxGeometry relative="1" as="geometry"/></mxCell>
+<mxCell id="e1" value="eSIM" edge="1" parent="1" source="v1" target="C_Type"><mxGeometry relative="1" as="geometry"/></mxCell>
+<mxCell id="e2" value="SIM vật lý" edge="1" parent="1" source="C_Type" target="v3"><mxGeometry relative="1" as="geometry"/></mxCell>
 </root></mxGraphModel>`;
     fs.writeFileSync(path.join(fdir, 'as-is.drawio'), encodeMxfile([{ id: 'p1', name: 'Hiện trạng', graphXml }]));
-    fs.writeFileSync(path.join(fdir, 'screens.json'), JSON.stringify({ cells: { zzz: 'doc__MH1', v2: 'doc__MH2' } }));
+    fs.writeFileSync(path.join(fdir, 'screens.json'), JSON.stringify({ cells: { zzz: 'doc__MH1', C_Type: 'doc__6.1.1' }, names: { 'doc__6.1.1': 'Màn hình trang chủ' } }));
     fs.writeFileSync(path.join(fdir, 'ux-review.json'), JSON.stringify({ summary: 'ok', findings: [] }));
     fs.mkdirSync(path.join(cwd, 'flows'), { recursive: true });
     fs.writeFileSync(
@@ -713,15 +710,15 @@ test('finalizeFlowUx: screens.json khai mapping hỏng (id lạ + node decision)
     const fin = await finalizeFlowUx(cwd);
     assert.equal(fin.index.length, 1);
     const entry = fin.index[0]!;
-    assert.deepEqual(entry.screens, []);
-    assert.equal(entry.screensDropped?.length, 2);
-    assert.deepEqual(
-      entry.screensDropped?.map((d) => d.reason).sort(),
-      ['không có trong sơ đồ', 'node loại quyết định (decision) không phải màn'],
-    );
+    assert.deepEqual(entry.screens, [{ key: 'doc__6.1.1', name: 'Màn hình trang chủ' }]);
+    assert.deepEqual(entry.screensDropped, [{ cell: 'zzz', key: 'doc__MH1', reason: 'không có trong sơ đồ' }]);
+    const flowchart = JSON.parse(fs.readFileSync(path.join(cwd, 'flows', 'FLOW-x.flowchart.json'), 'utf8'));
+    const decision = flowchart.nodes.find((node: { id: string }) => node.id === 'C_Type');
+    assert.deepEqual(decision, { id: 'C_Type', type: 'decision', label: 'Chọn loại SIM', screen: 'doc__6.1.1' });
+    assert.deepEqual(flowchart.edges.map((edge: { label?: string }) => edge.label), ['eSIM', 'SIM vật lý']);
     assert.ok(fin.warnings.some((w) => w.includes('mapping màn "doc__MH1" trỏ vào "zzz" bị bỏ')));
-    assert.ok(fin.warnings.some((w) => w.includes('mapping màn "doc__MH2" trỏ vào "v2" bị bỏ')));
-    assert.ok(fin.warnings.some((w) => w.includes('khai 2 mapping màn nhưng không cái nào dùng được')));
+    assert.ok(!fin.warnings.some((w) => w.includes('mapping màn "doc__6.1.1"')));
+    assert.ok(!fin.warnings.some((w) => w.includes('không cái nào dùng được')));
     const warningsFile = JSON.parse(fs.readFileSync(path.join(cwd, 'flows', '_warnings.json'), 'utf8'));
     assert.deepEqual(warningsFile.warnings, fin.warnings);
     assert.ok(typeof warningsFile.generatedAt === 'string');

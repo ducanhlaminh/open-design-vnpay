@@ -6,10 +6,46 @@
 .root {
   display: grid;
   grid-template-columns: 220px minmax(0, 1fr) 320px;
+  grid-template-rows: auto minmax(0, 1fr);
   height: 100%;
   min-height: 0;
   background: var(--bg, #fff);
   color: var(--text, #1a1916);
+}
+
+.previewTabs {
+  grid-column: 1 / -1;
+  grid-row: 1;
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  padding: 6px 10px 0;
+  border-bottom: 1px solid var(--border, #e1e5eb);
+  background: var(--bg-subtle, #eef1f5);
+}
+.previewTab {
+  appearance: none;
+  border: 1px solid transparent;
+  border-bottom: 0;
+  border-radius: 8px 8px 0 0;
+  padding: 6px 14px;
+  background: transparent;
+  color: var(--text-muted, #57544e);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.previewTabActive {
+  border-color: var(--border, #e1e5eb);
+  background: var(--bg, #fff);
+  color: var(--accent-strong, #00568f);
+  font-weight: 650;
+}
+.flowMain {
+  grid-column: 2 / -1;
+  grid-row: 2;
+  min-width: 0;
+  min-height: 0;
 }
 @media (max-width: 1100px) {
   .root {
@@ -25,6 +61,7 @@
 
 /* ── rail ─────────────────────────────────────────────────────────────── */
 .rail {
+  grid-row: 2;
   border-right: 1px solid var(--border, #e1e5eb);
   background: var(--bg-subtle, #eef1f5);
   overflow: auto;
@@ -166,6 +203,7 @@
 
 /* ── main ─────────────────────────────────────────────────────────────── */
 .main {
+  grid-row: 2;
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -402,6 +440,7 @@
 
 /* ── panel ────────────────────────────────────────────────────────────── */
 .panel {
+  grid-row: 2;
   border-left: 1px solid var(--border, #e1e5eb);
   overflow: auto;
   min-height: 0;

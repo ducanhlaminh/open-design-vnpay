@@ -37,6 +37,9 @@ interface RawGraph {
  *  daemon trước đây âm thầm loại bỏ vì chỉ khớp id đỉnh. Quy mapping-vào-cạnh
  *  về đỉnh ĐÍCH của cạnh đó (người dùng vừa đi TỚI đâu thì đó là màn hình);
  *  đích không dùng được (không tồn tại / là decision) thì lùi về đỉnh NGUỒN.
+ *  Riêng mapping TRỰC TIẾP vào decision là explicit: agent đã chỉ đích danh
+ *  rằng lựa chọn diễn ra trên một màn tài liệu, nên daemon giữ mapping đó.
+ *  Điều này không làm cạnh tự suy ra một màn trên decision.
  *  Tách thành hàm thuần để `index.ts` gọi lại với cùng input và lấy đúng
  *  danh sách `dropped` cho báo cáo, mà không phải đổi shape `FlowchartDoc`.
  *
@@ -66,7 +69,7 @@ export function resolveScreenCells(
   const nodeType = new Map(input.nodes.map((n) => [n.id, n.type]));
   const edgeById = new Map<string, { from?: string | undefined; to?: string | undefined }>();
   for (const e of input.edges) if (e.id) edgeById.set(e.id, { from: e.from, to: e.to });
-  const usable = (id: string) => nodeType.has(id) && nodeType.get(id) !== 'decision';
+  const usableEdgeEndpoint = (id: string) => nodeType.has(id) && nodeType.get(id) !== 'decision';
   const dropped: Array<{ cell: string; key: string; reason: string }> = [];
 
   type Candidate = { cell: string; key: string; direct: boolean };
@@ -91,10 +94,10 @@ export function resolveScreenCells(
 
   for (const [cell, key] of Object.entries(screens)) {
     if (nodeType.has(cell)) {
-      if (!usable(cell)) {
-        dropped.push({ cell, key, reason: 'node loại quyết định (decision) không phải màn' });
-        continue;
-      }
+      // A direct cell→screen entry is explicit evidence. A decision can be a
+      // choice rendered inside a real document screen (for example C_Type on
+      // "Màn hình trang chủ"). Keep its business node type and conditions;
+      // only edge-derived mappings continue to avoid decisions below.
       registerCandidate(cell, { cell, key, direct: true });
       continue;
     }
@@ -107,7 +110,7 @@ export function resolveScreenCells(
       dropped.push({ cell, key, reason: 'là cạnh không nối hai đỉnh (sơ đồ kiểu sequence)' });
       continue;
     }
-    const target = edge.to && usable(edge.to) ? edge.to : edge.from && usable(edge.from) ? edge.from : null;
+    const target = edge.to && usableEdgeEndpoint(edge.to) ? edge.to : edge.from && usableEdgeEndpoint(edge.from) ? edge.from : null;
     if (!target) {
       dropped.push({ cell, key, reason: 'là cạnh nhưng hai đầu không phải bước dùng được' });
       continue;

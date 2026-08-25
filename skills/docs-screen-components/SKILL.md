@@ -367,6 +367,8 @@ Luật:
   `wireframes/<KEY>.html` ở lượt màn). Không sửa `docs/`, `docs-feature/`,
   `flows/`, `criteria/`, `_inputs.json`, `_wireframe.css`; không tự ghi
   `comp/index.json` / `comp/summary.md` (daemon gộp sau).
+- Không tự ghi `comp/screen-flows/**`: đây là artifact screen-flow daemon-owned,
+  daemon dựng tất định sau khi áp manifest/overrides và hoàn tất fan-out màn.
 - **`component`/`anchor`/`data-comp` phải có thật** trong `criteria/components.md`
   (tên nguyên văn kể cả hậu tố phân biệt, hoặc anchor đúng). Daemon đối
   chiếu: component lạ bị hạ về `ds: null` + cảnh báo, `data-comp`/`data-nav`

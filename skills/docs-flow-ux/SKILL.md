@@ -338,8 +338,11 @@ thumbnail:
   lại từ đầu trong từng URD nên không prefix là đụng nhau; `dr-comp` đặt tên
   file wireframe đúng luật này, lệch một ký tự là màn mất thumbnail.
 - Chỉ gắn cho bước NGƯỜI DÙNG diễn ra trên một màn tài liệu đã khai. Bước hệ
-  thống ("Server kiểm tra", "Billing gạch nợ"), quyết định, kết cục thuần →
-  không gắn. Không bịa mã màn.
+  thống ("Server kiểm tra", "Billing gạch nợ") và kết cục thuần → không gắn.
+  Node `decision` **chỉ được gắn explicit** khi lựa chọn đó thực sự diễn ra
+  ngay trên một màn tài liệu đã khai (ví dụ `C_Type` là lựa chọn loại SIM trên
+  màn Trang chủ); giữ nguyên node quyết định và nhãn điều kiện các cạnh. Không
+  suy màn cho mọi decision và không bịa mã màn.
 - `names`: tên màn như tài liệu đặt (viewer hiện tên, không hiện key).
 - `note` (tuỳ chọn): chỗ duy nhất ghi phần tài liệu mô tả mơ hồ về luồng này.
 - **`cells` được phép trỏ vào id CẠNH, không chỉ id đỉnh.** Sơ đồ kiểu
@@ -385,6 +388,9 @@ Khi `flows/_inputs.json` báo không có sơ đồ: bạn **vẽ MỘT sơ đồ
   `flowchart.json`, `docs/`, `docs-feature/`, `review/`. Không sửa `as-is.*`
   daemon đã tạo, `cells.json`, `_inputs.json`. Không tự tạo `proposed.drawio`
   hay `index.json` — daemon làm sau khi bạn xong.
+- Screen-flow dưới `comp/screen-flows/` là artifact do daemon của bước
+  `dr-comp` dựng từ kết quả đã xác thực. Không tự tạo, sửa hoặc chép các file
+  trong thư mục đó ở bước này.
 - **Không bịa.** Mọi finding có `evidence`; mọi bước đề xuất phải suy được từ
   tài liệu hoặc từ chính lỗ hổng trong sơ đồ (nhánh thiếu, kết cục mù). Không
   thêm OTP/xác nhận/màn hình chỉ vì "thường là vậy".

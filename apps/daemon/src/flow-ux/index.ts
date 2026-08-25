@@ -856,7 +856,8 @@ export async function finalizeFlowUx(cwd: string): Promise<FinalizeResult> {
       entry.screens = screensOf(flowchart, names);
     }
     // Mapping màn bị bỏ (id lạ / trỏ vào cạnh mà hai đầu không dùng được /
-    // node decision / chỉ có ở bản đề xuất patch.json chưa vào flowchart) —
+    // chỉ có ở bản đề xuất patch.json chưa vào flowchart) — mapping trực tiếp
+    // vào decision là hợp lệ vì đó là bằng chứng explicit từ screens.json —
     // tính lại bằng CHÍNH cây node cuối cùng để không lệch với `entry.screens`
     // ở trên, rồi báo ra cho người dùng thay vì im lặng như trước.
     if (flowchart && Object.keys(cellScreens).length) {

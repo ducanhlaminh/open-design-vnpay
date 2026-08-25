@@ -16,6 +16,7 @@ import { fetchProjectFileText } from '../providers/registry';
 // WP13b (.tmp/pipeline/wp13b.yaml): quản lý danh sách "Màn hình" (lớp 3 —
 // đây là nơi người dùng xem kết quả dr-comp thường nhất) mở qua panel riêng.
 import { ScreenListManager } from './ScreenListManager';
+import { ScreenFlowPreview } from './ScreenFlowPreview';
 // WP25b (.tmp/pipeline/wp25-plan.md, Spec WP25b): nút "Dựng trong Figma" per
 // màn qua job nền (WP25a daemon, chạy song song trên nhánh khác). Type khai
 // LOCAL trong provider (chờ hợp nhất sang @open-design/contracts).
@@ -113,14 +114,20 @@ const PLATFORM_LABEL: Record<ScreenPlatform, string> = { mobile: 'Mobile', web: 
 
 const SCREEN_FILE_RE = /^(.*?)comp\/([^/]+)\.screen\.json$/i;
 const INDEX_FILE_RE = /^(.*?)comp\/index\.json$/i;
+const SCREEN_FLOW_INDEX_RE = /^(.*?)comp\/screen-flows\/index\.json$/i;
+const SCREEN_FLOW_FILE_RE = /^(.*?)comp\/screen-flows\/([^/]+?)(?:\.screen-flow\.json|\.drawio)$/i;
 
 /** `comp/<KEY>.screen.json` hoặc `comp/index.json` (bản 2.0). */
 export function isScreenComponentsFile(file: Pick<ProjectFile, 'name'>): boolean {
-  return SCREEN_FILE_RE.test(file.name) || INDEX_FILE_RE.test(file.name);
+  return SCREEN_FILE_RE.test(file.name) || INDEX_FILE_RE.test(file.name) || SCREEN_FLOW_INDEX_RE.test(file.name) || SCREEN_FLOW_FILE_RE.test(file.name);
 }
 
 /** `comp/<KEY>.screen.json` → `{ root: '<prefix>', key }`; `comp/index.json` → key null. */
-export function screenComponentsLocationOf(fileName: string): { root: string; key: string | null } | null {
+export function screenComponentsLocationOf(fileName: string): { root: string; key: string | null; flowId?: string; entry?: 'flow' } | null {
+  const flowFile = SCREEN_FLOW_FILE_RE.exec(fileName);
+  if (flowFile) return { root: flowFile[1]!, key: null, flowId: flowFile[2]!, entry: 'flow' };
+  const flowIndex = SCREEN_FLOW_INDEX_RE.exec(fileName);
+  if (flowIndex) return { root: flowIndex[1]!, key: null, entry: 'flow' };
   const m = SCREEN_FILE_RE.exec(fileName);
   if (m) return { root: m[1]!, key: m[2]! };
   const i = INDEX_FILE_RE.exec(fileName);
@@ -428,6 +435,7 @@ interface LoadedScreen {
 
 export function ScreenComponentsPreview({ projectId, file }: { projectId: string; file: ProjectFile }) {
   const loc = useMemo(() => screenComponentsLocationOf(file.name), [file.name]);
+  const [previewTab, setPreviewTab] = useState<'flow' | 'wireframe'>(() => (screenComponentsLocationOf(file.name)?.key ? 'wireframe' : 'flow'));
   const [rail, setRail] = useState<ScreenRailEntry[] | null>(null);
   const [failedMap, setFailedMap] = useState<Map<string, string[]>>(new Map());
   const [roleMap, setRoleMap] = useState<RoleMapView | null>(null);
@@ -439,6 +447,10 @@ export function ScreenComponentsPreview({ projectId, file }: { projectId: string
   const [showRoles, setShowRoles] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showScreenManager, setShowScreenManager] = useState(false);
+
+  useEffect(() => {
+    setPreviewTab(loc?.key ? 'wireframe' : 'flow');
+  }, [loc]);
 
   // WP25b — job "Dựng trong Figma" của project (re-attach qua /active) + cấu
   // hình file preview (docs-review/.figma-preview.json qua route daemon).
@@ -461,11 +473,12 @@ export function ScreenComponentsPreview({ projectId, file }: { projectId: string
     setActiveEl(null);
     const get = (rel: string) => fetchProjectFileText(projectId, rel);
     void (async () => {
-      const [indexRaw, inputsRaw, roleRaw, figmaRaw] = await Promise.all([
+      const [indexRaw, inputsRaw, roleRaw, figmaRaw, screenFlowIndexRaw] = await Promise.all([
         get(`${loc.root}comp/index.json`),
         get(`${loc.root}comp/_inputs.json`),
         get(`${loc.root}comp/_role-map.json`),
         get(`${loc.root}.figma-catalog/components.json`),
+        get(`${loc.root}comp/screen-flows/index.json`),
       ]);
       if (cancelled) return;
       const index = parseScreenIndex(indexRaw);
@@ -489,6 +502,9 @@ export function ScreenComponentsPreview({ projectId, file }: { projectId: string
       setRoleMap(parseRoleMapView(roleRaw));
       setFigmaRefs(parseFigmaRefs(figmaRaw));
       setCurrent(loc.key ?? list[0]!.key);
+      // Run cũ chưa có artifact screen-flow vẫn mở wireframe như trước; tab
+      // Luồng màn hình còn đó để hiện empty-state và hướng dẫn chạy lại dr-comp.
+      setPreviewTab(loc.key ? 'wireframe' : loc.entry === 'flow' || screenFlowIndexRaw != null ? 'flow' : 'wireframe');
     })();
     return () => {
       cancelled = true;
@@ -576,10 +592,12 @@ export function ScreenComponentsPreview({ projectId, file }: { projectId: string
     setFigmaUrlInput(res.config.url ?? '');
   };
 
-  const selectScreen = (key: string) => {
-    if (key === current) return;
-    setCurrent(key);
-    setActiveEl(null);
+  const selectScreen = (key: string, openWireframe = false) => {
+    if (key !== current) {
+      setCurrent(key);
+      setActiveEl(null);
+    }
+    if (openWireframe) setPreviewTab('wireframe');
   };
   const onNav = (to: string) => {
     if (rail?.some((r) => r.key === to)) selectScreen(to);
@@ -596,6 +614,30 @@ export function ScreenComponentsPreview({ projectId, file }: { projectId: string
 
   return (
     <div className={styles.root}>
+      <div className={styles.previewTabs} role="tablist" aria-label="Chế độ xem Màn hình → Component">
+        <button
+          type="button"
+          role="tab"
+          id="screen-flow-tab"
+          aria-controls="screen-flow-tabpanel"
+          aria-selected={previewTab === 'flow'}
+          className={`${styles.previewTab} ${previewTab === 'flow' ? styles.previewTabActive : ''}`}
+          onClick={() => setPreviewTab('flow')}
+        >
+          Luồng màn hình
+        </button>
+        <button
+          type="button"
+          role="tab"
+          id="screen-wireframe-tab"
+          aria-controls="screen-wireframe-tabpanel"
+          aria-selected={previewTab === 'wireframe'}
+          className={`${styles.previewTab} ${previewTab === 'wireframe' ? styles.previewTabActive : ''}`}
+          onClick={() => setPreviewTab('wireframe')}
+        >
+          Wireframe màn hình
+        </button>
+      </div>
       <aside className={styles.rail} aria-label="Màn hình của luồng">
         <div className={styles.railHead}>
           <span className={styles.railTitle}>Màn hình</span>
@@ -617,7 +659,7 @@ export function ScreenComponentsPreview({ projectId, file }: { projectId: string
                 <button
                   type="button"
                   className={`${styles.railItem} ${r.key === current ? styles.railItemActive : ''} ${isFailed ? styles.railItemFailed : ''}`}
-                  onClick={() => selectScreen(r.key)}
+                  onClick={() => selectScreen(r.key, true)}
                   aria-current={r.key === current ? 'true' : undefined}
                   data-testid={`rail-${r.key}`}
                 >
@@ -654,7 +696,27 @@ export function ScreenComponentsPreview({ projectId, file }: { projectId: string
         ) : null}
       </aside>
 
-      <section className={styles.main} aria-label="Wireframe">
+      {previewTab === 'flow' ? (
+        <section
+          className={styles.flowMain}
+          role="tabpanel"
+          id="screen-flow-tabpanel"
+          aria-labelledby="screen-flow-tab"
+        >
+          <ScreenFlowPreview
+            projectId={projectId}
+            root={loc.root}
+            currentScreenKey={current}
+            requestedFlowId={loc.flowId}
+            fileMtime={file.mtime}
+            onOpenScreen={(key) => {
+              if (rail.some((entry) => entry.key === key)) selectScreen(key, true);
+            }}
+          />
+        </section>
+      ) : (
+        <>
+      <section className={styles.main} aria-label="Wireframe" role="tabpanel" id="screen-wireframe-tabpanel" aria-labelledby="screen-wireframe-tab">
         <header className={styles.head}>
           <div className={styles.headMain}>
             <h2 className={styles.title}>{doc?.name || currentEntry?.name || current}</h2>
@@ -903,6 +965,8 @@ export function ScreenComponentsPreview({ projectId, file }: { projectId: string
           </div>
         ) : null}
       </aside>
+        </>
+      )}
 
       {showScreenManager ? <ScreenListManager projectId={projectId} onClose={() => setShowScreenManager(false)} /> : null}
     </div>

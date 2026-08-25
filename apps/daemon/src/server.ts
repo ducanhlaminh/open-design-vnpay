@@ -685,6 +685,7 @@ import {
   type ScreenComponentsDoc,
   type ScreenComponentsIndex,
 } from './screen-components.js';
+import { buildScreenFlowArtifacts, SCREEN_FLOWS_DIR } from './screen-flow.js';
 // WP14: nối lớp 2 (trích màn bằng agent khi lớp 1 yếu) + lớp 3 (manifest +
 // overrides người dùng) vào khối docs-comp — xem docblock ở nơi dùng trong
 // runDocsComponentAuditFanout.
@@ -17949,6 +17950,24 @@ export async function startServer({
         if (anySucceeded) {
           await fs.promises.writeFile(path.join(cwd, 'comp/index.json'), JSON.stringify(index, null, 2), 'utf8');
           await fs.promises.writeFile(path.join(cwd, 'comp/summary.md'), summaryMd, 'utf8');
+          // Screen-flow is daemon-owned and derived only from the final screen
+          // list (after extract + user overrides) and the as-is flow graph.
+          // It is an auxiliary preview artifact: a malformed source diagram
+          // must not turn otherwise valid per-screen component work into a
+          // failed dr-comp run.
+          await buildScreenFlowArtifacts(cwd, screenInputs).catch(async (error) => {
+            const warning = `Không dựng được luồng màn hình: ${error instanceof Error ? error.message : String(error)}`;
+            console.warn(`[docs-comp] ${warning}`);
+            const dir = path.join(cwd, SCREEN_FLOWS_DIR);
+            await fs.promises.mkdir(dir, { recursive: true }).catch(() => null);
+            await fs.promises
+              .writeFile(
+                path.join(dir, 'index.json'),
+                `${JSON.stringify({ schema_version: 1, generatedAt: new Date().toISOString(), flows: [], totalScreens: screenInputs.length, warnings: [warning] }, null, 2)}\n`,
+                'utf8',
+              )
+              .catch(() => null);
+          });
         } else {
           await writeDocsComponentFailureNote(cwd, summaryMd);
           await fs.promises.rm(wireframesDir, { recursive: true, force: true }).catch(() => null);
