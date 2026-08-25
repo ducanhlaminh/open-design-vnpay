@@ -1332,6 +1332,25 @@
   .printCover h1 { margin: 0 0 8mm; font-size: 20px; }
   .printCover p { margin: 2mm 0; }
   .printSheet :global(article) { padding: 0 12mm; }
+  /* Snapshot PDF đã thay viewport tương tác bằng SVG/ảnh tĩnh. Gỡ kích thước
+     cố định + overflow của viewer màn hình để flow dài không bị cắt ở mép
+     khung và giữ mỗi sơ đồ liền khối khi trình in còn đủ chỗ trên trang. */
+  .printSheet .mermaidFrame,
+  .printSheet .drawioFrame {
+    height: auto;
+    min-height: 0;
+    overflow: visible;
+    resize: none;
+    break-inside: avoid;
+  }
+  .printSheet .mermaidFrame :global(svg),
+  .printSheet .drawioFrame :global(svg),
+  .printSheet .drawioFrame :global(img) {
+    display: block;
+    width: 100% !important;
+    height: auto !important;
+    max-width: 100%;
+  }
   .printAppendix { padding: 12mm; break-before: page; }
   .printAppendix h2 { margin-top: 0; }
   .printAppendix table { width: 100%; border-collapse: collapse; font-size: 10px; }

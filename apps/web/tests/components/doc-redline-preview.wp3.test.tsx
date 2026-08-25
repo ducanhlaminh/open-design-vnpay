@@ -21,7 +21,7 @@ vi.mock('../../src/components/MermaidDiagram', () => ({
   MermaidDiagram: ({ code }: { code: string }) => (
     <div data-testid="mermaid-diagram">
       <button type="button" aria-label="Zoom in">+</button>
-      {code}
+      <svg data-testid="mermaid-svg" viewBox="0 0 320 180"><text>{code}</text></svg>
     </div>
   ),
 }));
@@ -165,6 +165,27 @@ describe('DocRedlinePreview — sơ đồ mermaid (kind flow-diagram)', () => {
     await waitFor(() => {
       expect(container.querySelector('[data-testid="mermaid-diagram"]')?.textContent).toContain('Chọn gói cước');
     });
+  });
+
+  it('Xuất PDF lấy SVG đã render và loại source Mermaid thô khỏi print sheet', async () => {
+    vi.resetModules();
+    mockDiagramProject();
+    const printSpy = vi.spyOn(window, 'print').mockImplementation(() => {});
+    try {
+      const { DocRedlinePreview: Comp } = await import('../../src/components/DocRedlinePreview');
+      const { container } = render(<Comp projectId="p1" file={DIAGRAM_FILE} />);
+
+      await waitFor(() => expect(container.querySelector('[data-testid="mermaid-svg"]')).not.toBeNull());
+      fireEvent.click(Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Xuất PDF')!);
+
+      await waitFor(() => expect(printSpy).toHaveBeenCalled());
+      const printSheet = document.body.querySelector<HTMLElement>('[data-od-print-sheet]');
+      expect(printSheet?.querySelector('[data-testid="mermaid-svg"]')).not.toBeNull();
+      expect(printSheet?.querySelector('code.language-mermaid')).toBeNull();
+      expect(printSheet?.querySelector('button[aria-label="Zoom in"]')).toBeNull();
+    } finally {
+      printSpy.mockRestore();
+    }
   });
 
   it('thẻ 3 dòng: rule_id không hiện ở mặt thẻ, bấm "Chi tiết" mới hiện', async () => {
@@ -449,7 +470,7 @@ describe('DocRedlinePreview — N1 (wp3b.yaml): changes.json về sau text', () 
     );
   });
 
-  it('quét lại fence khi cột tài liệu vừa gắn vào DOM nhưng lượt quét đầu chưa thấy node', async () => {
+  it('bám article đã commit và quét lại khi lượt đầu chưa thấy fence', async () => {
     vi.resetModules();
     mockDiagramProject();
     const originalQuerySelectorAll = Element.prototype.querySelectorAll;
@@ -471,6 +492,8 @@ describe('DocRedlinePreview — N1 (wp3b.yaml): changes.json về sau text', () 
       await waitFor(
         () => {
           expect(container.querySelector('[class*="mermaidHost"]')).not.toBeNull();
+          expect(container.querySelector('details.md-mermaid__source')).not.toBeNull();
+          expect(container.querySelector('article > pre > code.language-mermaid')).toBeNull();
         },
         { timeout: 2000 },
       );

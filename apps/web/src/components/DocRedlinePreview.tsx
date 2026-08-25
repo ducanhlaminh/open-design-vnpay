@@ -516,6 +516,77 @@ function extractMermaidFenceBody(text: string | undefined): string | null {
   return m ? (m[1] ?? '').replace(/\s+$/, '') : null;
 }
 
+/** Đợi cột tài liệu gắn đủ host Mermaid và SVG trước khi chụp DOM để in.
+ *  `window.print()` chụp đồng bộ tại thời điểm gọi; nếu dynamic import Mermaid
+ *  chưa xong thì PDF sẽ giữ code thô hoặc khung rỗng. Timeout là fail-soft:
+ *  bản in vẫn mở và giữ thông báo Mermaid error nếu renderer thật sự lỗi. */
+async function waitForPrintableMermaid(article: HTMLElement, hostClass: string, timeoutMs = 3000): Promise<void> {
+  const ready = () => {
+    const fenceCount = article.querySelectorAll('pre > code.language-mermaid').length;
+    const hosts = hostClass ? Array.from(article.getElementsByClassName(hostClass)) : [];
+    return hosts.length >= fenceCount && hosts.every((host) => host.querySelector('svg') || host.textContent?.includes('Mermaid error'));
+  };
+  if (ready()) return;
+  const startedAt = Date.now();
+  await new Promise<void>((resolve) => {
+    const check = () => {
+      if (ready() || Date.now() - startedAt >= timeoutMs) {
+        resolve();
+        return;
+      }
+      window.setTimeout(check, 40);
+    };
+    check();
+  });
+}
+
+/** Chụp article ĐÃ render để sheet in có SVG/Draw.io thật thay vì `docHtml`
+ *  thô. Pan/zoom dùng wrapper absolute + transform theo viewport màn hình, nên
+ *  bản clone chỉ giữ visual cuối (SVG/ảnh canvas), chuẩn hoá nó về width:100%,
+ *  và bỏ toàn bộ control/source tương tác không có ý nghĩa trên giấy. */
+function printableArticleHtml(
+  source: HTMLElement,
+  classes: { mermaidFrame: string; drawioFrame: string },
+): string {
+  const clone = source.cloneNode(true) as HTMLElement;
+
+  const sourceCanvases = Array.from(source.querySelectorAll('canvas'));
+  const clonedCanvases = Array.from(clone.querySelectorAll('canvas'));
+  sourceCanvases.forEach((canvas, index) => {
+    const clonedCanvas = clonedCanvases[index];
+    if (!clonedCanvas) return;
+    try {
+      const image = document.createElement('img');
+      image.src = canvas.toDataURL('image/png');
+      image.alt = 'Sơ đồ';
+      image.style.width = '100%';
+      image.style.height = 'auto';
+      clonedCanvas.replaceWith(image);
+    } catch {
+      // Canvas có resource cross-origin có thể bị taint; giữ node clone để bản
+      // in không mất hẳn vị trí sơ đồ, còn SVG là đường chính của hai viewer.
+    }
+  });
+
+  clone.querySelectorAll('details.md-mermaid__source, button').forEach((node) => node.remove());
+  for (const frameClass of [classes.mermaidFrame, classes.drawioFrame].filter(Boolean)) {
+    for (const frame of Array.from(clone.getElementsByClassName(frameClass))) {
+      const visual = frame.querySelector<SVGElement | HTMLImageElement>('svg, img');
+      if (!visual) continue;
+      const printableVisual = visual.cloneNode(true) as SVGElement | HTMLImageElement;
+      printableVisual.style.transform = 'none';
+      printableVisual.style.width = '100%';
+      printableVisual.style.height = 'auto';
+      printableVisual.style.maxWidth = '100%';
+      frame.replaceChildren(printableVisual);
+    }
+  }
+  clone.removeAttribute('id');
+  clone.removeAttribute('role');
+  clone.removeAttribute('aria-labelledby');
+  return clone.innerHTML;
+}
+
 /** Một vế của khối diff mono (op 'edit'/'add'/'del' — xem `ChangeDetail`): với
  *  sơ đồ mermaid, chữ mermaid thô (`flowchart TD`, `A --> B`…) không đọc được
  *  ở dạng cắt, nên ưu tiên dòng caption ("Gốc"/"Đề xuất …") nếu `text` có rào
@@ -1075,12 +1146,14 @@ export function DocRedlinePreview({
   const [hiddenAnnotationIds, setHiddenAnnotationIds] = useState<Set<string>>(new Set());
   const pendingSelectionRef = useRef<{ id: string; source: 'document' | 'rail' } | null>(null);
   const docColRef = useRef<HTMLDivElement | null>(null);
-  const [docColumnNode, setDocColumnNode] = useState<HTMLDivElement | null>(null);
+  // Bám thẳng vào <article> chứa `dangerouslySetInnerHTML`, không bám vào cột
+  // cha. Ref của cột có thể commit trước subtree HTML; ở runtime production đã
+  // ghi nhận fence có trong article nhưng effect không nhận được một dependency
+  // mới để quét lại (host/source đều bằng 0). Callback-ref của chính article chỉ
+  // được giao sau khi node đích đã commit, nên đây là lifecycle đáng tin cậy để
+  // dựng Mermaid/Draw.io hosts.
+  const [docArticleNode, setDocArticleNode] = useState<HTMLElement | null>(null);
   const [diagramMountRevision, setDiagramMountRevision] = useState(0);
-  const bindDocColumn = useCallback((node: HTMLDivElement | null) => {
-    docColRef.current = node;
-    setDocColumnNode(node);
-  }, []);
   // Phần tử mục trong rail, theo change id — dùng để cuộn rail tới mục tương
   // ứng khi người dùng bấm một vùng bôi trong tài liệu.
   const itemsByChangeRef = useRef<Map<string, HTMLElement>>(new Map());
@@ -1095,6 +1168,8 @@ export function DocRedlinePreview({
   // cửa sổ để người đọc biết mình đang được chỉ tới cái gì).
   const [refModal, setRefModal] = useState<{ markId: string; label: string } | null>(null);
   const modalDocRef = useRef<HTMLDivElement | null>(null);
+  const printArticleRef = useRef<HTMLElement | null>(null);
+  const [printBusy, setPrintBusy] = useState(false);
 
   function changePreviewMode(mode: PreviewMode) {
     if (mode === previewMode) return;
@@ -1540,7 +1615,7 @@ export function DocRedlinePreview({
   >([]);
 
   useEffect(() => {
-    const container = docColumnNode;
+    const container = docArticleNode;
     if (!container) {
       setDiagramMounts([]);
       setDrawioMounts([]);
@@ -1574,7 +1649,7 @@ export function DocRedlinePreview({
     const mounts: Array<{ host: HTMLElement; changeId: string | null; code: string }> = [];
     const mutations: Array<{ parent: HTMLElement; pre: HTMLElement; host: HTMLElement; details: HTMLDetailsElement }> = [];
     const consumedOwners = new Set<string>();
-    const headings = Array.from(container.querySelectorAll<HTMLElement>('article h1, article h2, article h3, article h4, article h5, article h6'));
+    const headings = Array.from(container.querySelectorAll<HTMLElement>('h1, h2, h3, h4, h5, h6'));
     const diagramOwners = previewMode === 'changes'
       ? changes.filter((c) => c.kind === 'flow-diagram' && c.status !== 'dismissed' && annotationVisible(c.id))
       : [];
@@ -1699,7 +1774,7 @@ export function DocRedlinePreview({
       }
       for (const { host } of drawioMutations) host.remove();
     };
-  }, [docColumnNode, diagramMountRevision, docHtml, loading, previewMode, changes, hiddenAnnotationIds]);
+  }, [docArticleNode, diagramMountRevision, docHtml, loading, previewMode, changes, hiddenAnnotationIds]);
 
   // (d, review WP3b): effect RIÊNG chỉ đồng bộ class + style nội tuyến của
   // host ĐÃ CHÈN theo `paint.edit` — KHÔNG gộp vào effect chèn host phía
@@ -2222,6 +2297,39 @@ export function DocRedlinePreview({
     if (id) selectFromList(id);
   }
 
+  async function printDocument(): Promise<void> {
+    if (printBusy) return;
+    setPrintBusy(true);
+    try {
+      const sourceArticle = docColRef.current?.querySelector<HTMLElement>('#doc-redline-document-tabpanel');
+      if (sourceArticle && printArticleRef.current) {
+        await waitForPrintableMermaid(sourceArticle, (styles.mermaidHost ?? '').trim());
+        // Safe by construction: sourceArticle bắt nguồn từ docHtml đã sanitize
+        // và các renderer nội bộ; clone không nhận thêm HTML từ input ngoài.
+        printArticleRef.current.innerHTML = printableArticleHtml(sourceArticle, {
+          mermaidFrame: (styles.mermaidFrame ?? '').trim(),
+          drawioFrame: (styles.drawioFrame ?? '').trim(),
+        });
+      }
+
+      // Bật cờ trên <body> để CSS in chỉ hiện tấm sheet portal; dọn bằng
+      // afterprint + timeout dự phòng (Safari cũ không bắn afterprint đều).
+      const old = document.title;
+      document.title = `review-${file.name.split('/').pop()?.replace(/\.md$/i, '') ?? 'document'}`;
+      document.body.dataset.odPrint = 'redline';
+      const cleanupPrint = () => {
+        document.title = old;
+        delete document.body.dataset.odPrint;
+        window.removeEventListener('afterprint', cleanupPrint);
+      };
+      window.addEventListener('afterprint', cleanupPrint);
+      window.print();
+      window.setTimeout(cleanupPrint, 1500);
+    } finally {
+      setPrintBusy(false);
+    }
+  }
+
   // Số thứ tự map LỖI ↔ VÙNG BÔI: chỗ sửa đánh 1..N theo thứ tự rail, nhận xét
   // đánh N1..Nk (namespace riêng để không lẫn với chỗ sửa). Cùng một map dùng
   // cho badge trên thẻ, con số trên vùng bôi, và cột STT trong phụ lục in.
@@ -2265,24 +2373,11 @@ export function DocRedlinePreview({
                 <button
                   type="button"
                   className={styles.printButton}
-                  onClick={() => {
-                    // Bật cờ trên <body> để CSS in chỉ hiện tấm sheet portal;
-                    // dọn bằng afterprint + timeout dự phòng (Safari cũ không
-                    // bắn afterprint đều).
-                    const old = document.title;
-                    document.title = `review-${file.name.split('/').pop()?.replace(/\.md$/i, '') ?? 'document'}`;
-                    document.body.dataset.odPrint = 'redline';
-                    const cleanup = () => {
-                      document.title = old;
-                      delete document.body.dataset.odPrint;
-                      window.removeEventListener('afterprint', cleanup);
-                    };
-                    window.addEventListener('afterprint', cleanup);
-                    window.print();
-                    window.setTimeout(cleanup, 1500);
-                  }}
+                  disabled={printBusy}
+                  aria-busy={printBusy}
+                  onClick={() => void printDocument()}
                 >
-                  Xuất PDF
+                  {printBusy ? 'Đang chuẩn bị PDF…' : 'Xuất PDF'}
                 </button>
                 {previewMode === 'changes' ? (
                   <HighlightFilters
@@ -2422,7 +2517,7 @@ export function DocRedlinePreview({
               </div>
             ) : null}
             <div className={`${styles.grid} ${panelOpen ? '' : styles.gridFull ?? ''}`}>
-              <div className={styles.docCol} ref={bindDocColumn}>
+              <div className={styles.docCol} ref={docColRef}>
                 <div className={`${styles.docToolbarWp3 ?? ''} ${styles.modeToolbar ?? ''}`}>
                   <DocRedlineModeControls
                     mode={previewMode}
@@ -2451,6 +2546,7 @@ export function DocRedlinePreview({
                 {/* Safe by contract: renderMarkdownToSafeHtml escapes raw HTML
                     and rejects unsafe link protocols. */}
                 <article
+                  ref={setDocArticleNode}
                   id="doc-redline-document-tabpanel"
                   role="tabpanel"
                   aria-labelledby={`doc-redline-document-${previewMode}-tab`}
@@ -2793,7 +2889,7 @@ export function DocRedlinePreview({
                 <p>{previewMode === 'changes' ? `${activeChangeCount} chỗ sửa còn hiệu lực` : `${activeNoteCount} nhận xét còn hiệu lực`}</p>
               </section>
               {/* Safe by contract: renderMarkdownToSafeHtml escapes raw HTML. */}
-              <article className="markdown-rendered" dangerouslySetInnerHTML={{ __html: docHtml ?? '' }} />
+              <article ref={printArticleRef} className="markdown-rendered" dangerouslySetInnerHTML={{ __html: docHtml ?? '' }} />
               <section className={styles.printAppendix}>
                 <h2>Phụ lục — {modeLabel(previewMode).toLocaleLowerCase('vi')}</h2>
                 <table><thead><tr><th>STT</th><th>Loại / rule</th><th>Mức độ</th><th>Thay đổi / nhận xét</th><th>Lý do</th></tr></thead><tbody>
