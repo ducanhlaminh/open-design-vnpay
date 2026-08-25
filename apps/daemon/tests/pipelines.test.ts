@@ -323,8 +323,8 @@ test('the system map is a shared stage: one run per project, before the per-targ
   // Shared stages must precede the per-target ones, or run-all's "run shared
   // first, then fork" would drop them.
   const ids = WORKFLOWS[0]!.pipelineIds;
-  const lastShared = Math.max(...ids.map((id, i) => (def(id).sharedAcrossTargets || def(id).inputPlaceholder ? i : -1)));
-  const firstPerTarget = ids.findIndex((id) => !def(id).sharedAcrossTargets && !def(id).inputPlaceholder);
+  const lastShared = Math.max(...ids.map((id, i) => (def(id).sharedAcrossTargets || def(id).inputKind === 'source' ? i : -1)));
+  const firstPerTarget = ids.findIndex((id) => !def(id).sharedAcrossTargets && def(id).inputKind !== 'source');
   assert.ok(lastShared < firstPerTarget, 'mọi bước dùng chung phải đứng trước các bước theo target');
 });
 
@@ -1277,8 +1277,10 @@ test('ds-lab: 5-stage workflow in order (lab-docs → lab-map → lab-compose �
   assert.deepEqual(getPipelineDef('lab-map')?.dependsOn, ['lab-docs']);
   assert.deepEqual(getPipelineDef('lab-map')?.outputs, ['screen-map.json', 'screen-map.md']);
   assert.equal(getPipelineDef('lab-map')?.inputPlaceholder, 'Luồng/màn cần ưu tiên (tuỳ chọn)');
+  assert.equal(getPipelineDef('lab-map')?.inputKind, 'prompt');
 
   assert.deepEqual(getPipelineDef('lab-compose')?.dependsOn, ['lab-docs']);
+  assert.equal(getPipelineDef('lab-compose')?.inputKind, 'prompt');
 
   assert.equal(getPipelineDef('lab-kit-plan')?.skillId, 'lab-kit-plan');
   assert.equal(getPipelineDef('lab-kit-plan')?.name, 'Đề xuất kit');
@@ -1290,12 +1292,14 @@ test('ds-lab: 5-stage workflow in order (lab-docs → lab-map → lab-compose �
     'kit-candidates/',
   ]);
   assert.equal(getPipelineDef('lab-kit-plan')?.inputPlaceholder, 'Định hướng đề xuất (tuỳ chọn)');
+  assert.equal(getPipelineDef('lab-kit-plan')?.inputKind, 'prompt');
 
   assert.equal(getPipelineDef('lab-kit')?.skillId, 'lab-kit-compose');
   assert.equal(getPipelineDef('lab-kit')?.name, 'Đóng gói comp');
   assert.deepEqual(getPipelineDef('lab-kit')?.dependsOn, ['lab-docs', 'lab-kit-plan']);
   assert.deepEqual(getPipelineDef('lab-kit')?.outputs, ['kit-shots/', 'kit-result.json', 'kit/kit.json']);
   assert.equal(getPipelineDef('lab-kit')?.inputPlaceholder, 'Định hướng thẩm mỹ (tuỳ chọn)');
+  assert.equal(getPipelineDef('lab-kit')?.inputKind, 'prompt');
 });
 
 test('ds-lab: screen-map.json/screen-map.md attribute to lab-map; re-run lab-kit-plan alone does NOT clear them', () => {

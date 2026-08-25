@@ -76,11 +76,83 @@ describe('multi-turn pipeline recovery finalizers', () => {
       path.join(cwd, 'wireframes', `${key}.html`),
       '<!doctype html><html><head><style>.x{display:block}</style></head><body data-screen="LOGIN" data-layout="web"><main data-el="form">Form đăng nhập</main></body></html>',
     );
+    await fs.mkdir(path.join(cwd, 'flows'), { recursive: true });
+    await fs.writeFile(path.join(cwd, 'flows', 'index.json'), JSON.stringify([{
+      id: 'login',
+      title: 'Đăng nhập',
+      source: 'docs-feature/login.md',
+      kind: 'mermaid',
+      screens: [{ key, name: 'Đăng nhập' }],
+      files: { flowchart: 'flows/login.flowchart.json' },
+    }]));
+    await fs.writeFile(path.join(cwd, 'flows', 'login.flowchart.json'), JSON.stringify({
+      id: 'login',
+      title: 'Đăng nhập',
+      source: 'docs-feature/login.md',
+      nodes: [{ id: 'login', type: 'start', label: 'Đăng nhập', screen: key }],
+      edges: [],
+    }));
     const recovered = await validateComponentRecovery(cwd);
     expect(recovered.ok).toBe(true);
     const index = JSON.parse(await fs.readFile(path.join(cwd, 'comp', 'index.json'), 'utf8'));
     expect(index.screens.map((screen: { key: string }) => screen.key)).toEqual([key]);
     expect(index.failed).toEqual([]);
+
+    // Topology recovery is a deterministic re-check: retain the two valid
+    // per-screen outputs, block while DETAIL is unreachable, then pass as soon
+    // as evidenced topology is repaired. No component agent fan-out is needed.
+    const detail = 'DETAIL';
+    const detailInput = {
+      ...inputs.screens[0],
+      key: detail,
+      name: 'Chi tiết',
+      order: 1,
+    };
+    await fs.writeFile(path.join(cwd, 'comp', '_inputs.json'), JSON.stringify({ ...inputs, screens: [...inputs.screens, detailInput] }));
+    await fs.writeFile(path.join(cwd, 'comp', `${detail}.screen.json`), JSON.stringify({
+      schema_version: '2.0',
+      key: detail,
+      name: 'Chi tiết',
+      flowId: 'login',
+      platform: 'web',
+      source: 'docs-feature/login.md',
+      elements: [{ id: 'detail', label: 'Chi tiết', role: 'content', ds: null, confidence: 'high', provenance: 'text', why: 'Không có DS' }],
+      nav: [],
+    }));
+    await fs.writeFile(
+      path.join(cwd, 'wireframes', `${detail}.html`),
+      '<!doctype html><html><head><style>.x{display:block}</style></head><body data-screen="DETAIL" data-layout="web"><main data-el="detail">Chi tiết</main></body></html>',
+    );
+    await fs.writeFile(path.join(cwd, 'flows', 'login.flowchart.json'), JSON.stringify({
+      id: 'login',
+      title: 'Đăng nhập',
+      source: 'docs-feature/login.md',
+      nodes: [
+        { id: 'login', type: 'start', label: 'Đăng nhập', screen: key },
+        { id: 'detail', type: 'action', label: 'Chi tiết', screen: detail },
+      ],
+      edges: [],
+    }));
+    const topologyBlocked = await validateComponentRecovery(cwd);
+    expect(topologyBlocked.ok).toBe(false);
+    expect(topologyBlocked.issues.join('\n')).toContain(detail);
+    expect(topologyBlocked.needsHelp).toEqual(expect.arrayContaining([expect.objectContaining({ key: detail })]));
+    await expect(fs.access(path.join(cwd, 'recovery', 'dr-comp', 'inputs.json'))).resolves.toBeUndefined();
+
+    await fs.writeFile(path.join(cwd, 'flows', 'login.flowchart.json'), JSON.stringify({
+      id: 'login',
+      title: 'Đăng nhập',
+      source: 'docs-feature/login.md',
+      nodes: [
+        { id: 'login', type: 'start', label: 'Đăng nhập', screen: key },
+        { id: 'detail', type: 'action', label: 'Chi tiết', screen: detail },
+      ],
+      edges: [{ from: 'login', to: 'detail' }],
+    }));
+    const topologyRecovered = await validateComponentRecovery(cwd);
+    expect(topologyRecovered.ok).toBe(true);
+    expect(topologyRecovered.issues).toEqual([]);
+    await expect(fs.access(path.join(cwd, 'recovery', 'dr-comp', 'inputs.json'))).rejects.toThrow();
   });
 
   it('rebuilds review/index.json only when every source page has a valid canonical review output', async () => {

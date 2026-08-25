@@ -21,14 +21,14 @@ describe('app-context — kickoff directive', () => {
     expect(d).toContain('ux-charter.json');
     expect(d).toContain('ia.json');
     // The charter's "must" criteria must be framed as hard constraints.
-    expect(d).toMatch(/hard constraint/i);
+    expect(d).toMatch(/ràng buộc cứng/i);
   });
 
   it('routes cross-cutting additions to a JSON delta proposal, never a direct edit', () => {
     const d = appContextDirective(['ux-charter.json']);
     expect(d).toContain('app-context-delta.json');
     // Read-only guarantee: the agent must not write into the staged folder.
-    expect(d).toMatch(/do NOT edit \.\/\.app-context directly/i);
+    expect(d).toMatch(/KHÔNG sửa \.\/\.app-context trực tiếp/i);
   });
 
   it('exposes stable folder constants for the media layout and staging path', () => {
@@ -50,7 +50,7 @@ describe('dsCriteriaDirective — kickoff directive', () => {
   it('mentions ./criteria/rules.md when hasRules, and calls it the DS UX rules that must be followed', () => {
     const d = dsCriteriaDirective({ hasRules: true, hasComponents: false });
     expect(d).toContain('./criteria/rules.md');
-    expect(d).toMatch(/MUST follow/i);
+    expect(d).toMatch(/BẮT BUỘC tuân theo/i);
     // Only the file that actually exists is mentioned.
     expect(d).not.toContain('./criteria/components.md');
   });
@@ -58,7 +58,7 @@ describe('dsCriteriaDirective — kickoff directive', () => {
   it('mentions ./criteria/components.md when hasComponents, and calls it the valid component catalog', () => {
     const d = dsCriteriaDirective({ hasRules: false, hasComponents: true });
     expect(d).toContain('./criteria/components.md');
-    expect(d).toMatch(/component catalog/i);
+    expect(d).toMatch(/danh mục component/i);
     expect(d).not.toContain('./criteria/rules.md');
   });
 

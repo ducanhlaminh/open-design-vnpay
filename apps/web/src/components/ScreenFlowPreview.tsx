@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import type { ScreenFlowLayoutOverrides } from '@open-design/contracts';
 
 import { fetchProjectFileText } from '../providers/registry';
-import { DrawioViewer } from './DrawioViewer';
+import { ScreenFlowCanvas, type ScreenFlowCanvasModel } from './ScreenFlowCanvas';
 import styles from './ScreenFlowPreview.module.css';
 
 export interface ScreenFlowIndexEntryView {
@@ -19,15 +20,15 @@ export interface ScreenFlowIndexView {
   warnings: string[];
 }
 
-export interface ScreenFlowModelView {
+export interface ScreenFlowModelView extends ScreenFlowCanvasModel {
   flowId: string;
-  screens: { key: string; cellIds: string[] }[];
-  unlinkedScreens: string[];
+  screens: Array<ScreenFlowCanvasModel['screens'][number] & { cellIds: string[] }>;
   warnings: string[];
 }
 
 const text = (value: unknown): string => (typeof value === 'string' ? value.trim() : '');
 const textList = (value: unknown): string[] => (Array.isArray(value) ? value.map(text).filter(Boolean) : []);
+const EDGE_KINDS = new Set(['primary', 'branch', 'return', 'secondary', 'inferred']);
 
 function sourcePathOf(value: unknown): string | null {
   if (typeof value === 'string') return text(value) || null;
@@ -71,6 +72,7 @@ export function parseScreenFlowModel(raw: string | null): ScreenFlowModelView | 
   try {
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.screens)) return null;
+    const unlinkedScreens = textList(parsed.unlinkedScreens);
     const seen = new Set<string>();
     const screens: ScreenFlowModelView['screens'] = [];
     for (const value of parsed.screens) {
@@ -80,12 +82,38 @@ export function parseScreenFlowModel(raw: string | null): ScreenFlowModelView | 
       if (!key || seen.has(key)) continue;
       seen.add(key);
       const cellIds = [...textList(screen.cellIds), text(screen.cellId), text(screen.drawioCellId)].filter(Boolean);
-      screens.push({ key, cellIds: [...new Set(cellIds)] });
+      screens.push({
+        key,
+        name: text(screen.name) || key,
+        linked: typeof screen.linked === 'boolean' ? screen.linked : !unlinkedScreens.includes(key),
+        cellIds: [...new Set(cellIds)],
+      });
+    }
+    const edges: ScreenFlowModelView['edges'] = [];
+    if (Array.isArray(parsed.edges)) {
+      for (const value of parsed.edges) {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+        const edge = value as Record<string, unknown>;
+        const from = text(edge.from);
+        const to = text(edge.to);
+        if (!from || !to || from === to) continue;
+        const kind = text(edge.kind);
+        edges.push({
+          id: text(edge.id) || `edge-${edges.length + 1}`,
+          from,
+          to,
+          ...(text(edge.via) ? { via: text(edge.via) } : {}),
+          ...(text(edge.condition) ? { condition: text(edge.condition) } : {}),
+          ...(EDGE_KINDS.has(kind) ? { kind: kind as NonNullable<ScreenFlowCanvasModel['edges'][number]['kind']> } : {}),
+        });
+      }
     }
     return {
       flowId: text(parsed.id) || text(parsed.flowId),
+      entryScreens: textList(parsed.entryScreens),
       screens,
-      unlinkedScreens: textList(parsed.unlinkedScreens),
+      edges,
+      unlinkedScreens,
       warnings: textList(parsed.warnings),
     };
   } catch {
@@ -137,6 +165,45 @@ export function ScreenFlowPreview({ projectId, root, currentScreenKey, onOpenScr
   const [selectedId, setSelectedId] = useState('');
   const [drawioXml, setDrawioXml] = useState<string | null>(null);
   const [drawioError, setDrawioError] = useState(false);
+  const [layout, setLayout] = useState<ScreenFlowLayoutOverrides>({ schema_version: 1, flows: {} });
+  const [layoutError, setLayoutError] = useState('');
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const saveLayout = useCallback((body: Record<string, unknown>, debounce = true) => {
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    const run = async () => {
+      try {
+        const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/docs-review/screen-flow-layout`, {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const result = await response.json() as { layout?: ScreenFlowLayoutOverrides };
+        if (result.layout) setLayout(result.layout);
+        setLayoutError('');
+      } catch {
+        setLayoutError('Không lưu được vị trí node. Hãy thử kéo lại hoặc tải lại trang.');
+      }
+    };
+    if (debounce) saveTimer.current = setTimeout(() => void run(), 350);
+    else void run();
+  }, [projectId]);
+
+  useEffect(() => () => {
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetch(`/api/projects/${encodeURIComponent(projectId)}/docs-review/screen-flow-layout`)
+      .then(async (response) => response.ok ? response.json() as Promise<ScreenFlowLayoutOverrides> : null)
+      .then((value) => {
+        if (!cancelled && value?.schema_version === 1 && value.flows) setLayout(value);
+      })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [projectId, fileMtime]);
 
   useEffect(() => {
     let cancelled = false;
@@ -211,18 +278,6 @@ export function ScreenFlowPreview({ projectId, root, currentScreenKey, onOpenScr
     };
   }, [projectId, root, selected]);
 
-  const cellToScreen = useMemo(() => {
-    const map = screenCellMapFromXml(drawioXml ?? '');
-    for (const item of selected?.model.screens ?? []) {
-      for (const id of item.cellIds) if (!map.has(id)) map.set(id, item.key);
-    }
-    return map;
-  }, [drawioXml, selected]);
-  const highlightCells = useMemo(() => {
-    if (!currentScreenKey) return [];
-    return [...cellToScreen].filter(([, key]) => key === currentScreenKey).map(([id]) => id);
-  }, [cellToScreen, currentScreenKey]);
-
   if (status === 'loading') return <div className={styles.message}>Đang tải luồng màn hình…</div>;
   if (status === 'empty') return <div className={styles.message}>Chưa có luồng màn hình — chạy lại bước “Màn hình → Component”.</div>;
   if (status === 'error' || !selected) return <div className={styles.message}>Không đọc được dữ liệu luồng màn hình. Wireframe hiện tại vẫn có thể xem được.</div>;
@@ -250,23 +305,41 @@ export function ScreenFlowPreview({ projectId, root, currentScreenKey, onOpenScr
         {selected.entry.sourcePath ? <div className={styles.source}>Nguồn: <code>{selected.entry.sourcePath}</code></div> : null}
         {unlinkedCount > 0 ? <div className={styles.warning}>{unlinkedCount} màn chưa xác định điều hướng — vẫn hiển thị trong nhóm “Chưa xác định điều hướng”.</div> : null}
         {warnings.length ? <div className={styles.warning}>{warnings.join(' · ')}</div> : null}
+        {drawioError ? <div className={styles.warning}>Không tải được file Draw.io để tải xuống; preview SVG vẫn hoạt động.</div> : null}
+        {layoutError ? <div className={styles.warning}>{layoutError}</div> : null}
       </header>
       <div className={styles.canvas}>
-        {drawioError ? (
-          <div className={styles.message}>Không tải được file Draw.io của luồng này.</div>
-        ) : drawioXml ? (
-          <DrawioViewer
-            className={styles.viewer}
-            xml={drawioXml}
-            highlightCells={highlightCells}
-            onCellClick={(cellId) => {
-              if (!cellId) return;
-              const key = cellToScreen.get(cellId);
-              if (key) onOpenScreen(key);
-            }}
-            options={{ toolbar: 'zoom' }}
-          />
-        ) : <div className={styles.message}>Đang tải sơ đồ…</div>}
+        <ScreenFlowCanvas
+          model={selected.model}
+          currentScreenKey={currentScreenKey}
+          onOpenScreen={onOpenScreen}
+          layoutPositions={layout.flows[selected.entry.id]?.positions}
+          layoutLocked={layout.flows[selected.entry.id]?.locked ?? false}
+          onLayoutPositionsChange={(positions) => {
+            const locked = layout.flows[selected.entry.id]?.locked ?? false;
+            setLayout((current) => ({
+              schema_version: 1,
+              flows: { ...current.flows, [selected.entry.id]: { positions, locked, updatedAt: new Date().toISOString() } },
+            }));
+            saveLayout({ flowId: selected.entry.id, positions, locked });
+          }}
+          onLayoutLockedChange={(locked) => {
+            const positions = layout.flows[selected.entry.id]?.positions ?? {};
+            setLayout((current) => ({
+              schema_version: 1,
+              flows: { ...current.flows, [selected.entry.id]: { positions, locked, updatedAt: new Date().toISOString() } },
+            }));
+            saveLayout({ flowId: selected.entry.id, positions, locked }, false);
+          }}
+          onResetLayout={() => {
+            setLayout((current) => {
+              const flows = { ...current.flows };
+              delete flows[selected.entry.id];
+              return { schema_version: 1, flows };
+            });
+            saveLayout({ flowId: selected.entry.id, reset: true }, false);
+          }}
+        />
       </div>
     </div>
   );

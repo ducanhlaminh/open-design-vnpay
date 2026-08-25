@@ -179,12 +179,14 @@ export interface PipelineView {
    */
   held?: boolean;
   /**
-   * When set, this pipeline accepts a free-text run input (a Confluence page
-   * URL / id — WP8, 2026-08 removed the legacy JIRA project key / JQL
-   * alternative). The UI renders an input box with this string as
-   * placeholder; the value is sent as `RunPipelineRequest.input`.
+   * When set, this pipeline accepts a run input. `inputKind` determines
+   * whether that input selects source documents or supplies optional guidance
+   * to one agent stage. The UI uses this value as the field placeholder.
    */
   inputPlaceholder?: string;
+  /** Meaning of `inputPlaceholder`. `source` selects documents for an ingest
+   * stage; `prompt` is optional free-form guidance for this stage only. */
+  inputKind?: 'source' | 'prompt';
   /**
    * When true, this stage generates UI and can apply a design system. The UI
    * opens a design-system picker before running (None + the installed systems);
@@ -201,9 +203,8 @@ export interface PipelineView {
   acceptsPlatform?: boolean;
   /**
    * When true, this stage accepts a MANUAL file upload from the UI — a
-   * secondary "Tải file lên" button next to Run (not folded into the Run
-   * flow: a stage can also have `inputPlaceholder`, and Run's dispatch is
-   * mutually exclusive on those fields, so upload needs its own affordance).
+   * secondary "Tải file lên" button next to Run. Upload stays a separate
+   * affordance from both source selection and per-stage prompt guidance.
    * The upload itself goes through the existing project-files route; this
    * flag only controls whether the button renders. Today only the
    * `docs-review` workflow's `dr-docs` stage sets it.
@@ -583,12 +584,13 @@ export interface DeletePipelineAppResponse extends OkResponse {
 
 export interface RunPipelineRequest {
   projectId: string;
-  /** Optional free-text input for pipelines that declare `inputPlaceholder`
-   * (newline-joined Confluence page URL/ids for confluence-ingest's
+  /** Optional input for the selected stage. For `inputKind: source` this is
+   * newline-joined Confluence page URL/ids for confluence-ingest's
    * deterministic fetch — see runDocsDeterministic in server.ts. WP8, 2026-08:
    * the legacy JIRA project key / JQL "advanced" path was removed; any
    * non-Confluence value here now fails fast instead of reaching an agent).
-   * Folded into the run's kickoff message so the skill uses it as the source.
+   * For `inputKind: prompt` it is optional user guidance folded into that
+   * stage's structured kickoff only.
    * Mutually exclusive with `source` — prefer `source` for the Confluence/BAS
    * pickers. */
   input?: string;

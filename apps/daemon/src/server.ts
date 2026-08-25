@@ -579,7 +579,18 @@ import { EmptyTranscriptError, synthesizeHandoffPrompt } from './handoff-design.
 import { TranscriptExportLockedError } from './transcript-export.js';
 import { publishFeedback, pullMergedFeedback } from './feedback.js';
 import { confirmDocsReview } from './docs-review-feedback.js';
-import { validateComponentRecovery, validateFlowRecovery, validateReviewRecovery } from './pipeline-recovery.js';
+import { buildDocsReviewSectionBrief } from './docs-review-brief.js';
+import {
+  buildDsCriteriaExtractKickoff,
+  buildDsRulesExtractKickoff,
+  buildFlowUxRecoveryKickoff,
+  buildModuleSpecKickoff,
+  buildPipelineKickoff,
+  buildPrdPageReviewKickoff,
+  buildScreenComponentsKickoff,
+  buildScreenRunKickoff,
+} from './pipeline-kickoffs.js';
+import { validateComponentRecovery, validateFlowRecovery, validateReviewRecovery, validateScreenFlowRecoveryArtifacts } from './pipeline-recovery.js';
 import { registerChatRoutes } from './chat-routes.js';
 import { registerStaticResourceRoutes } from './static-resource-routes.js';
 import { registerDesignSystemUpdateRoutes } from './design-system-update-routes.js';
@@ -587,7 +598,7 @@ import { registerDesignSystemSyncRoutes } from './design-system-sync-routes.js';
 import { isCriteriaGenerationJobActive, registerDesignSystemCriteriaWorkspaceRoutes } from './design-system-criteria-workspace.js';
 import { registerRoutineRoutes, routineDbRowToContract } from './routine-routes.js';
 import { registerPipelineRoutes } from './pipeline-routes.js';
-import { DEFAULT_WORKFLOW_ID, deriveStateFromLocalFiles, getPipelineDef, getWorkflow, isExportArtifact, isHistoryArtifact, isSyncExcluded, isTargetScopedWfDir, mergePipelineState, pickRunTarget, relClearedByRegen, relClearedByRunAllLaunch, selectRunStages, stageForOutput, strandedQueuedStages, stagesForOutput, stageRegenSet, upstreamStages, wfDirForStage, workflowDirForPipeline } from './pipelines.js';
+import { DEFAULT_WORKFLOW_ID, deriveStateFromLocalFiles, getPipelineDef, getWorkflow, isDocumentInputStage, isExportArtifact, isHistoryArtifact, isSyncExcluded, isTargetScopedWfDir, mergePipelineState, pickRunTarget, relClearedByRegen, relClearedByRunAllLaunch, selectRunStages, stageForOutput, strandedQueuedStages, stagesForOutput, stageRegenSet, upstreamStages, wfDirForStage, workflowDirForPipeline } from './pipelines.js';
 import { generateProjectExports } from './pipeline-exports.js';
 import {
   historyKeepCount,
@@ -698,6 +709,12 @@ import {
   type ScreenComponentsIndex,
 } from './screen-components.js';
 import { buildScreenFlowArtifacts, recoverScreenNavigationFromDocuments, SCREEN_FLOWS_DIR } from './screen-flow.js';
+import {
+  applyScreenFlowLayoutUpdate,
+  parseScreenFlowLayoutOverrides,
+  reconcileScreenFlowLayout,
+  SCREEN_FLOW_LAYOUT_OVERRIDES_REL,
+} from './screen-flow-layout.js';
 // WP14: nối lớp 2 (trích màn bằng agent khi lớp 1 yếu) + lớp 3 (manifest +
 // overrides người dùng) vào khối docs-comp — xem docblock ở nơi dùng trong
 // runDocsComponentAuditFanout.
@@ -709,7 +726,7 @@ import {
   SCREENS_MANIFEST_FILE,
   SCREENS_OVERRIDES_REL,
 } from './screen-overrides.js';
-import type { ScreensManifest, ScreensOverrides } from '@open-design/contracts';
+import type { ScreenFlowLayoutOverrides, ScreenFlowsIndex, ScreenFlowModel, ScreensManifest, ScreensOverrides } from '@open-design/contracts';
 import { renderFigmaComponentsMarkdown, anchorFor, type FigmaComponentCatalogSnapshot } from './figma-component-catalog.js';
 // WP19a: fallback description guide (hạ tầng — xem docblock đầu file đó cho
 // bối cảnh/bất biến "Figma luôn thắng").
@@ -4235,15 +4252,15 @@ export function dsCriteriaDirective(input: { hasRules: boolean; hasComponents: b
   const parts: string[] = [];
   if (hasRules) {
     parts.push(
-      '"./criteria/rules.md" (the design system\'s UX rules — you MUST follow them when authoring screens and wireframes)',
+      '"./criteria/rules.md" (quy tắc UX của design system — BẮT BUỘC tuân theo khi soạn màn và wireframe)',
     );
   }
   if (hasComponents) {
     parts.push(
-      '"./criteria/components.md" (the design system\'s VALID component catalog — spec only components that appear in it)',
+      '"./criteria/components.md" (danh mục component HỢP LỆ của design system — chỉ spec những component có trong đó)',
     );
   }
-  return ` This app has a Design System with review criteria staged in the run cwd — read ${parts.join(' and ')}. `;
+  return ` App này có Design System với tiêu chí review đã staging trong cwd của lượt chạy — đọc ${parts.join(' và ')}. `;
 }
 
 /**
@@ -7673,12 +7690,7 @@ export async function startServer({
       updatedAt: rowNow,
     });
     const assistantMessageId = `ds-criteria-assistant-${randomUUID()}`;
-    const kickoff =
-      `Áp skill "ds-criteria-extract" cho design system "${designSystemId}". ` +
-      `cwd của bạn LÀ thư mục DS: đọc "react/docs/catalog.md" (nguồn chính), "react/STYLE-GUIDE.md" và "DESIGN.md". ` +
-      `Ghi kết quả ra ĐÚNG MỘT file: "criteria/components.md.next". ` +
-      `TUYỆT ĐỐI KHÔNG ghi đè "criteria/components.md" — daemon validate bản nháp trước khi người dùng duyệt. ` +
-      `KHÔNG đụng "criteria/rules.md" và không sửa bất cứ thứ gì trong "react/" hay "ir/".`;
+    const kickoff = buildDsCriteriaExtractKickoff({ designSystemId });
     const run = design.runs.create({
       projectId,
       conversationId,
@@ -7893,7 +7905,7 @@ export async function startServer({
       updatedAt: rowNow,
     });
     const assistantMessageId = `ds-rules-assistant-${randomUUID()}`;
-    const kickoff = `Áp skill "ds-rules-extract" cho design system "${designSystemId}". cwd của bạn LÀ thư mục DS. Đọc "react/showcase/index.html" nếu có, "preview/*.html", "react/STYLE-GUIDE.md", "react/docs/catalog.md", "DESIGN.md". KHÔNG đọc "react/showcase/showcase-data.js". Ghi đúng một file "criteria/rules.md.next", không ghi đè "criteria/rules.md", không tạo "_meta.json" hay file khác, không đụng "react/" hay "ir/".`;
+    const kickoff = buildDsRulesExtractKickoff({ designSystemId });
     const run = design.runs.create({
       projectId,
       conversationId,
@@ -9786,6 +9798,64 @@ export async function startServer({
       await fs.promises.writeFile(tmp, JSON.stringify(doc, null, 2), 'utf8');
       await fs.promises.rename(tmp, target);
       res.json({ ok: true });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // User-owned visual positions for the React Flow screen-flow preview. This
+  // file is deliberately outside comp/ so a dr-comp re-run cannot erase a
+  // layout the user arranged by hand. It never changes semantic edges.
+  const screenFlowLayoutContext = async (projectId: string): Promise<{
+    cwd: string;
+    target: string;
+    layout: ScreenFlowLayoutOverrides;
+    validKeysByFlow: Map<string, Set<string>>;
+  }> => {
+    const projectRoot = await ensureProject(PROJECTS_DIR, projectId);
+    const cwd = path.join(projectRoot, workflowDirForPipeline('dr-comp') ?? 'docs-review');
+    const target = path.join(cwd, SCREEN_FLOW_LAYOUT_OVERRIDES_REL);
+    const parsed = await fs.promises.readFile(target, 'utf8')
+      .then((raw) => parseScreenFlowLayoutOverrides(raw).doc)
+      .catch((): ScreenFlowLayoutOverrides => ({ schema_version: 1, flows: {} }));
+    const index = await fs.promises.readFile(path.join(cwd, SCREEN_FLOWS_DIR, 'index.json'), 'utf8')
+      .then((raw) => JSON.parse(raw) as ScreenFlowsIndex)
+      .catch(() => null);
+    const validKeysByFlow = new Map<string, Set<string>>();
+    for (const entry of index?.flows ?? []) {
+      const model = await fs.promises.readFile(path.join(cwd, entry.files.model), 'utf8')
+        .then((raw) => JSON.parse(raw) as ScreenFlowModel)
+        .catch(() => null);
+      if (model) validKeysByFlow.set(entry.id, new Set(model.screens.map((screen) => screen.key)));
+    }
+    return {
+      cwd,
+      target,
+      layout: reconcileScreenFlowLayout(parsed, validKeysByFlow),
+      validKeysByFlow,
+    };
+  };
+
+  app.get('/api/projects/:projectId/docs-review/screen-flow-layout', async (req, res) => {
+    try {
+      const { layout } = await screenFlowLayoutContext(req.params.projectId);
+      res.json(layout);
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  app.put('/api/projects/:projectId/docs-review/screen-flow-layout', async (req, res) => {
+    try {
+      const { cwd, target, layout, validKeysByFlow } = await screenFlowLayoutContext(req.params.projectId);
+      const next = applyScreenFlowLayoutUpdate(layout, req.body ?? null);
+      if (next.error) return res.status(400).json({ error: next.error });
+      const reconciled = reconcileScreenFlowLayout(next.doc, validKeysByFlow);
+      await fs.promises.mkdir(cwd, { recursive: true });
+      const tmp = `${target}.${randomUUID()}.tmp`;
+      await fs.promises.writeFile(tmp, `${JSON.stringify(reconciled, null, 2)}\n`, 'utf8');
+      await fs.promises.rename(tmp, target);
+      res.json({ ok: true, layout: reconciled });
     } catch (err) {
       res.status(500).json({ error: String(err) });
     }
@@ -16495,8 +16565,6 @@ export async function startServer({
         // N agents interleaved in one log. The stage's "Open chat" lands on the
         // first; the ConversationsMenu lists the siblings by their shared prefix.
         const modelPrefs = appConfig.agentModels?.[agentId] ?? {};
-        const graphNote =
-          ' This is a FILE-ONLY stage: produce the report file only — do not push anything anywhere.';
 
         // Pre-create one conversation per page (up front, all "queued") so the
         // Status modal shows X/N done + each task's live state as the pool
@@ -16518,13 +16586,12 @@ export async function startServer({
           task.status = 'running';
           persistTasks();
           const assistantMessageId = `pipeline-assistant-${randomUUID()}`;
-          const kickoff =
-            `Run the text-first PRD requirements review for ONE page of feature "${projectId}". ` +
-            `Review ONLY the written requirements in "${pg.mdPath}" (title: ${pg.page}) against that page's text, ` +
-            `plus the shared Customer Journey, UX Research, and Design System criteria in this cwd. ` +
-            `Embedded mockups/screenshots are illustrative only: do NOT open, score, copy, or use them as design or wireframe direction. ` +
-            `Write your result to "review/${pg.slug}/report.json" using the compatible attachment-keyed schema; base every finding on text. ` +
-            `Do NOT review any other page, and do NOT write review/index.json or review/summary.md — the pipeline aggregates those from every page's report.${graphNote}`;
+          const kickoff = buildPrdPageReviewKickoff({
+            projectId,
+            pageTitle: pg.page,
+            mdPath: pg.mdPath,
+            slug: pg.slug,
+          });
           const run = design.runs.create({
             projectId,
             conversationId,
@@ -17340,8 +17407,6 @@ export async function startServer({
         console.log(
           `[docs-comp] lớp 1 (flows/ + quét tài liệu tất định): ${screenInputs.length} màn hình · danh mục: ${catalogText != null ? `${catalog.size} component` : 'KHÔNG có criteria/components.md'}`,
         );
-        const graphNote = ' This is a FILE-ONLY stage — do not push anything anywhere.';
-
         // Note cuối cùng ghi vào comp/_inputs.json: bắt đầu từ note của lớp 1
         // (prepareScreenComponentInputs); lớp 2/3 bên dưới NỐI THÊM chứ không
         // thay thế. `persistInputs` chỉ được GỌI khi có gì thật sự đổi (lớp 2
@@ -17392,11 +17457,12 @@ export async function startServer({
             subConversations: [{ ...docScreenExtractTask }],
           });
 
-          const extractKickoff =
-            `Run the "docs-screen-components" skill in EXTRACT mode for feature "${projectId}" (lượt chẩn đoán coverage — lớp 1 chưa gắn được màn nào cho các trang này).` +
-            ` CÁC TRANG cần đọc (đọc TỪNG trang, tìm MỌI màn hình tài liệu khai, bất kể cách trình bày — heading, dòng in đậm, hàng bảng…): ${pagesNeedingExtract.map((p) => `"${p.mdPath}"`).join(', ')}.` +
-            ` "anchorText" của MỖI màn PHẢI là NGUYÊN VĂN CẢ MỘT DÒNG của trang, DUY NHẤT trong trang (khớp y nguyên sau khi trim khoảng trắng đầu/cuối) — daemon đối chiếu tất định: không tìm thấy, xuất hiện hơn một lần, hoặc chỉ nằm trong code fence → màn đó bị loại kèm lý do, KHÔNG suy diễn hộ, đừng diễn giải lại câu chữ. KHÔNG khai mục tài liệu (danh sách/mô tả/luồng màn hình) làm màn.` +
-            ` Ghi ĐÚNG MỘT file "${DOC_SCREENS_FILE}" theo schema mục "Chế độ EXTRACT" của skill. KHÔNG ghi file nào khác, KHÔNG sửa trang.${graphNote}`;
+          const extractKickoff = buildScreenComponentsKickoff({
+            mode: 'extract',
+            projectId,
+            pages: pagesNeedingExtract.map((p) => p.mdPath),
+            outputFile: DOC_SCREENS_FILE,
+          });
           const extractAssistantId = `pipeline-assistant-${randomUUID()}`;
           const extractRun = design.runs.create({
             projectId,
@@ -17658,7 +17724,6 @@ export async function startServer({
           // hoạ, không mở". Component/anchor vẫn CHỈ chọn theo chữ tài liệu + DS,
           // ảnh KHÔNG được quyết chỗ đó (tránh ảo giác đọc component từ ảnh).
           ` Ảnh mockup của màn (nếu kickoff màn này liệt kê) là NGUỒN SỰ THẬT về BỐ CỤC và NỘI DUNG; TUYỆT ĐỐI không dùng ảnh để chọn component/anchor — việc đó vẫn CHỈ dựa vào chữ tài liệu + Design System. Bảng cấu trúc màn (nếu có, trường "referenceTable") vẫn chỉ để tham khảo tên trường.`;
-        // graphNote đã khai ở đầu block (WP14 — lượt trích lớp 2 cũng cần nó).
 
         // ── Lượt 0: role-map cho cả feature ─────────────────────────────────
         const roleMapConvId = `pipeline-conv-${randomUUID()}`;
@@ -17689,13 +17754,15 @@ export async function startServer({
 
         const platformCounts = screenInputs.reduce<Record<string, number>>((acc, s) => ({ ...acc, [s.platformHint]: (acc[s.platformHint] ?? 0) + 1 }), {});
         const platformGuess = (platformCounts.mobile ?? 0) > (platformCounts.web ?? 0) ? 'mobile' : 'web';
-        const roleMapKickoff =
-          `Run the "docs-screen-components" skill in ROLE-MAP mode for feature "${projectId}" (lượt 0 của bước Màn hình → Component).` +
-          flowLine +
-          dsLine +
-          ` Nền tảng đoán từ tài liệu: "${platformGuess}" — tự xác nhận lại theo tài liệu.` +
-          ` Nhiệm vụ: đọc "${SCREEN_INPUTS_FILE}" (mọi màn: tên, bước, mục tài liệu) và Design System, rồi ghi ĐÚNG MỘT file "${ROLE_MAP_FILE}": bảng map VAI TRÒ giao diện (app bar, list item, CTA đáy, input, select, bottom sheet, badge, empty state, error state, tab, card, table…) → component DS (tên + anchor + biến thể mặc định + khi nào dùng), phủ đủ mọi vai trò mà các màn trong feature này sẽ cần; DS không có vai trò nào thì "component": null kèm "fallback". ` +
-          `Schema và luật trong skill (mục "Chế độ ROLE-MAP"). KHÔNG ghi file nào khác, KHÔNG vẽ wireframe ở lượt này.${graphNote}`;
+        const roleMapKickoff = buildScreenComponentsKickoff({
+          mode: 'role-map',
+          projectId,
+          flowLine,
+          dsLine,
+          platformGuess,
+          screenInputsFile: SCREEN_INPUTS_FILE,
+          outputFile: ROLE_MAP_FILE,
+        });
         const roleMapAssistantId = `pipeline-assistant-${randomUUID()}`;
         const roleMapRun = design.runs.create({
           projectId,
@@ -17833,21 +17900,29 @@ export async function startServer({
             s.mockups && s.mockups.length > 0
               ? ` Ảnh mockup của màn: ${s.mockups.map((m) => `"${m}"`).join(', ')}. BẮT BUỘC mở TỪNG ảnh bằng Read. Wireframe vẽ ĐÚNG bố cục trong ảnh (thứ tự khối, hàng/cột, nhóm card). elements[].content chép NỘI DUNG THẬT từ ảnh (tên gói, giá, nhãn, badge); giá trị lệch với bảng field của tài liệu thì bảng thắng và ghi notes. Nhiều ảnh = các trạng thái/đoạn cuộn của CÙNG màn — hợp nhất thành MỘT wireframe; trạng thái phụ (bottom sheet, error, empty…) không vẽ riêng, ghi notes.`
               : ` Tài liệu KHÔNG có ảnh mockup cho màn này — bạn TỰ dựng bố cục hợp lý và nội dung mẫu THỰC TẾ (nhãn/giá/tên hợp ngữ cảnh nghiệp vụ; không lorem, không "Nội dung 1") từ section + referenceTable + steps, và điền elements[].content tương ứng.`;
-          const kickoff =
-            `Run the "docs-screen-components" skill in SCREEN mode for ONE screen of feature "${projectId}": SCREEN-KEY "${s.key}" — "${s.name}" (luồng "${s.flowTitle}", thứ tự ${s.order + 1}/${screenInputs.length}).` +
-            flowLine +
-            dsLine +
-            ` Bảng map vai trò → component DS của feature đã chốt ở "${ROLE_MAP_FILE}" (nền tảng: ${roleMap.platform}) — BẮT BUỘC dùng đúng bảng đó; lệch phải ghi "why".` +
-            sectionLine +
-            navLine +
-            mockupLine +
-            ` Ghi ĐÚNG HAI file: (1) "${outRel}" theo schema "Chế độ SCREEN" trong skill (mọi element có "id" ổn định, "role", "ds" {component, anchor, variant?} hoặc null, "confidence", "provenance" text|flow|table|ds, "docType" nếu bảng tài liệu có khai, "why" khi cần; "nav": [{el, to}] cho các lối đi kể trên; "platform" = "${roleMap.platform}"); ` +
-            `(2) "${wfRel}" — wireframe HTML tự chứa kiểu ux-spec: "<!doctype html>", ${cssLine}không <script>/<link>/ảnh; <body data-screen="${s.key}" data-layout="${roleMap.platform}">; DOM là bố cục THẬT của màn (header–thân–chân, hàng/cột, card lồng nhau theo criteria/examples.md), MỖI element trong JSON là một block mang data-el="<id>" (bắt buộc) + data-comp="<anchor>" khi có ds + data-nav="<SCREEN-KEY đích>" đúng như "nav"; text trong block = nhãn thật của element; không màu thương hiệu, không icon, không nội dung mẫu dài. ` +
-            `Không ghi file nào khác (không sửa flows/, docs/, criteria/, "${wireframeCssRel}", không tự ghi comp/index.json).${graphNote}${figmaDesktopNote}` +
-            (repairAttempt > 0
-              ? `\n\nĐÂY LÀ LƯỢT REPAIR DUY NHẤT. Lượt trước bị daemon từ chối vì: ${previousErrors.join(' | ')}. ` +
-                `Đọc lại hai file output hiện tại nếu còn, sửa đúng các lỗi trên và ghi đè ĐÚNG hai file được yêu cầu. Không mở rộng phạm vi.`
-              : '');
+          const kickoff = buildScreenComponentsKickoff({
+            mode: 'screen',
+            projectId,
+            screenKey: s.key,
+            screenName: s.name,
+            flowTitle: s.flowTitle,
+            order: s.order + 1,
+            total: screenInputs.length,
+            flowLine,
+            dsLine,
+            roleMapFile: ROLE_MAP_FILE,
+            roleMapPlatform: roleMap.platform,
+            sectionLine,
+            navLine,
+            mockupLine,
+            outRel,
+            wfRel,
+            cssLine,
+            wireframeCssRel,
+            figmaDesktopNote,
+            repairAttempt,
+            previousErrors,
+          });
 
           const run = design.runs.create({
             projectId,
@@ -18001,22 +18076,14 @@ export async function startServer({
         const failedScreens = results.filter((r): r is CompScreenResult => r?.status === 'failed').map((r) => ({ key: r.key, name: r.name, errors: r.errors }));
         const { index, summaryMd } = mergeScreenComponents(okDocs, inputs, failedScreens, new Date().toISOString());
         const anySucceeded = okDocs.length > 0;
-        // Partial output is retained for review/recovery, but the stage must
-        // not turn green while any expected screen is unresolved.
-        const next: 'succeeded' | 'failed' = anySucceeded && failedScreens.length === 0 ? 'succeeded' : 'failed';
-        if (failedScreens.length > 0) {
-          const recoveryDir = path.join(cwd, 'recovery', 'dr-comp');
-          await fs.promises.mkdir(recoveryDir, { recursive: true });
-          await fs.promises.writeFile(path.join(recoveryDir, 'inputs.json'), `${JSON.stringify({ ...inputs, screens: screenInputs }, null, 2)}\n`, 'utf8');
-        }
+        let topologyValidation: Awaited<ReturnType<typeof validateScreenFlowRecoveryArtifacts>> | null = null;
         if (anySucceeded) {
           await fs.promises.writeFile(path.join(cwd, 'comp/index.json'), JSON.stringify(index, null, 2), 'utf8');
           await fs.promises.writeFile(path.join(cwd, 'comp/summary.md'), summaryMd, 'utf8');
           // Screen-flow is daemon-owned and derived only from the final screen
           // list (after extract + user overrides) and the as-is flow graph.
-          // It is an auxiliary preview artifact: a malformed source diagram
-          // must not turn otherwise valid per-screen component work into a
-          // failed dr-comp run.
+          // Topology is part of dr-comp correctness: valid component files do
+          // not make the stage green while a screen is UNLINKED/unreachable.
           await buildScreenFlowArtifacts(cwd, screenInputs).catch(async (error) => {
             const warning = `Không dựng được luồng màn hình: ${error instanceof Error ? error.message : String(error)}`;
             console.warn(`[docs-comp] ${warning}`);
@@ -18030,23 +18097,62 @@ export async function startServer({
               )
               .catch(() => null);
           });
+          topologyValidation = await validateScreenFlowRecoveryArtifacts(cwd);
         } else {
           await writeDocsComponentFailureNote(cwd, summaryMd);
           await fs.promises.rm(wireframesDir, { recursive: true, force: true }).catch(() => null);
         }
+        // Partial output is retained for review/recovery, but the stage must
+        // not turn green while either component files or semantic navigation
+        // topology remain unresolved.
+        const next: 'succeeded' | 'failed' = anySucceeded
+          && failedScreens.length === 0
+          && topologyValidation?.ok === true
+          ? 'succeeded'
+          : 'failed';
+        const topologyScreens = topologyValidation?.needsHelp ?? [];
+        const recoveryByKey = new Map<string, { key: string; name: string; errors: string[]; topology: boolean }>();
+        for (const failed of failedScreens) {
+          recoveryByKey.set(failed.key, { key: failed.key, name: failed.name, errors: failed.errors ?? [], topology: false });
+        }
+        for (const problem of topologyScreens) {
+          const existing = recoveryByKey.get(problem.key);
+          const error = `${problem.flowId}: ${problem.reason}`;
+          if (existing) existing.errors.push(error);
+          else recoveryByKey.set(problem.key, { key: problem.key, name: problem.name, errors: [error], topology: true });
+        }
+        // Corrupt/missing topology may not identify one screen. Keep recovery
+        // actionable by attaching the deterministic issue to the first screen
+        // instead of silently failing with no recovery unit.
+        if (topologyValidation && !topologyValidation.ok && recoveryByKey.size === 0 && screenInputs[0]) {
+          recoveryByKey.set(screenInputs[0].key, {
+            key: screenInputs[0].key,
+            name: screenInputs[0].name,
+            errors: topologyValidation.issues,
+            topology: true,
+          });
+        }
+        const recoveryScreens = [...recoveryByKey.values()];
+        if (recoveryScreens.length > 0) {
+          const recoveryDir = path.join(cwd, 'recovery', 'dr-comp');
+          await fs.promises.mkdir(recoveryDir, { recursive: true });
+          await fs.promises.writeFile(path.join(recoveryDir, 'inputs.json'), `${JSON.stringify({ ...inputs, screens: screenInputs }, null, 2)}\n`, 'utf8');
+        }
         // Same as docs-review: name the per-screen reasons (the sub-
         // conversations can be green when validation rejected every screen)
         // and hand them to the error report.
-        const failureDetail = next === 'failed' ? fanoutFailureDetail(failedScreens.map((f) => ({ name: f.name || f.key, errors: f.errors ?? [] }))) : null;
-        const recovery = failedScreens.length > 0
+        const failureDetail = next === 'failed'
+          ? fanoutFailureDetail(recoveryScreens.map((f) => ({ name: f.name || f.key, errors: f.errors })))
+          : null;
+        const recovery = recoveryScreens.length > 0
           ? {
               schemaVersion: 1 as const,
               kind: 'screen' as const,
               state: 'needs-assistance' as const,
               updatedAt: Date.now(),
-              units: failedScreens.map((failed) => {
+              units: recoveryScreens.map((failed) => {
                 const screenIndex = screenInputs.findIndex((screen) => screen.key === failed.key);
-                const task = screenTasks[screenIndex]!;
+                const task = screenTasks[screenIndex] ?? screenTasks[0]!;
                 return {
                   id: failed.key,
                   title: failed.name || failed.key,
@@ -18063,8 +18169,8 @@ export async function startServer({
               role: 'assistant',
               content:
                 `Recovery workspace đã mở cho màn ${unit.id}. Output đạt của các màn khác đã được giữ nguyên. ` +
-                `Bạn có thể trao đổi thêm nhiều lượt trong hội thoại này. Khi đủ ngữ cảnh, hãy yêu cầu tôi tạo lại ` +
-                `"${screenDocRel(unit.id)}" và "${wireframeRel(unit.id)}" đúng contract; sau đó quay lại Pipeline và bấm “Kiểm tra & tiếp tục”. ` +
+                `Bạn có thể trao đổi thêm nhiều lượt để bổ sung bằng chứng component hoặc điều hướng. Khi đủ ngữ cảnh, ` +
+                `hãy sửa artifact canonical/override tương ứng; sau đó quay lại Pipeline và bấm “Kiểm tra & tiếp tục”. ` +
                 `Daemon vẫn sẽ validate tất định, chat không thể bỏ qua validator.`,
             });
           }
@@ -18482,9 +18588,6 @@ export async function startServer({
         // `taskIndexBySection[pageIdx][sectionIdx]` cho worker biết task nào
         // thuộc section nào.
         const modelPrefs = appConfig.agentModels?.[agentId] ?? {};
-        const graphNote =
-          ' This is a FILE-ONLY stage: produce the edited clone + its changes/notes files only — do not push anything anywhere.';
-
         const tasks: Array<{ id: string; title: string; status: 'queued' | 'running' | 'succeeded' | 'failed' }> = [];
         const taskIndexBySection: number[][] = pageUnits.map(() => []);
         pageUnits.forEach((unit, pi) => {
@@ -18537,15 +18640,6 @@ export async function startServer({
           // ngay sau khi cả trang xong, trước mọi bước validate.
           const secSliceRel = sectionSlicePath(reviewRel, sec.index);
           const assistantMessageId = `pipeline-assistant-${randomUUID()}`;
-          // Ảnh mockup: daemon KHÔNG truyền ảnh vào prompt — nó nêu đích danh
-          // đường dẫn và bắt agent tự Read, đúng khuôn skills/docs-mockup-review.
-          // Bản clone copy nguyên cây docs/ kể cả attachments/, nên ref tương
-          // đối trong section vẫn trỏ đúng file thật.
-          const imageLine =
-            sec.imageRefs.length > 0
-              ? ` Section này nhúng ${sec.imageRefs.length} ảnh: ${sec.imageRefs.map((r) => `"${r}"`).join(', ')}. ` +
-                `BẮT BUỘC mở TỪNG ảnh bằng Read (chúng là file thật nằm cạnh bản clone) trước khi kết luận bất cứ điều gì về component, biến thể, trạng thái hay layout. Không mở ảnh thì KHÔNG được tạo change/note nhóm component.`
-              : ' Section này không nhúng ảnh nào.';
           // Heading rỗng KHÔNG luôn là gap: một heading CHA thuần gom nhóm (vd
           // "6.1", "6.2") rỗng vì nội dung thật nằm ở các mục con ngay dưới
           // nó (6.1.1, 6.1.2…) — đo trên một dự án thật, 5 note "Nặng" bị ghi
@@ -18553,31 +18647,25 @@ export async function startServer({
           const secIdxInPage = pageSections.findIndex((s) => s.index === sec.index);
           const isParentHeading =
             sec.bodyLines === 0 && secIdxInPage >= 0 && isParentHeadingSection(pageSections, secIdxInPage);
-          const emptyLine =
-            sec.bodyLines === 0
-              ? isParentHeading
-                ? ` LƯU Ý: heading này là MỤC CHA — nội dung nằm ở các mục con ngay dưới (xem mục lục). KHÔNG coi đây là gap, KHÔNG ghi note "heading rỗng" cho nó.`
-                : ` LƯU Ý: heading này KHÔNG CÓ NỘI DUNG (chỉ có dòng tiêu đề). Đó là một gap mức major — ghi một note vào "${secNotesRel}", KHÔNG tự bịa nội dung/sơ đồ vào tài liệu.`
-              : '';
           const outlineRel = pageOutlinePath(reviewRel);
-          const kickoff =
-            `Run the "docs-spec-review" review for ONE SECTION of ONE page of project "${projectId}" (page title: ${pg.page}; original: "${pg.mdPath}", READ-ONLY — do NOT modify any file under docs/). ` +
-            `SECTION của bạn là "${sec.heading || '(phần mở đầu, trước heading đầu tiên)'}", dòng ${sec.startLine}-${sec.endLine} của trang gốc.${imageLine}${emptyLine} ` +
-            `ĐỌC GÌ: (1) lát cắt "${secSliceRel}" — chứa ĐÚNG và ĐỦ nội dung section của bạn, đọc trọn; (2) mục lục trang "${outlineRel}" — cấu trúc cả trang + khoảng dòng từng section. ` +
-            `KHÔNG đọc cả trang gốc và KHÔNG đọc bản clone cả trang "${reviewRel}" — chúng dài gấp nhiều lần phần bạn phụ trách. Cần ngữ cảnh ngoài section (thuật ngữ, luồng được nhắc ở phần khác), Read "${pg.mdPath}" với offset/limit đúng khoảng dòng ghi trong mục lục, tối đa vài lần. ` +
-            `Edit ONLY the slice file "${secSliceRel}" using the Edit tool (one targeted edit per change — never Write to overwrite the whole file); daemon ghép các lát lại thành trang hoàn chỉnh sau khi mọi section chạy xong. ` +
-            `KHÔNG ghi lát bằng lệnh shell (Set-Content, echo/cat >, heredoc) và KHÔNG dán output của lệnh (các dòng 'Wall time:', 'Total output lines:', 'Output:', '---…---') vào lát — daemon phát hiện là huỷ kết quả của section. ` +
-            `TUYỆT ĐỐI KHÔNG sửa "${reviewRel}" — các section khác đang chạy SONG SONG và bản clone đó do daemon dựng lại, mọi sửa đổi trực tiếp vào nó sẽ bị ghi đè và mất. ` +
-            `checking it against the criteria in "criteria/" if that folder exists (optional — fall back to the skill's built-in default criteria when it is absent). ` +
-            `Write every change you actually made to "${secChangesRel}" as a JSON array of DocChange objects, ` +
-            `and every finding you could NOT fix by editing text to "${secNotesRel}" as a JSON array of DocNote objects. ` +
-            `TUYỆT ĐỐI KHÔNG chèn chuỗi chú giải "[Rà soát …]" (hay bất kỳ chú giải nào) vào lát cắt — daemon đánh hỏng CẢ TRANG nếu phát hiện; nhận xét không sửa được bằng chữ phải đi vào "${secNotesRel}". ` +
-            `Do NOT review any other page or section, and do NOT write review/index.json or review/summary.md — the pipeline aggregates those from every section's files.${graphNote}` +
-            (enrichKickoff ? `\n\n${enrichKickoff}` : '') +
-            (repairAttempt > 0
-              ? `\n\nĐÂY LÀ LƯỢT REPAIR DUY NHẤT. Lượt trước bị daemon từ chối vì: ${previousErrors.join(' | ')}. ` +
-                `Chỉ sửa lại lát và hai JSON của section này để giải quyết đúng các lỗi trên; không mở rộng phạm vi.`
-              : '');
+          const kickoff = buildDocsReviewSectionBrief({
+            projectId,
+            pageTitle: pg.page,
+            originalPath: pg.mdPath,
+            sectionHeading: sec.heading,
+            startLine: sec.startLine,
+            endLine: sec.endLine,
+            bodyLines: sec.bodyLines,
+            parentHeading: isParentHeading,
+            imageRefs: sec.imageRefs,
+            slicePath: secSliceRel,
+            outlinePath: outlineRel,
+            reviewPath: reviewRel,
+            changesPath: secChangesRel,
+            notesPath: secNotesRel,
+            ...(enrichKickoff ? { enrichContext: enrichKickoff } : {}),
+            ...(repairAttempt > 0 ? { repairErrors: previousErrors } : {}),
+          });
           const run = design.runs.create({
             projectId,
             conversationId,
@@ -19760,12 +19848,12 @@ export async function startServer({
               const staged = path.join(cwd, '.ux-kb');
               await fs.promises.rm(staged, { recursive: true, force: true });
               await fs.promises.cp(kb.dir, staged, { recursive: true });
-              kbDirective = ` The UX knowledge base IS PRESENT at "./.ux-kb" (staged by the daemon). Use it via relative paths, e.g. \`python3 ./.ux-kb/scripts/search.py <keywords>\`. Criteria must cite its sources.`;
+              kbDirective = ` UX knowledge base ĐANG CÓ MẶT tại "./.ux-kb" (daemon đã staging). Dùng nó qua đường dẫn tương đối, ví dụ \`python3 ./.ux-kb/scripts/search.py <keywords>\`. Tiêu chí phải trích dẫn nguồn.`;
             } catch {
-              kbDirective = ` The UX knowledge base IS PRESENT at "${kb.dir}". Use that ABSOLUTE path for its scripts. Criteria must cite its sources.`;
+              kbDirective = ` UX knowledge base ĐANG CÓ MẶT tại "${kb.dir}". Dùng đường dẫn TUYỆT ĐỐI đó cho các script của nó. Tiêu chí phải trích dẫn nguồn.`;
             }
           } else {
-            kbDirective = ' The daemon verified there is NO UX knowledge base available — produce the fallback report (knowledge_base: "unavailable") for this section.';
+            kbDirective = ' Daemon đã xác minh KHÔNG CÓ UX knowledge base khả dụng — tạo report fallback (knowledge_base: "unavailable") cho section này.';
           }
         }
 
@@ -19810,10 +19898,10 @@ export async function startServer({
           kind === 'cj' ? `cj/${key}/journey.json` : kind === 'ux-research' ? `ux-research/${key}/report.json` : `ux/${key}/ux-spec.json`;
         const platformDirective =
           kind === 'ux-spec' && platform === 'web'
-            ? ' Target platform: WEBSITE — every screen sets `layout: "web"` (tables, sidebar/top nav, multi-column forms).' +
-              ' The website is RESPONSIVE: give every screen a `responsive_notes` field (desktop ~1440px ↔ mobile ≤768px adaptation; wireframes stay desktop-first).'
+            ? 'Nền tảng đích: WEBSITE — mọi màn đặt `layout: "web"` (bảng, sidebar/top nav, form nhiều cột). ' +
+              'Website RESPONSIVE: mỗi màn có trường `responsive_notes` (thích ứng desktop ~1440px ↔ mobile ≤768px; wireframe giữ desktop-first).'
             : kind === 'ux-spec' && platform === 'mobile'
-              ? ' Target platform: MOBILE — every screen sets `layout: "mobile"` (fixed phone viewport, no responsive behavior).'
+              ? 'Nền tảng đích: MOBILE — mọi màn đặt `layout: "mobile"` (viewport điện thoại cố định, không có hành vi responsive).'
               : '';
         const runOneSection = async (sec: DocSection, task: (typeof tasks)[number]): Promise<void> => {
           const conversationId = task.id;
@@ -19823,23 +19911,32 @@ export async function startServer({
           const pagesList = sec.mdPaths.map((p) => `"${p}"`).join(', ');
           const kickoff =
             kind === 'cj'
-              ? `Run the customer-journey-spec skill for ONE MODULE of feature "${projectId}". ` +
-                `Cover ONLY this module — its pages: ${pagesList} (module: ${sec.title}). ` +
-                `Write your result to "${outRel(sec.key)}" (personas + journeys for THIS module only). ` +
-                `Do NOT write any root -customer-journey.json and do NOT cover other modules — the daemon merges every module's slice.` +
-                ` This is a FILE-ONLY stage: do not push anything.`
+              ? buildModuleSpecKickoff({
+                  skill: 'customer-journey-spec',
+                  projectId,
+                  moduleTitle: sec.title,
+                  pagesList,
+                  outRel: outRel(sec.key),
+                })
               : kind === 'ux-research'
-                ? `Run the ux-research skill for ONE MODULE of feature "${projectId}". ` +
-                  `Derive UX criteria ONLY for this module — its pages: ${pagesList} (module: ${sec.title}) plus the module's customer journey in the cwd. ` +
-                  `Write your result to "${outRel(sec.key)}" (criteria + references for THIS module only). ` +
-                  `Do NOT write ux-research/report.json (top-level) and do NOT cover other modules — the daemon merges every module's slice.${kbDirective}` +
-                  ` This is a FILE-ONLY stage: do not push anything.`
-                : `Run the ux-spec skill for ONE MODULE of feature "${projectId}". ` +
-                  `Author UX Spec screens ONLY for this module — its pages: ${pagesList} (module: ${sec.title}), guided by the module's customer journey + UX research in the cwd. ` +
-                  `EVERY screen id MUST start with "${sec.key}__" so ids (and the wireframes/<id>.html files they name) never collide with other modules. ` +
-                  `Write the module's screens to "${outRel(sec.key)}" AND each screen's "wireframes/<screen-id>.html" + each flow's "flows/<flow-id>.flow.json" into the SHARED wireframes/ and flows/ dirs. ` +
-                  `Do NOT write the root -ux-spec.json and do NOT author other modules' screens — the daemon merges every module's screens.${platformDirective}${dsCriteriaKickoffDirective}` +
-                  ` This is a FILE-ONLY stage: do not push anything.`;
+                ? buildModuleSpecKickoff({
+                    skill: 'ux-research',
+                    projectId,
+                    moduleTitle: sec.title,
+                    pagesList,
+                    outRel: outRel(sec.key),
+                    kbDirective,
+                  })
+                : buildModuleSpecKickoff({
+                    skill: 'ux-spec',
+                    projectId,
+                    moduleKey: sec.key,
+                    moduleTitle: sec.title,
+                    pagesList,
+                    outRel: outRel(sec.key),
+                    platformDirective,
+                    dsCriteriaDirective: dsCriteriaKickoffDirective,
+                  });
           const run = design.runs.create({
             projectId,
             conversationId,
@@ -20116,15 +20213,21 @@ export async function startServer({
           const assistantMessageId = `pipeline-assistant-${randomUUID()}`;
           const kickoff =
             kind === 'ux-review'
-              ? `Run the heuristic-eval review for ONE screen of feature "${projectId}". ` +
-                `Review ONLY the screen id "${s.id}" (${s.name}) — its wireframe "wireframes/${s.id}.html" and its spec in the UX Spec, against the usability heuristics + UX Research criteria in the cwd. ` +
-                `Write your result to "heuristic-review/${s.slug}/report.json" (the per-screen report schema, screens[] holding just this one screen, screen id VERBATIM). ` +
-                `Do NOT review any other screen, and do NOT write heuristic-review/report.json or summary.md — the pipeline merges those. FILE-ONLY: no push.`
-              : `Run the html-interactive-prototype render for ONE screen of feature "${projectId}". ` +
-                `Render ONLY the screen id "${s.id}" (${s.name}) from the UX Spec + its wireframe into a self-contained "prototype/${s.slug}.html" (plus its "prototype/${s.slug}.states.json" if multistep). ` +
-                `Nav links to other screens use their "<target-slug>.html" filename. ` +
-                `Do NOT render any other screen, and do NOT write prototype/index.html — the pipeline builds the hub. FILE-ONLY: no push.` +
-                (await uiTargetDirective(wfDir));
+              ? buildScreenRunKickoff({
+                  kind: 'heuristic',
+                  projectId,
+                  screenId: s.id,
+                  screenName: s.name,
+                  slug: s.slug,
+                })
+              : buildScreenRunKickoff({
+                  kind: 'prototype',
+                  projectId,
+                  screenId: s.id,
+                  screenName: s.name,
+                  slug: s.slug,
+                  uiTargetDirective: await uiTargetDirective(wfDir),
+                });
           const run = design.runs.create({
             projectId,
             conversationId,
@@ -20281,8 +20384,8 @@ export async function startServer({
     const t = UI_TARGET_IDS.map((id) => UI_TARGETS[id]).find((d) => d.dir === seg);
     if (!t) return '';
     return t.responsive
-      ? ` Build target "${t.label}": a RESPONSIVE website. Every screen must adapt from desktop (~1440px) down to mobile (≤768px), following each screen's responsive_notes in the UX spec — navigation collapse, tables degrading to cards/lists, grid column count. A desktop-only layout is NOT done.`
-      : ` Build target "${t.label}": a mobile APP rendered in a FIXED phone viewport (390px wide). Do NOT add responsive breakpoints or media queries — the layout is single-viewport by design.`;
+      ? ` Dựng target "${t.label}": một website RESPONSIVE. Mọi màn phải thích ứng từ desktop (~1440px) xuống mobile (≤768px), theo đúng responsive_notes của từng màn trong UX spec — thu gọn điều hướng, bảng chuyển thành card/list, số cột lưới. Bố cục chỉ-desktop là CHƯA XONG.`
+      : ` Dựng target "${t.label}": một app mobile render trong viewport điện thoại CỐ ĐỊNH (rộng 390px). KHÔNG thêm breakpoint responsive hay media query — bố cục là single-viewport theo thiết kế.`;
   };
 
   // Resolve WHICH configured target a SINGLE-stage run builds (contract:
@@ -20304,7 +20407,7 @@ export async function startServer({
     /** targets.json v2 per-target design system, when configured. */
     designSystemId?: string;
   } | null> => {
-    if (def.inputPlaceholder || def.sharedAcrossTargets === true) return null;
+    if (isDocumentInputStage(def) || def.sharedAcrossTargets === true) return null;
     const baseWfDir = workflowDirForPipeline(def.id);
     if (!baseWfDir) return null;
     const { UI_TARGETS, TARGETS_CONFIG_BASENAME, isUiTarget } = await import('@open-design/contracts');
@@ -21816,7 +21919,7 @@ export async function startServer({
     // Docs step run with UI targets picked (docs-to-ui): record targets.json
     // next to the shared docs so the post-docs stages know which products to
     // build. Written up front, independent of the docs fetch itself.
-    if (def.inputPlaceholder && targets && targets.length > 0) {
+    if (isDocumentInputStage(def) && targets && targets.length > 0) {
       try {
         const { buildTargetsConfig, TARGETS_CONFIG_BASENAME } = await import('@open-design/contracts');
         const projectRoot = await ensureProject(PROJECTS_DIR, projectId);
@@ -22100,7 +22203,7 @@ export async function startServer({
       }
       reactDsStageId = effectiveDsId as string;
       reactDsDirective =
-        ` The selected design system's react bundle IS STAGED at "./react-ds/src/ds/" (components/ui + components/icons + lib/runtime + styles/globals.css + docs/catalog.md — ${reactInfo.components} components, ${reactInfo.icons} icons) and its icon SVGs at "./react-ds/public/assets/". Compose screens from it per the active skill; never edit or regenerate anything under src/ds/ or public/.`;
+        ` React bundle của design system đã chọn ĐANG STAGING tại "./react-ds/src/ds/" (components/ui + components/icons + lib/runtime + styles/globals.css + docs/catalog.md — ${reactInfo.components} component, ${reactInfo.icons} icon) và icon SVG của nó tại "./react-ds/public/assets/". Ghép màn từ đó theo skill đang bật; TUYỆT ĐỐI không sửa hoặc sinh lại bất cứ gì dưới src/ds/ hay public/.`;
       // Human-locked components (the ux-spec preview's "Gán component" UI
       // writes them into the wireframes' `data-comp` attribute): surface the list in the
       // kickoff so the agent treats them as a CONTRACT up front instead of
@@ -22119,7 +22222,7 @@ export async function startServer({
         }
         if (locked.size > 0) {
           const listed = [...locked].slice(0, 24).join(', ');
-          reactDsDirective += ` ${locked.size} component(s) are HUMAN-LOCKED in ../wireframes/*.html via the \`data-comp\` attribute (${listed}${locked.size > 24 ? ', …' : ''}) — every locked wireframe node MUST be built with exactly that ds component (the verify gate fails otherwise); read each wire file to see which node locks which component.`;
+          reactDsDirective += ` ${locked.size} component ĐÃ BỊ NGƯỜI DÙNG KHOÁ trong ../wireframes/*.html qua thuộc tính \`data-comp\` (${listed}${locked.size > 24 ? ', …' : ''}) — mỗi node wireframe đã khoá PHẢI được dựng đúng bằng component DS đó (verify gate sẽ fail nếu không); đọc từng file wire để biết node nào khoá component nào.`;
         }
       } catch {
         /* best-effort — no wireframes yet is fine */
@@ -22149,8 +22252,8 @@ export async function startServer({
     // A combined pipeline (extraSkillIds) activates several skills in one run; tell
     // the agent to complete EACH skill's workflow and produce ALL their outputs.
     const skillDirective = def.extraSkillIds?.length
-      ? 'This pipeline runs multiple skills in one go — follow EACH active skill\'s workflow and produce ALL of their outputs.'
-      : "Follow the active skill's workflow exactly.";
+      ? 'Pipeline này chạy nhiều skill trong một lượt — làm theo ĐÚNG quy trình của TỪNG skill đang bật và tạo ra ĐỦ output của từng skill.'
+      : 'Làm theo đúng quy trình của skill đang bật.';
     // Two source tracks (kept deliberately separate):
     //   • BAS document  → the daemon pre-fetches it via the BAS KG API into
     //     ./docs/source/bas/ below (deterministic, no per-user credential); the
@@ -22163,14 +22266,14 @@ export async function startServer({
     const confluenceRef = source?.kind === 'confluence' ? source.ref.trim() : '';
     const agentInput = trimmedInput || confluenceRef;
     const sourceDirective = basSource
-      ? ' The source documents have already been fetched into ./docs/source/bas/ — read every Markdown file there and normalize them into the stage output (do NOT call any external doc API yourself).'
+      ? 'Tài liệu nguồn đã được daemon tải sẵn vào `./docs/source/bas/` — đọc mọi file Markdown trong đó và chuẩn hoá chúng thành output của stage (KHÔNG tự gọi API tài liệu ngoài nào).'
       : agentInput
-        ? ` Input/source for this run: ${agentInput}. Fetch it YOURSELF via the Atlassian MCP (Jira + Confluence Data Center) — a Confluence page link via the skill's Confluence export, a JIRA key/JQL via the Jira tools — following the active skill's workflow.`
+        ? `Input/nguồn cho lượt chạy này: ${agentInput}. TỰ lấy nó qua Atlassian MCP (Jira + Confluence Data Center) — link trang Confluence dùng tính năng export Confluence của skill, JIRA key/JQL dùng công cụ Jira — theo đúng quy trình của skill đang bật.`
         : '';
     // Every stage is file-only: produce the output file(s) only — the
     // pipeline reads them directly and syncs them to the media store
     // separately (uploadProjectFiles). There is no graph store to push to.
-    const graphDirective = " This is a FILE-ONLY stage: produce the output file(s) only — the pipeline reads them directly. Do not push anything anywhere.";
+    const graphDirective = 'Đây là stage chỉ ghi file: chỉ tạo (các) file output — pipeline tự đọc trực tiếp. Không đẩy đi đâu cả.';
     // Target platform (UX stage picker / CLI --platform). Only emitted when the
     // stage opted in AND the caller chose one — no choice keeps the kickoff
     // byte-identical to the legacy one, so existing projects are unaffected.
@@ -22179,10 +22282,10 @@ export async function startServer({
     // no native track): WEBSITE = RESPONSIVE (desktop ↔ ≤768px), MOBILE = a
     // fixed phone viewport with no adaptive behavior.
     const platformDirective = effectivePlatform === 'web'
-      ? ' Target platform for this run: WEBSITE — every screen in the UX spec MUST set `layout: "web"` and use web-appropriate patterns (tables over card lists where fitting, sidebar/top navigation instead of bottom tabs, wider multi-column forms).' +
-        ' The website is RESPONSIVE: give every screen a `responsive_notes` field describing how its layout adapts from desktop (~1440px) down to mobile (≤768px) — navigation collapse, tables degrading to cards/lists, grid column count, which controls move where. Wireframes stay desktop-first (one wireframe per screen, no separate mobile wireframe).'
+      ? 'Nền tảng đích của lượt chạy này: WEBSITE — mọi màn trong UX spec PHẢI đặt `layout: "web"` và dùng pattern phù hợp cho web (bảng thay cho danh sách card khi hợp lý, điều hướng sidebar/top thay vì tab đáy, form nhiều cột rộng hơn). ' +
+        'Website RESPONSIVE: mỗi màn phải có trường `responsive_notes` mô tả bố cục thích ứng từ desktop (~1440px) xuống mobile (≤768px) — thu gọn điều hướng, bảng chuyển thành card/list, số cột lưới, điều khiển nào chuyển đi đâu. Wireframe giữ desktop-first (một wireframe mỗi màn, không có wireframe mobile riêng).'
       : effectivePlatform === 'mobile'
-        ? ' Target platform for this run: MOBILE — every screen in the UX spec MUST set `layout: "mobile"`. The app renders in a FIXED phone viewport: no responsive/adaptive behavior, no `responsive_notes`.'
+        ? 'Nền tảng đích của lượt chạy này: MOBILE — mọi màn trong UX spec PHẢI đặt `layout: "mobile"`. App render trong viewport điện thoại CỐ ĐỊNH: không có hành vi responsive/thích ứng, không có `responsive_notes`.'
         : '';
     // Audience (multi-target runs only), paired with the platform directive: two
     // WEB targets differ ONLY here, and the docs folder is shared across every
@@ -22192,14 +22295,14 @@ export async function startServer({
       !audience
         ? ''
         : audience === 'backoffice'
-          ? ' Audience for this run: BACKOFFICE (internal operators / admins) — build ONLY the screens the docs describe for internal staff. The docs folder is SHARED across targets, so skip end-customer material entirely; prefer dense tables, bulk actions, filters, and audit/permission affordances.'
-          : ' Audience for this run: END CUSTOMER — build ONLY the screens the docs describe for the end user. The docs folder is SHARED across targets, so skip internal/backoffice-only material entirely.';
+          ? 'Đối tượng của lượt chạy này: BACKOFFICE (nhân sự vận hành/quản trị nội bộ) — CHỈ dựng những màn tài liệu mô tả cho nhân sự nội bộ. Thư mục docs DÙNG CHUNG giữa các target, nên bỏ qua hoàn toàn nội dung dành cho khách hàng cuối; ưu tiên bảng dày dữ liệu, thao tác hàng loạt, bộ lọc, và các thành phần audit/phân quyền.'
+          : 'Đối tượng của lượt chạy này: END CUSTOMER (khách hàng cuối) — CHỈ dựng những màn tài liệu mô tả cho người dùng cuối. Thư mục docs DÙNG CHUNG giữa các target, nên bỏ qua hoàn toàn nội dung chỉ dành cho nội bộ/backoffice.';
     // RE-RUN nudge: if this stage already succeeded once, its old outputs are
     // being cleared below — tell the agent to regenerate from scratch instead
     // of seeing leftover files and declaring the work already done.
     const isRerun = getProjectPipelineState(db, projectId)[pipelineId]?.status === 'succeeded';
     const rerunDirective = isRerun
-      ? ' This is a RE-RUN: the previous outputs for this stage have been cleared — regenerate every deliverable from scratch. Do NOT assume prior work exists or skip steps because a file seems present.'
+      ? 'Đây là RE-RUN: output cũ của stage này đã bị xoá — dựng lại MỌI deliverable từ đầu. KHÔNG giả định việc cũ còn tồn tại hay bỏ bước chỉ vì thấy có file.'
       : '';
     // UX knowledge base directive (any stage running the ux-research skill —
     // docs-to-ui's `ux-research`, docs-to-prd's `prd-ux-research`): the DAEMON
@@ -22215,23 +22318,23 @@ export async function startServer({
       const kb = await resolveUxKbDir(RUNTIME_DATA_DIR);
       if (kb.dir) {
         const kbTail =
-          ' Do NOT go looking anywhere else and do NOT report the knowledge base unavailable. Criteria must cite its sources, and attach Growth.Design illustration image URLs where the case studies have them.';
+          ' KHÔNG tìm ở nơi khác và KHÔNG báo cáo knowledge base không sẵn có. Tiêu chí phải trích dẫn nguồn, và đính kèm URL ảnh minh hoạ Growth.Design ở những case study có ảnh.';
         try {
           const projectRoot = await ensureProject(PROJECTS_DIR, projectId);
           const runCwd = wfDir ? path.join(projectRoot, wfDir) : projectRoot;
           const staged = path.join(runCwd, '.ux-kb');
           await fs.promises.rm(staged, { recursive: true, force: true });
           await fs.promises.cp(kb.dir, staged, { recursive: true });
-          kbDirective = ` The UX knowledge base IS PRESENT at "./.ux-kb" INSIDE your working directory (staged by the daemon${
-            kb.source === 'media' ? ', synced from the media store' : ''
-          }). Use it via relative paths — e.g. \`python3 ./.ux-kb/scripts/search.py <keywords>\`.${kbTail}`;
+          kbDirective = ` UX knowledge base ĐANG CÓ MẶT tại "./.ux-kb" BÊN TRONG thư mục làm việc của bạn (daemon đã staging${
+            kb.source === 'media' ? ', đồng bộ từ media store' : ''
+          }). Dùng nó qua đường dẫn tương đối — ví dụ \`python3 ./.ux-kb/scripts/search.py <keywords>\`.${kbTail}`;
         } catch (error) {
           console.warn('[ux-kb] staging into run cwd failed — falling back to absolute path:', error);
-          kbDirective = ` The UX knowledge base IS PRESENT at "${kb.dir}" (verified by the daemon). Always use that ABSOLUTE path — e.g. \`python3 "${kb.dir}/scripts/search.py" <keywords>\` — never a \`~/…\` form.${kbTail}`;
+          kbDirective = ` UX knowledge base ĐANG CÓ MẶT tại "${kb.dir}" (daemon đã xác minh). Luôn dùng đường dẫn TUYỆT ĐỐI đó — ví dụ \`python3 "${kb.dir}/scripts/search.py" <keywords>\` — không bao giờ dùng dạng \`~/…\`.${kbTail}`;
         }
       } else {
         kbDirective =
-          ' The daemon verified there is NO UX knowledge base available (no env override, nothing on the media store, no local folder) — produce the fallback report (knowledge_base: "unavailable") without hunting for it.';
+          ' Daemon đã xác minh KHÔNG CÓ UX knowledge base khả dụng (không có env override, không có gì trên media store, không có thư mục local) — tạo report fallback (knowledge_base: "unavailable") mà không cần tìm kiếm thêm.';
       }
     }
     // App > feature scoping: the pipeline runs for a FEATURE; its parent App
@@ -22244,7 +22347,7 @@ export async function startServer({
     const featureAppName =
       studioCfg && typeof studioCfg.appName === 'string' ? studioCfg.appName : '';
     const featureScope = featureAppName
-      ? `feature "${projectId}" of app "${featureAppName}"`
+      ? `feature "${projectId}" của app "${featureAppName}"`
       : `feature "${projectId}"`;
 
     // Snapshot the App's LOCAL mutable context, then stage the immutable
@@ -22346,7 +22449,24 @@ export async function startServer({
     // UI terminals (ui-html / ui-react / ui-react-ds) get the target-viewport
     // directive on multi-target runs (responsive website vs fixed-viewport app).
     const uiDirective = def.id.startsWith('ui-') ? await uiTargetDirective(wfDir) : '';
-    const kickoff = `Run the "${def.name}" pipeline for ${featureScope}. ${skillDirective}${sourceDirective}${platformDirective}${audienceDirective}${uiDirective}${rerunDirective}${kbDirective}${appCtxDirective}${appDocsDirective}${dsCriteriaKickoffDirective}${reactDsDirective}${graphDirective}`;
+    const kickoff = buildPipelineKickoff({
+      name: def.name,
+      featureScope,
+      directives: {
+        skill: skillDirective,
+        source: sourceDirective,
+        platform: platformDirective,
+        audience: audienceDirective,
+        ui: uiDirective,
+        rerun: rerunDirective,
+        kb: kbDirective,
+        appCtx: appCtxDirective,
+        appDocs: appDocsDirective,
+        dsCriteria: dsCriteriaKickoffDirective,
+        reactDs: reactDsDirective,
+        graph: graphDirective,
+      },
+    });
 
     // BAS document pre-fetch (BE owns the BAS KG HTTP) — done BEFORE any
     // conversation/run state is created so a fetch failure aborts cleanly with no
@@ -22574,16 +22694,14 @@ export async function startServer({
               });
               const recoveryTask = { id: recoveryConversationId, title: recoveryTitle, status: 'running' as 'running' | 'succeeded' | 'failed' };
               setProjectPipelineStatus(db, projectId, pipelineId, { status: 'running', subConversations: [{ ...recoveryTask }] });
-              const recoveryKickoff =
-                `Run the "docs-flow-ux" skill in RECOVERY mode for feature "${projectId}". ` +
-                (missingFlowTopology
-                  ? `The first dr-flow finalize produced no flow topology. Diagnose the document and create one or more canonical text-only flow folders with as-is.mmd, screens.json and ux-review.json. `
-                  : `The first dr-flow finalize left ${recoveryTargets.length}/${fin.index.length} flow(s) without a valid screen: ${recoveryTargets.map((id) => `"${id}"`).join(', ')}. `) +
-                `Read every page listed here: ${pages.map((page) => `"${page.mdPath}"`).join(', ') || '(none)'}, plus flows/_inputs.json and each as-is diagram/cells file. ` +
-                `Diagnose every user-visible screen regardless of whether the document uses headings, bold text, tables, lists, images, or prose. ` +
-                (missingFlowTopology
-                  ? `Do not invent evidence; when the topology is supported, write only the canonical flow folder files described above. Otherwise make no artifact.`
-                  : `Only recover the uncovered flow ids listed above. Write exactly "${recoveryRel}" using RECOVERY schema v1. Do not modify any other file; return candidates: [] when evidence is insufficient.`);
+              const recoveryKickoff = buildFlowUxRecoveryKickoff({
+                projectId,
+                missingFlowTopology,
+                recoveryTargetIds: recoveryTargets,
+                totalFlowCount: fin.index.length,
+                pageMdPaths: pages.map((page) => page.mdPath),
+                recoveryFile: recoveryRel,
+              });
               activeRuns.add(recoveryRun);
               upsertMessage(db, recoveryConversationId, { id: `pipeline-user-${recoveryRun.id}`, role: 'user', content: recoveryKickoff });
               upsertMessage(db, recoveryConversationId, {
@@ -23011,7 +23129,7 @@ export async function startServer({
     const targets = (opts.targets ?? []).filter((t): t is import('@open-design/contracts').UiTarget =>
       t === 'mobile' || t === 'web-user' || t === 'web-backoffice',
     );
-    // The docs ingest stage is the one taking free-text input (inputPlaceholder);
+    // The docs ingest stage is the one declaring `inputKind: source`;
     // everything else is post-docs and target-scoped.
     // SHARED stages run once for the project: the docs ingest (it takes the
     // free-text input) plus anything marked sharedAcrossTargets — the system
@@ -23020,7 +23138,7 @@ export async function startServer({
     // running them up front preserves the chain.
     const isShared = (id: string) => {
       const def = getPipelineDef(id);
-      return !!def && (!!def.inputPlaceholder || def.sharedAcrossTargets === true);
+      return !!def && (isDocumentInputStage(def) || def.sharedAcrossTargets === true);
     };
     const docsStageIds = stages.filter(isShared);
     const postStageIds = stages.filter((id) => !isShared(id));
@@ -23156,8 +23274,8 @@ export async function startServer({
       ): Promise<'succeeded' | 'failed' | 'idle'> => {
         const def = getPipelineDef(id)!;
         const start = await runPipeline(projectId, id, {
-          input: def.inputPlaceholder ? opts.input : undefined,
-          source: def.inputPlaceholder ? opts.source : undefined,
+          input: isDocumentInputStage(def) ? opts.input : undefined,
+          source: isDocumentInputStage(def) ? opts.source : undefined,
           designSystemId: def.acceptsDesignSystem
             ? (designSystemOverride ?? opts.designSystemId)
             : undefined,
@@ -23175,8 +23293,8 @@ export async function startServer({
             isFirstStage: id === stages[0],
             skipSucceeded: !!opts.skipSucceeded,
           }),
-          followLinks: def.inputPlaceholder ? opts.followLinks : undefined,
-          includeDescendants: def.inputPlaceholder ? opts.includeDescendants : undefined,
+          followLinks: isDocumentInputStage(def) ? opts.followLinks : undefined,
+          includeDescendants: isDocumentInputStage(def) ? opts.includeDescendants : undefined,
           targetDir,
           audience,
         });

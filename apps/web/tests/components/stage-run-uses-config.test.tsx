@@ -18,13 +18,15 @@ import type { RunAllConfig } from '@open-design/contracts';
 const { resolveStageRunConfig } = await import('../../src/components/PipelinesView');
 
 /** Bước cần NGUỒN TÀI LIỆU (dr-docs / docs). */
-const docsStage = { inputPlaceholder: 'Confluence URL', acceptsDesignSystem: false, acceptsPlatform: false };
+const docsStage = { inputPlaceholder: 'Confluence URL', inputKind: 'source' as const, acceptsDesignSystem: false, acceptsPlatform: false };
+/** Bước Lab nhận hướng dẫn riêng, không phải nguồn tài liệu. */
+const promptStage = { inputPlaceholder: 'Định hướng (tuỳ chọn)', inputKind: 'prompt' as const, acceptsDesignSystem: false, acceptsPlatform: false };
 /** Bước sinh UI, cần DESIGN SYSTEM (ui-html / ui-react). */
-const uiStage = { inputPlaceholder: undefined, acceptsDesignSystem: true, acceptsPlatform: false };
+const uiStage = { inputPlaceholder: undefined, inputKind: undefined, acceptsDesignSystem: true, acceptsPlatform: false };
 /** Bước UX Spec, cần PLATFORM / target. */
-const uxStage = { inputPlaceholder: undefined, acceptsDesignSystem: false, acceptsPlatform: true };
+const uxStage = { inputPlaceholder: undefined, inputKind: undefined, acceptsDesignSystem: false, acceptsPlatform: true };
 /** Bước không đòi cấu hình gì (customer journey…). */
-const plainStage = { inputPlaceholder: undefined, acceptsDesignSystem: false, acceptsPlatform: false };
+const plainStage = { inputPlaceholder: undefined, inputKind: undefined, acceptsDesignSystem: false, acceptsPlatform: false };
 
 describe('resolveStageRunConfig — chạy một bước bằng cấu hình panel phải', () => {
   it('có nguồn Confluence → chạy thẳng, payload mang đúng trang đã cấu hình', () => {
@@ -59,6 +61,15 @@ describe('resolveStageRunConfig — chạy một bước bằng cấu hình pane
     expect(d.ok).toBe(false);
     if (d.ok) throw new Error('unreachable');
     expect(d.missing).toBe('Nguồn tài liệu');
+  });
+
+  it('prompt riêng của Lab không bị thay bằng nguồn Confluence đã lưu', () => {
+    const d = resolveStageRunConfig(promptStage, {
+      confluencePages: [{ id: '123', url: 'https://wiki.example/pages/123' }],
+    });
+    expect(d.ok).toBe(true);
+    if (!d.ok) throw new Error('unreachable');
+    expect(d.payload).toBeUndefined();
   });
 
   it('design system = null ("Không dùng") LÀ một lựa chọn hợp lệ, không phải chưa cấu hình', () => {

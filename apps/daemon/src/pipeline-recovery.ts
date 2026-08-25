@@ -12,7 +12,7 @@ import {
   type DocPageResult,
 } from './docs-review.js';
 import { finalizeFlowUx } from './flow-ux/index.js';
-import { buildScreenFlowArtifacts } from './screen-flow.js';
+import { buildScreenFlowArtifacts, SCREEN_FLOWS_DIR, validateScreenFlowTopology } from './screen-flow.js';
 import {
   mergeScreenComponents,
   normalizeScreenComponentsDoc,
@@ -28,6 +28,8 @@ export interface PipelineRecoveryValidation {
   ok: boolean;
   issues: string[];
   repaired: string[];
+  /** Screens that still need an evidenced navigation edge/user decision. */
+  needsHelp?: Array<{ key: string; name: string; flowId: string; reason: string }>;
 }
 
 async function readJson<T>(absolute: string): Promise<T | null> {
@@ -36,6 +38,113 @@ async function readJson<T>(absolute: string): Promise<T | null> {
   } catch {
     return null;
   }
+}
+
+interface ScreenFlowIndexLike {
+  totalScreens?: number;
+  flows?: Array<{ id?: string; files?: { model?: string } }>;
+}
+
+interface ScreenFlowModelLike {
+  flowId: string;
+  title: string;
+  entryScreens: string[];
+  screens: Array<{ key: string; name: string }>;
+  edges: Array<{ id: string; from: string; to: string; kind?: 'primary' | 'branch' | 'return' | 'secondary' | 'inferred' }>;
+  unlinkedScreens: string[];
+}
+
+function screenFlowModelShape(value: unknown): value is ScreenFlowModelLike {
+  if (!value || typeof value !== 'object') return false;
+  const model = value as Partial<ScreenFlowModelLike>;
+  return typeof model.flowId === 'string'
+    && typeof model.title === 'string'
+    && Array.isArray(model.entryScreens)
+    && Array.isArray(model.screens)
+    && Array.isArray(model.edges)
+    && Array.isArray(model.unlinkedScreens);
+}
+
+/**
+ * Validate daemon-owned screen-flow artifacts without trusting index counts.
+ * This is intentionally separate from component validation: recovery chat can
+ * repair navigation evidence and then re-check/rebuild topology without
+ * re-running the expensive per-screen agent fan-out.
+ */
+export async function validateScreenFlowRecoveryArtifacts(cwd: string): Promise<PipelineRecoveryValidation> {
+  const indexPath = path.join(cwd, SCREEN_FLOWS_DIR, 'index.json');
+  const index = await readJson<ScreenFlowIndexLike>(indexPath);
+  if (!index || !Array.isArray(index.flows) || index.flows.length === 0) {
+    return { ok: false, issues: [`Thiếu hoặc hỏng "${SCREEN_FLOWS_DIR}/index.json".`], repaired: [] };
+  }
+
+  const issues: string[] = [];
+  const repaired: string[] = [];
+  const needsHelp = new Map<string, { key: string; name: string; flowId: string; reason: string }>();
+  const ownerByScreen = new Map<string, string>();
+  const seenScreens = new Set<string>();
+  const cwdRoot = path.resolve(cwd);
+
+  for (const entry of index.flows) {
+    const flowId = typeof entry.id === 'string' && entry.id.trim() ? entry.id.trim() : '(không-id)';
+    const modelRel = entry.files?.model;
+    if (!modelRel) {
+      issues.push(`${flowId}: index thiếu đường dẫn screen-flow model.`);
+      continue;
+    }
+    const modelPath = path.resolve(cwd, modelRel);
+    if (modelPath !== cwdRoot && !modelPath.startsWith(`${cwdRoot}${path.sep}`)) {
+      issues.push(`${flowId}: đường dẫn model vượt khỏi workspace: ${modelRel}.`);
+      continue;
+    }
+    const rawModel = await readJson<unknown>(modelPath);
+    if (!screenFlowModelShape(rawModel)) {
+      issues.push(`${flowId}: thiếu hoặc hỏng "${modelRel}".`);
+      continue;
+    }
+    const model = rawModel;
+    const names = new Map(model.screens.map((screen) => [screen.key, screen.name || screen.key]));
+    for (const screen of model.screens) {
+      seenScreens.add(screen.key);
+      const owner = ownerByScreen.get(screen.key);
+      if (owner && owner !== model.flowId) {
+        const reason = `screen xuất hiện trong nhiều flow (${owner}, ${model.flowId})`;
+        issues.push(`Screen "${screen.name || screen.key}" (${screen.key}): ${reason}.`);
+        needsHelp.set(screen.key, { key: screen.key, name: screen.name || screen.key, flowId: model.flowId, reason });
+      } else ownerByScreen.set(screen.key, model.flowId);
+    }
+
+    const topology = validateScreenFlowTopology(model as Parameters<typeof validateScreenFlowTopology>[0]);
+    const problemKeys = new Set([
+      ...(model.flowId === 'UNLINKED' ? model.screens.map((screen) => screen.key) : []),
+      ...topology.orphanScreens,
+      ...topology.unreachableScreens,
+    ]);
+    for (const key of problemKeys) {
+      const name = names.get(key) ?? key;
+      const reason = model.flowId === 'UNLINKED'
+        ? 'chưa có bằng chứng để thuộc một flow hợp lệ (UNLINKED)'
+        : topology.unreachableScreens.includes(key)
+          ? 'không reachable từ entry qua cạnh primary|branch|inferred'
+          : 'không có cạnh topology hợp lệ (orphan)';
+      needsHelp.set(key, { key, name, flowId: model.flowId, reason });
+      issues.push(`Screen "${name}" (${key}) · ${model.flowId}: ${reason}.`);
+    }
+    for (const error of topology.errors) {
+      if (!issues.some((issue) => issue.includes(error))) issues.push(`${model.flowId}: ${error}`);
+    }
+    if (topology.valid && model.flowId !== 'UNLINKED') repaired.push(model.flowId);
+  }
+
+  if (typeof index.totalScreens !== 'number' || index.totalScreens !== seenScreens.size) {
+    issues.push(`Screen-flow coverage lệch: index khai ${index.totalScreens ?? 'không rõ'}, model có ${seenScreens.size} screen duy nhất.`);
+  }
+  return {
+    ok: issues.length === 0,
+    issues,
+    repaired: [...new Set(repaired)].sort(),
+    ...(needsHelp.size > 0 ? { needsHelp: [...needsHelp.values()].sort((a, b) => a.key.localeCompare(b.key)) } : {}),
+  };
 }
 
 /** Rebuild daemon-owned flow index after an interactive agent edited
@@ -116,14 +225,38 @@ export async function validateComponentRecovery(cwd: string): Promise<PipelineRe
   await fs.mkdir(path.join(cwd, 'comp'), { recursive: true });
   await fs.writeFile(path.join(cwd, 'comp', 'index.json'), `${JSON.stringify(merged.index, null, 2)}\n`, 'utf8');
   await fs.writeFile(path.join(cwd, 'comp', 'summary.md'), merged.summaryMd, 'utf8');
+  let topology: PipelineRecoveryValidation | null = null;
   if (failed.length === 0) {
-    await buildScreenFlowArtifacts(cwd, inputs.screens);
-    await fs.rm(path.join(cwd, 'recovery', 'dr-comp'), { recursive: true, force: true });
+    try {
+      await buildScreenFlowArtifacts(cwd, inputs.screens);
+      topology = await validateScreenFlowRecoveryArtifacts(cwd);
+    } catch (error) {
+      topology = {
+        ok: false,
+        issues: [`Không dựng/kiểm tra được screen-flow: ${error instanceof Error ? error.message : String(error)}`],
+        repaired: [],
+      };
+    }
+    if (topology.ok) {
+      await fs.rm(path.join(cwd, 'recovery', 'dr-comp'), { recursive: true, force: true });
+    } else {
+      await fs.mkdir(path.join(cwd, 'recovery', 'dr-comp'), { recursive: true });
+      await fs.writeFile(
+        path.join(cwd, 'recovery', 'dr-comp', 'inputs.json'),
+        `${JSON.stringify(inputs, null, 2)}\n`,
+        'utf8',
+      );
+    }
   }
+  const topologyIssues = topology?.issues ?? [];
   return {
-    ok: failed.length === 0,
-    issues: failed.flatMap((item) => item.errors.map((error) => `${item.key}: ${error}`)),
+    ok: failed.length === 0 && (topology?.ok ?? false),
+    issues: [
+      ...failed.flatMap((item) => item.errors.map((error) => `${item.key}: ${error}`)),
+      ...topologyIssues,
+    ],
     repaired: docs.map((doc) => doc.key),
+    ...(topology?.needsHelp ? { needsHelp: topology.needsHelp } : {}),
   };
 }
 

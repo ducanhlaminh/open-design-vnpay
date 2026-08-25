@@ -11,10 +11,10 @@
 // `dr-docs`/`dr-review` comment block).
 //
 // Deliberately a SEPARATE button from Run, not folded into `proceedRun`'s
-// dispatch (PipelinesView.tsx): that dispatch is a mutually-exclusive
-// if/else keyed on `inputPlaceholder` / `acceptsDesignSystem` /
-// `acceptsPlatform`, and every `acceptsUpload` stage today ALSO sets
-// `inputPlaceholder` — an `acceptsUpload` branch there would simply never run.
+// dispatch (PipelinesView.tsx): upload writes files immediately, while Run
+// either selects a source (`inputKind: source`) or collects a stage prompt.
+// Keeping the actions separate also lets users upload several documents before
+// deciding which stage to run.
 //
 // Writes go through `writeProjectTextFileDetailed` (JSON POST
 // `/api/projects/:id/files`, `providers/registry.ts`), which preserves a

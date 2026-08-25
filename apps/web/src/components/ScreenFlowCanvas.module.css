@@ -1,0 +1,116 @@
+.root {
+  position: relative;
+  min-width: 0;
+  min-height: 420px;
+  height: 100%;
+  background: var(--bg, #fff);
+}
+
+.canvas {
+  position: absolute;
+  inset: 0;
+  padding-top: 52px;
+  outline: none;
+}
+
+.toolbar {
+  position: absolute;
+  z-index: 5;
+  top: 8px;
+  left: 8px;
+  display: flex;
+  max-width: calc(100% - 16px);
+  align-items: center;
+  gap: 2px;
+  min-height: 36px;
+  padding: 4px 5px;
+  overflow-x: auto;
+  border: 1px solid var(--border, #e1e5eb);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--bg, #fff) 94%, transparent);
+  box-shadow: 0 3px 14px rgb(15 23 42 / 8%);
+  color: var(--text-muted, #57544e);
+}
+
+.toolbar button {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.toolbar button:not(.textButton) { width: 28px; padding: 0; }
+.toolbar button:hover,
+.toolbar button:focus-visible,
+.activeButton {
+  background: var(--bg-hover, #f3f4f6) !important;
+  color: var(--text, #1a1916);
+  outline: none;
+}
+
+.separator { width: 1px; height: 20px; margin: 0 3px; background: var(--border, #e1e5eb); }
+
+.nodeCard {
+  position: relative;
+  display: flex;
+  width: 224px;
+  height: 84px;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 6px;
+  padding: 12px 16px;
+  border: 1.5px solid var(--border-strong, #b9c0ca);
+  border-radius: 14px;
+  background: var(--bg, #fff);
+  box-shadow: 0 4px 14px rgb(15 23 42 / 6%);
+  color: var(--text, #1a1916);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 120ms ease, background 120ms ease, box-shadow 120ms ease;
+}
+
+.nodeCard:hover,
+.nodeCard:focus-visible {
+  border-color: var(--accent, #0066b3);
+  background: var(--accent-tint, #e6f0f8);
+  box-shadow: 0 5px 18px rgb(0 102 179 / 14%);
+  outline: none;
+}
+
+.selectedNode { border-width: 2.5px; border-color: var(--accent, #0066b3); background: var(--accent-tint, #e6f0f8); }
+.unlinkedNode { border-style: dashed; background: var(--bg-subtle, #eef1f5); }
+.nodeCode { color: var(--accent-strong, #00568f); font-family: var(--mono, ui-monospace, monospace); font-size: 11px; font-weight: 700; }
+.nodeName {
+  display: -webkit-box;
+  overflow: hidden;
+  max-width: 100%;
+  color: var(--text, #1a1916);
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.mainHandle,
+.auxHandle { width: 8px !important; height: 8px !important; border: 2px solid var(--bg, #fff) !important; background: var(--accent, #0066b3) !important; }
+.auxHandle { background: var(--text-muted, #57544e) !important; }
+.secondaryEdge path { stroke: var(--text-muted, #77736c); opacity: 0.72; }
+.semanticEdge path { stroke: var(--text, #1a1916); stroke-width: 1.7; }
+.root :global(.react-flow__edge-textbg) { stroke-width: 1px; }
+.root :global(.react-flow__controls) { overflow: hidden; border: 1px solid var(--border, #e1e5eb); border-radius: 8px; box-shadow: 0 3px 12px rgb(15 23 42 / 8%); }
+.root :global(.react-flow__controls-button) { border-color: var(--border, #e1e5eb); background: var(--bg, #fff); fill: var(--text-muted, #57544e); }
+.root :global(.react-flow__background) { color: var(--border, #e1e5eb); }

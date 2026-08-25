@@ -52,6 +52,7 @@ import {
   PushAllModal,
   PipelineResultView,
   PipelineStatusModal,
+  PromptRunModal,
   RunAllClearConfirmModal,
   RunAllModal,
   RunInputModal,
@@ -338,10 +339,10 @@ export type StageRunDecision =
   | { ok: false; missing: string };
 
 export function resolveStageRunConfig(
-  p: Pick<PipelineView, 'inputPlaceholder' | 'acceptsDesignSystem' | 'acceptsPlatform'>,
+  p: Pick<PipelineView, 'inputPlaceholder' | 'inputKind' | 'acceptsDesignSystem' | 'acceptsPlatform'>,
   cfg: RunAllConfig | undefined,
 ): StageRunDecision {
-  if (p.inputPlaceholder) {
+  if (p.inputKind === 'source') {
     const uploading = cfg?.docsFromUpload === true;
     const appPoolPaths = !uploading ? (cfg?.appPool?.paths ?? []) : [];
     const usingAppPool = !uploading && appPoolPaths.length > 0;
@@ -1535,7 +1536,7 @@ export function PipelinesView() {
     const runsIngestStage =
       savedStageIds.length === 0 ||
       pipelines.some(
-        (p) => savedStageIds.includes(p.id) && (p.inputPlaceholder || p.acceptsUpload),
+        (p) => savedStageIds.includes(p.id) && (p.inputKind === 'source' || p.acceptsUpload),
       );
     const canRun =
       hasSource ||
@@ -1685,6 +1686,10 @@ export function PipelinesView() {
    *  Thiếu nhiều thứ thì báo thứ ĐẦU TIÊN theo thứ tự dưới đây; cấu hình xong
    *  cái đó rồi bấm lại sẽ được nhắc cái kế tiếp. */
   const proceedRun = (p: PipelineView) => {
+    if (p.inputKind === 'prompt') {
+      setRunInputFor(p);
+      return;
+    }
     const proj = projects.find((pr) => pr.id === projectId);
     const decision = resolveStageRunConfig(p, proj?.savedRunAll ?? proj?.config);
     if (!decision.ok) {
@@ -2563,8 +2568,8 @@ export function PipelinesView() {
               : null;
             // "Tải file lên" — deliberately separate from Run: proceedRun's
             // dispatch is a mutually-exclusive if/else keyed on
-            // inputPlaceholder/acceptsDesignSystem/acceptsPlatform, and dr-docs
-            // already sets inputPlaceholder, so folding upload into that chain
+            // source-input/acceptsDesignSystem/acceptsPlatform, and dr-docs
+            // already owns source input, so folding upload into that chain
             // would make it unreachable.
             const uploadItem: OverflowMenuItem | null = p.acceptsUpload
               ? { key: 'upload', label: 'Tải file lên', icon: 'upload', onClick: () => setUploadFor(p) }
@@ -3452,6 +3457,20 @@ export function PipelinesView() {
         />
       ) : null}
       {runInputFor ? (() => {
+        if (runInputFor.inputKind === 'prompt') {
+          return (
+            <PromptRunModal
+              pipelineName={runInputFor.name}
+              placeholder={runInputFor.inputPlaceholder ?? 'Yêu cầu bổ sung (tuỳ chọn)'}
+              defaultPrompt={runInputFor.lastInput ?? ''}
+              onClose={() => setRunInputFor(null)}
+              onRun={async (prompt) => {
+                await startRun(runInputFor.id, prompt ? { input: prompt } : undefined);
+                pushToast({ message: `Đã bắt đầu chạy “${runInputFor.name}” — đang chạy nền` });
+              }}
+            />
+          );
+        }
         const runInputProject = projects.find((pr) => pr.id === projectId);
         const runInputDefaults = runInputProject?.savedRunAll ?? runInputProject?.config;
         return (

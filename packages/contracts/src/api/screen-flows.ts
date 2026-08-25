@@ -29,12 +29,16 @@ export interface ScreenFlowEdgeEvidence {
   path: string[];
 }
 
+export type ScreenFlowEdgeKind = 'primary' | 'branch' | 'return' | 'secondary' | 'inferred';
+
 export interface ScreenFlowEdge {
   id: string;
   from: string;
   to: string;
   via?: string;
   condition?: string;
+  /** Semantic navigation class. Missing on v1 artifacts means `primary`. */
+  kind?: ScreenFlowEdgeKind;
   flowIds: string[];
   evidence: ScreenFlowEdgeEvidence[];
 }

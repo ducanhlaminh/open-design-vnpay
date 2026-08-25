@@ -1,9 +1,9 @@
-// The four Pipelines-surface modals, kept presentational: data/API logic lives
+// Pipelines-surface modals, kept presentational: data/API logic lives
 // in PipelinesView (the single owner of pipeline + project state). Each modal
 // takes async submit callbacks and only owns its own busy/error UI.
 //
-// - RunInputModal:          collect a run input (e.g. Confluence link) before
-//                            running a pipeline that declares inputPlaceholder (Req 4).
+// - RunInputModal:          collect a document source (e.g. Confluence link).
+// - PromptRunModal:         collect optional guidance for one agent stage.
 // - PipelineStatusModal:     poll GET /api/runs/:id and show compact status (Req 3).
 // - PipelineResultModal:     preview a finished pipeline's output files inline
 //                            (file rail + embedded FileViewer), no workspace nav.
@@ -684,6 +684,71 @@ function TargetCards({ targets, onToggle }: { targets: UiTarget[]; onToggle: (t:
         );
       })}
     </div>
+  );
+}
+
+/** Optional guidance for one agent stage. This is deliberately separate from
+ * RunInputModal: a prompt must never be interpreted as a document source (or
+ * receive the saved Confluence URLs from Run-all configuration). */
+export function PromptRunModal({
+  pipelineName,
+  placeholder,
+  defaultPrompt = '',
+  onClose,
+  onRun,
+}: {
+  pipelineName: string;
+  placeholder: string;
+  defaultPrompt?: string;
+  onClose: () => void;
+  onRun: (prompt: string) => Promise<void>;
+}) {
+  const [prompt, setPrompt] = useState(defaultPrompt);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const submit = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await onRun(prompt.trim());
+      onClose();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+      setBusy(false);
+    }
+  };
+  return (
+    <PlModal
+      title={`Run · ${pipelineName}`}
+      icon="play"
+      size="md"
+      busy={busy}
+      onClose={onClose}
+      footer={
+        <>
+          <button type="button" className="pl-btn" onClick={onClose} disabled={busy}>Hủy</button>
+          <button type="button" className="pl-btn pl-btn--run" onClick={() => void submit()} disabled={busy}>
+            <Icon name={busy ? 'spinner' : 'play'} size={14} />
+            <span>{busy ? 'Starting…' : 'Chạy bước này'}</span>
+          </button>
+        </>
+      }
+    >
+      <label className="pl-modal-field">
+        <span className="pl-modal-field__label">Yêu cầu bổ sung cho bước này (tuỳ chọn)</span>
+        <textarea
+          className="pl-input"
+          rows={6}
+          autoFocus
+          placeholder={placeholder}
+          value={prompt}
+          onChange={(event) => setPrompt(event.target.value)}
+        />
+        <span className="pl-modal-field__hint">Để trống để agent dùng tài liệu và cấu hình hiện có.</span>
+      </label>
+      {error ? <pre className="pl-status-detail__error">{error}</pre> : null}
+    </PlModal>
   );
 }
 

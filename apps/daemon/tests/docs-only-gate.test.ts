@@ -2,7 +2,7 @@
 // and `computeActive`'s docblock): the by-STEP dependency chain that used to
 // gate a pipeline's `active` flag ("this stage's dependsOn chain must all be
 // `succeeded`") is GONE. The only prerequisite left is "does this workflow's
-// ingest stage (the def with `inputPlaceholder`) have a document" — read
+// ingest stage (the def with `inputKind: source`) have a document" — read
 // straight off `outputs`/files, never off an intermediate stage's run status.
 //
 // Part 1 tests the new pure primitive, `docsReadyFromFiles`, directly.

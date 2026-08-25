@@ -38,10 +38,10 @@ export interface PipelineDef {
    * exact relative path or basename.
    */
   outputs?: string[];
-  /** If set, this pipeline takes a free-text run input (e.g. a Confluence URL).
-   * The UI renders an input box with this placeholder; the value is folded into
-   * the run kickoff. */
+  /** If set, this pipeline takes a run input. `inputKind` distinguishes a
+   * document-source selector from optional guidance for one agent stage. */
   inputPlaceholder?: string;
+  inputKind?: 'source' | 'prompt';
   /**
    * When true, this stage generates UI and can apply a design system: the UI
    * shows a design-system picker before running and sends the chosen id as
@@ -165,7 +165,7 @@ const PIPELINE_DEFS_BASE: readonly PipelineDef[] = [
   // stage-scoped pull, so leaving it out hid them from the rail AND kept them
   // off the media store, which left a second machine's ux run with none of the
   // domain background it is told to read.
-  { id: 'docs',             name: 'Tài liệu (nạp)',                skillId: 'confluence-ingest',     dependsOn: [],                                       outputs: ['docs/jira/', 'docs/confluence/', 'docs/context/', 'docs-feature/'], inputPlaceholder: 'Confluence page URL/id' },
+  { id: 'docs',             name: 'Tài liệu (nạp)',                skillId: 'confluence-ingest',     dependsOn: [],                                       outputs: ['docs/jira/', 'docs/confluence/', 'docs/context/', 'docs-feature/'], inputPlaceholder: 'Confluence page URL/id', inputKind: 'source' },
   // Customer Journey built straight from the ingested docs MD (no feature-analysis
   // upstream). Each STAGE carries `sources[]` — the key text excerpts from the
   // source MD — which the SpecPreview surfaces under each stage card.
@@ -300,7 +300,7 @@ const PIPELINE_DEFS_BASE: readonly PipelineDef[] = [
   // field here in sync with the `docs`/`cj`/`ux-research` defs above by hand;
   // there is no shared base def to factor out because `PipelineDef.dependsOn`
   // and `outputs` must each point at THIS workflow's own sibling ids.
-  { id: 'prd-docs',         name: 'Tài liệu (nạp)',                skillId: 'confluence-ingest',     dependsOn: [],              outputs: ['docs/jira/', 'docs/confluence/', 'docs/context/', 'docs-feature/'], inputPlaceholder: 'Confluence page URL/id' },
+  { id: 'prd-docs',         name: 'Tài liệu (nạp)',                skillId: 'confluence-ingest',     dependsOn: [],              outputs: ['docs/jira/', 'docs/confluence/', 'docs/context/', 'docs-feature/'], inputPlaceholder: 'Confluence page URL/id', inputKind: 'source' },
   // NO skippedInLeanRun anywhere in docs-to-prd: lean is a docs-to-ui-only
   // concept. The journey + research here are the requirements review's evidence
   // base. The Run-all lean toggle is therefore inert for this
@@ -325,7 +325,7 @@ const PIPELINE_DEFS_BASE: readonly PipelineDef[] = [
   // re-run of dr-review untouched). skillId MUST stay 'confluence-ingest' for
   // dr-docs: runDocsDeterministic (server.ts) only takes the tool-only
   // Confluence path for that exact skillId.
-  { id: 'dr-docs',          name: 'Tài liệu (nạp)',                   skillId: 'confluence-ingest',     dependsOn: [],                   outputs: ['docs/', 'docs-feature/'], inputPlaceholder: 'Confluence page URL/id', acceptsUpload: true },
+  { id: 'dr-docs',          name: 'Tài liệu (nạp)',                   skillId: 'confluence-ingest',     dependsOn: [],                   outputs: ['docs/', 'docs-feature/'], inputPlaceholder: 'Confluence page URL/id', inputKind: 'source', acceptsUpload: true },
   // Rút SƠ ĐỒ LUỒNG MÀN HÌNH từ tài liệu GỐC (`docs/`): mỗi luồng nghiệp vụ
   // thành một `flows/<FLOW-ID>.flowchart.json` (node start/end/action/decision
   // + edge có nhãn, node action có thể gắn `screen` = SCREEN-KEY của màn) để
@@ -381,7 +381,7 @@ const PIPELINE_DEFS_BASE: readonly PipelineDef[] = [
   // dr-docs) nhưng id/folder RIÊNG — độc lập tuyệt đối, không gì được chia
   // sẻ qua lại với ba workflow trên (cùng bất biến "mỗi pipeline id thuộc
   // đúng 1 workflow").
-  { id: 'lab-docs',         name: 'Tài liệu (nạp)',            skillId: 'confluence-ingest',     dependsOn: [],                   outputs: ['docs/', 'docs-feature/'], inputPlaceholder: 'Confluence page URL/id', acceptsUpload: true },
+  { id: 'lab-docs',         name: 'Tài liệu (nạp)',            skillId: 'confluence-ingest',     dependsOn: [],                   outputs: ['docs/', 'docs-feature/'], inputPlaceholder: 'Confluence page URL/id', inputKind: 'source', acceptsUpload: true },
   // `lab-map` (WP-lab-map, 2026-08-23 — .tmp/pipeline/wp-lab-map.yaml): stage
   // MỚI, CHỈ ĐỌC, đứng NGAY SAU lab-docs và TRƯỚC lab-compose (WP-lab-reorder
   // — xem ngay dưới — đổi thứ tự này) — agent đọc artifact docs-review của
@@ -403,6 +403,7 @@ const PIPELINE_DEFS_BASE: readonly PipelineDef[] = [
     dependsOn: ['lab-docs'],
     outputs: ['screen-map.json', 'screen-map.md'],
     inputPlaceholder: 'Luồng/màn cần ưu tiên (tuỳ chọn)',
+    inputKind: 'prompt',
   },
   // `lab-compose` KHÔNG chạy qua đường agent-pipeline thường — run profile
   // 'pipeline' bị `computeEnabledMcp` (figma-build.ts) cắt sạch MCP ngoài
@@ -427,7 +428,7 @@ const PIPELINE_DEFS_BASE: readonly PipelineDef[] = [
   // chứng thay vì đoán từ docs. Lần chạy ĐẦU chưa có kit là bình thường (dựng
   // từ comp base); lần "Chạy lại" SAU "Đóng gói comp" (lab-kit) → ưu tiên kit
   // như cũ (hành vi buildComposeBrief's `hasKit` không đổi).
-  { id: 'lab-compose',      name: 'Sáng tác màn',              skillId: 'lab-screen-compose',    dependsOn: ['lab-docs'],         outputs: ['screens/', 'lab-result.json'], inputPlaceholder: 'Phạm vi màn / định hướng thị giác (tuỳ chọn)' },
+  { id: 'lab-compose',      name: 'Sáng tác màn',              skillId: 'lab-screen-compose',    dependsOn: ['lab-docs'],         outputs: ['screens/', 'lab-result.json'], inputPlaceholder: 'Phạm vi màn / định hướng thị giác (tuỳ chọn)', inputKind: 'prompt' },
   // `lab-kit-plan` (WP-kit-plan, 2026-08-22 — .tmp/pipeline/wp-kit-plan.yaml):
   // stage CỔNG DUYỆT CỦA NGƯỜI trước "Đóng gói comp" — agent CHỈ ĐỌC (docs +
   // criteria), KHÔNG có tool Figma trong phiên, xuất kit-plan.json (máy đọc)
@@ -455,6 +456,7 @@ const PIPELINE_DEFS_BASE: readonly PipelineDef[] = [
     dependsOn: ['lab-docs', 'lab-compose'],
     outputs: ['kit-plan.json', 'kit-plan.md', 'kit-candidates.json', 'kit-candidates/'],
     inputPlaceholder: 'Định hướng đề xuất (tuỳ chọn)',
+    inputKind: 'prompt',
   },
   // `lab-kit` (WP-kit, 2026-08-22 — .tmp/pipeline/wp-kit.yaml): stage cuối
   // cùng của ds-lab — agent TỰ TẠO bộ component phái sinh thẩm mỹ cao hơn (từ
@@ -478,7 +480,7 @@ const PIPELINE_DEFS_BASE: readonly PipelineDef[] = [
   // (componentize-in-place) + SWAP ngược instance vào màn" (id/skillId/file
   // output giữ NGUYÊN — chỉ đổi tên hiển thị + hành vi bên trong, xem
   // buildKitBrief/skills/lab-kit-compose). `dependsOn` KHÔNG đổi.
-  { id: 'lab-kit',          name: 'Đóng gói comp',              skillId: 'lab-kit-compose',       dependsOn: ['lab-docs', 'lab-kit-plan'], outputs: ['kit-shots/', 'kit-result.json', 'kit/kit.json'], inputPlaceholder: 'Định hướng thẩm mỹ (tuỳ chọn)' },
+  { id: 'lab-kit',          name: 'Đóng gói comp',              skillId: 'lab-kit-compose',       dependsOn: ['lab-docs', 'lab-kit-plan'], outputs: ['kit-shots/', 'kit-result.json', 'kit/kit.json'], inputPlaceholder: 'Định hướng thẩm mỹ (tuỳ chọn)', inputKind: 'prompt' },
 ];
 
 // The registry every consumer imports. Identical to `PIPELINE_DEFS_BASE`
@@ -686,10 +688,15 @@ export function stageForOutput(rel: string): PipelineDef | undefined {
   return stagesForOutput(rel)[0];
 }
 
+/** A stage that owns document-source selection. Do not infer this from the
+ * presence of an input box: Lab stages also accept optional user guidance. */
+export function isDocumentInputStage(def: Pick<PipelineDef, 'inputKind'> | undefined): boolean {
+  return def?.inputKind === 'source';
+}
+
 /**
  * Whether at least one file in `relPaths` is a declared output of a doc-
- * INGEST stage — a `PipelineDef` with `inputPlaceholder` set (the existing
- * marker for "this is the stage that loads documents", see `PipelineDef`).
+ * INGEST stage — a `PipelineDef` with `inputKind: source`.
  * This is the single predicate the 2026-08 docs-only gate reads (see
  * `computeActive`): a workflow's other stages no longer wait on any
  * intermediate stage's run status, only on "has a document arrived".
@@ -711,7 +718,7 @@ export function stageForOutput(rel: string): PipelineDef | undefined {
 export function docsReadyFromFiles(relPaths: Iterable<string>, wfDir: string | null): boolean {
   for (const rel of relPaths) {
     if (wfDir && !rel.startsWith(`${wfDir}/`)) continue;
-    if (stagesForOutput(rel).some((d) => d.inputPlaceholder !== undefined)) return true;
+    if (stagesForOutput(rel).some((d) => isDocumentInputStage(d))) return true;
   }
   return false;
 }
@@ -897,7 +904,7 @@ export function effectiveDependsOn(def: PipelineDef, mode: PipelineRunMode = 'fu
 }
 
 /**
- * The doc-ingest stage of `workflow` — the def with `inputPlaceholder` set
+ * The doc-ingest stage of `workflow` — the def with `inputKind: source`
  * (see `PipelineDef`; today `docs` for `docs-to-ui`, `prd-docs` for
  * `docs-to-prd`, `dr-docs` for `docs-review`). Every OTHER stage in the
  * workflow reads ITS readiness off this one stage (see `computeActive`), so
@@ -908,7 +915,7 @@ export function effectiveDependsOn(def: PipelineDef, mode: PipelineRunMode = 'fu
 export function ingestDefOfWorkflow(workflow: Pick<Workflow, 'pipelineIds'>): PipelineDef | undefined {
   for (const id of workflow.pipelineIds) {
     const d = getPipelineDef(id);
-    if (d?.inputPlaceholder !== undefined) return d;
+    if (isDocumentInputStage(d)) return d;
   }
   return undefined;
 }
@@ -923,7 +930,7 @@ export function ingestDefOfWorkflow(workflow: Pick<Workflow, 'pipelineIds'>): Pi
  * gate blocked a user for hours on a case the chain could never see: files
  * present with no matching run record (pasted in by hand, pulled from the
  * media store onto a fresh device, or a local run record lost while its
- * output survived on disk). `def.inputPlaceholder` itself (the ingest stage)
+ * output survived on disk). The source-input stage itself
  * is ALWAYS active — it is the bootstrap step, nothing gates it. Every other
  * stage in the same workflow is active the instant `ingestDefOfWorkflow`'s
  * status reads `succeeded` in `state` — OR `docsReady` says its files are on
@@ -960,7 +967,7 @@ export function computeActive(
   explicitSelection?: readonly string[],
   docsReady?: Readonly<Record<string, boolean>>,
 ): boolean {
-  if (def.inputPlaceholder !== undefined) return true;
+  if (isDocumentInputStage(def)) return true;
   const wf = workflowForPipeline(def.id);
   const ingest = wf && ingestDefOfWorkflow(wf);
   if (!ingest) return false;
@@ -1072,7 +1079,7 @@ export function missingDependencies(
   for (const id of selected) {
     const def = getPipelineDef(id);
     if (!def) continue; // id lạ là việc của validateRunStageSelection
-    if (def.inputPlaceholder !== undefined) continue; // bước ingest không bao giờ thiếu gì.
+    if (isDocumentInputStage(def)) continue; // bước ingest không bao giờ thiếu gì.
     const wf = workflowForPipeline(id);
     const ingest = wf && ingestDefOfWorkflow(wf);
     if (!ingest) continue; // ngoài mọi workflow — không có gì để gate ở đây.
@@ -1390,6 +1397,7 @@ export function listPipelineStatus(
       // a client "don't offer Run for this one" (route also fail-closes it).
       ...(def.heldFromRun ? { held: true as const } : {}),
       ...(def.inputPlaceholder ? { inputPlaceholder: def.inputPlaceholder } : {}),
+      ...(def.inputKind ? { inputKind: def.inputKind } : {}),
       ...(def.acceptsDesignSystem ? { acceptsDesignSystem: true } : {}),
       ...(def.acceptsPlatform ? { acceptsPlatform: true } : {}),
       ...(def.acceptsUpload ? { acceptsUpload: true } : {}),

@@ -147,16 +147,16 @@ export async function stageLocalAppContext(
 export function appContextDirective(stagedFiles: string[]): string {
   if (stagedFiles.length === 0) return '';
   return (
-    ` This feature belongs to an APP with shared cross-feature context staged at "./.app-context"` +
-    ` (files: ${stagedFiles.join(', ')}). READ it FIRST and treat it as the app-wide source of truth.` +
-    ` "ux-charter.json" is a STRUCTURED set of UX criteria — each { "id", "priority" (must|should|nice),` +
-    ` "area", "text" }. Treat every "must" as a HARD CONSTRAINT and every "should" as a default you follow,` +
-    ` so this feature stays consistent with the rest of the app; reuse any patterns/conventions it` +
-    ` establishes rather than reinventing them.` +
-    ` If this feature genuinely needs a NEW cross-cutting criterion, record it as a PROPOSAL in` +
-    ` "./app-context-delta.json" — a JSON object {"criteria":[{ "id": "kebab-id", "priority":` +
-    ` "must|should|nice", "area": "...", "text": "..." }]} (create the file, or extend its "criteria" array).` +
-    ` Do NOT edit ./.app-context directly (it is read-only; a human reviews and promotes deltas into the` +
+    ` Feature này thuộc một APP có ngữ cảnh dùng chung xuyên feature, đã staging tại "./.app-context"` +
+    ` (file: ${stagedFiles.join(', ')}). ĐỌC nó TRƯỚC TIÊN và coi đó là nguồn sự thật cấp app.` +
+    ` "ux-charter.json" là một tập tiêu chí UX CÓ CẤU TRÚC — mỗi mục { "id", "priority" (must|should|nice),` +
+    ` "area", "text" }. Coi mỗi "must" là một RÀNG BUỘC CỨNG và mỗi "should" là mặc định bạn tuân theo,` +
+    ` để feature này nhất quán với phần còn lại của app; tái dùng mọi pattern/quy ước app đã thiết lập` +
+    ` thay vì tự nghĩ lại từ đầu.` +
+    ` Nếu feature này THẬT SỰ cần một tiêu chí xuyên-feature MỚI, ghi nó thành một ĐỀ XUẤT trong` +
+    ` "./app-context-delta.json" — một object JSON {"criteria":[{ "id": "kebab-id", "priority":` +
+    ` "must|should|nice", "area": "...", "text": "..." }]} (tạo file, hoặc nối thêm vào mảng "criteria" của nó).` +
+    ` KHÔNG sửa ./.app-context trực tiếp (nó chỉ đọc; một người sẽ review và promote delta vào` +
     ` app charter).`
   );
 }

@@ -8,10 +8,13 @@ import type { ScreenInput } from '../src/screen-components.js';
 import { decodeMxfile, loadGraph } from '../src/flow-ux/mxfile.js';
 import {
   buildScreenFlowArtifacts,
+  classifyScreenFlowEdgeKind,
   classifySourceScreenFlow,
   collapseToScreenFlow,
+  recoverUnmappedBusinessScreens,
   recoverScreenNavigationFromDocuments,
   renderScreenFlowDrawio,
+  validateScreenFlowTopology,
 } from '../src/screen-flow.js';
 import type { FlowchartDoc } from '../src/flow-ux/to-flowchart.js';
 
@@ -84,7 +87,84 @@ describe('screen-flow pure contract', () => {
     expect(model.flowId).toBe('FLOW-buy');
     expect(model.edges).toHaveLength(1);
     expect(model.edges[0]).toMatchObject({ from: 'A', to: 'B', via: 'Bấm tiếp tục', condition: 'eSIM' });
+    expect(model.edges[0]?.kind).toBe('branch');
     expect(model.screens.find((s) => s.key === 'B')?.linked).toBe(true);
+  });
+
+  it('edge kind is backward-compatible and topology validation rejects orphan/unreachable/UNLINKED models', () => {
+    const connected = collapseToScreenFlow(
+      flow(
+        [{ id: 'a', type: 'action', label: 'A', screen: 'A' }, { id: 'b', type: 'action', label: 'B', screen: 'B' }],
+        [{ from: 'a', to: 'b' }],
+      ),
+      [screen('A'), screen('B')],
+    );
+    expect(connected.edges[0]?.kind).toBe('primary');
+    // Reader compatibility: a v1 edge without kind is primary.
+    delete connected.edges[0]!.kind;
+    expect(validateScreenFlowTopology(connected)).toEqual({ valid: true, errors: [], orphanScreens: [], unreachableScreens: [] });
+
+    const withSecondaryOnly = {
+      ...connected,
+      screens: [...connected.screens, { ...connected.screens[1]!, key: 'C', name: 'C', linked: true }],
+      edges: [...connected.edges, { ...connected.edges[0]!, id: 'secondary', from: 'B', to: 'C', kind: 'secondary' as const }],
+    };
+    expect(validateScreenFlowTopology(withSecondaryOnly)).toMatchObject({ valid: false, orphanScreens: [], unreachableScreens: ['C'] });
+
+    const orphan = { ...connected, screens: [...connected.screens, { ...connected.screens[1]!, key: 'D', name: 'D', linked: false }] };
+    expect(validateScreenFlowTopology(orphan)).toMatchObject({ valid: false, orphanScreens: ['D'], unreachableScreens: ['D'] });
+    expect(validateScreenFlowTopology({ ...connected, flowId: 'UNLINKED' })).toMatchObject({ valid: false });
+  });
+
+  it('classifies primary/branch/return/secondary/inferred navigation deterministically', () => {
+    expect(classifyScreenFlowEdgeKind('Tiếp tục')).toBe('primary');
+    expect(classifyScreenFlowEdgeKind('Tiếp tục', 'eSIM')).toBe('branch');
+    expect(classifyScreenFlowEdgeKind('Quay lại màn trước')).toBe('return');
+    expect(classifyScreenFlowEdgeKind('Đóng bottom sheet')).toBe('return');
+    expect(classifyScreenFlowEdgeKind('Chuyển tab Lịch sử')).toBe('secondary');
+    expect(classifyScreenFlowEdgeKind('Điều hướng', undefined, true)).toBe('inferred');
+  });
+
+  it('maps exactly one strongly matching unmapped business node to an orphan screen and marks its navigation inferred', () => {
+    const source = flow(
+      [
+        { id: 'C_Type', type: 'decision', label: 'Chọn loại SIM', screen: 'buy__6.1.1' },
+        { id: 'E3', type: 'action', label: 'Hiển thị danh sách gói cước eSIM Việt Nam' },
+      ],
+      [{ from: 'C_Type', to: 'E3', label: 'SIM du lịch Việt Nam' }],
+    );
+    const home = { ...screen('buy__6.1.1'), name: 'Màn hình trang chủ', source: 'docs-feature/buy.md' };
+    const vietnam = { ...screen('buy__6.3.1'), name: 'Màn hình danh sách gói cước Việt Nam', source: 'docs-feature/buy.md' };
+    const recovered = recoverUnmappedBusinessScreens(source, [home, vietnam]);
+    expect(recovered.mappings).toEqual([{ nodeId: 'E3', nodeLabel: 'Hiển thị danh sách gói cước eSIM Việt Nam', screenKey: 'buy__6.3.1' }]);
+    expect(recovered.doc.nodes.find((node) => node.id === 'E3')?.screen).toBe('buy__6.3.1');
+    const model = collapseToScreenFlow(recovered.doc, recovered.screens, { inferredNodeIds: recovered.inferredNodeIds });
+    expect(model.edges).toEqual([
+      expect.objectContaining({ from: 'buy__6.1.1', to: 'buy__6.3.1', kind: 'inferred', condition: 'SIM du lịch Việt Nam' }),
+    ]);
+
+    const ambiguous = recoverUnmappedBusinessScreens(source, [home, vietnam, { ...vietnam, key: 'buy__duplicate' }]);
+    expect(ambiguous.mappings).toEqual([]);
+  });
+
+  it('collapses parallel business steps into one screen direction', () => {
+    const source = flow(
+      [
+        { id: 'a1', type: 'action', label: 'Chọn loại SIM', screen: 'A' },
+        { id: 'a2', type: 'decision', label: 'Loại SIM?', screen: 'A' },
+        { id: 'b1', type: 'action', label: 'Danh sách eSIM', screen: 'B' },
+        { id: 'b2', type: 'action', label: 'Danh sách SIM vật lý', screen: 'B' },
+      ],
+      [
+        { from: 'a1', to: 'b1', label: 'eSIM' },
+        { from: 'a2', to: 'b1', label: 'eSIM' },
+        { from: 'a2', to: 'b2', label: 'SIM vật lý' },
+      ],
+    );
+    const model = collapseToScreenFlow(source, [screen('A'), screen('B')]);
+    expect(model.edges).toHaveLength(1);
+    expect(model.edges[0]).toMatchObject({ from: 'A', to: 'B', condition: 'eSIM / SIM vật lý' });
+    expect(model.edges[0]?.evidence).toHaveLength(3);
   });
 
   it('does not invent a bridge through a removed mapped screen and keeps added/doc-only screens unlinked', () => {
@@ -119,13 +199,59 @@ describe('screen-flow pure contract', () => {
 });
 
 describe('buildScreenFlowArtifacts', () => {
+  it('recovers 6.1.1→6.3.1 from business node E3 and 6.3.1→6.3.2 from “Chuyển tiếp sang” document evidence', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'od-screen-flow-vietnam-'));
+    roots.push(root);
+    fs.mkdirSync(path.join(root, 'docs-feature'), { recursive: true });
+    fs.mkdirSync(path.join(root, 'flows/FLOW-buy'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'docs-feature/buy.md'), [
+      '#### 6.1.1 Màn hình trang chủ',
+      'Chọn loại SIM du lịch Việt Nam.',
+      '#### 6.3.1 Màn hình danh sách gói cước Việt Nam',
+      'Chuyển tiếp sang màn hình Chi tiết gói cước Việt Nam.',
+      '#### 6.3.2 Chi tiết gói cước Việt Nam',
+      'Hiển thị thông tin gói.',
+    ].join('\n'));
+    const business = flow(
+      [
+        { id: 'C_Type', type: 'decision', label: 'Chọn loại SIM', screen: 'buy__6.1.1' },
+        { id: 'E3', type: 'action', label: 'Hiển thị danh sách gói cước eSIM Việt Nam' },
+      ],
+      [{ from: 'C_Type', to: 'E3', label: 'SIM du lịch Việt Nam' }],
+    );
+    fs.writeFileSync(path.join(root, 'flows/FLOW-buy.flowchart.json'), JSON.stringify(business));
+    fs.writeFileSync(path.join(root, 'flows/FLOW-buy/as-is.mmd'), 'flowchart TD\n C_Type --> E3\n');
+    fs.writeFileSync(path.join(root, 'flows/index.json'), JSON.stringify([
+      { id: 'FLOW-buy', title: 'Buy', kind: 'mermaid', source: 'docs-feature/buy.md', screens: [{ key: 'buy__6.1.1', name: 'Màn hình trang chủ' }], files: { asIs: 'flows/FLOW-buy/as-is.mmd', flowchart: 'flows/FLOW-buy.flowchart.json' } },
+    ]));
+    const make = (code: string, name: string, flowId = ''): ScreenInput => ({
+      ...screen(`buy__${code}`, flowId, flowId ? 'flow' : 'doc'),
+      name,
+      order: Number(code.split('.').at(-1)),
+      source: 'docs-feature/buy.md',
+      flowTitle: flowId ? 'Mua SIM' : '',
+    });
+    const result = await buildScreenFlowArtifacts(root, [
+      make('6.1.1', 'Màn hình trang chủ', 'FLOW-buy'),
+      make('6.3.1', 'Màn hình danh sách gói cước Việt Nam', 'FLOW-buy'),
+      make('6.3.2', 'Chi tiết gói cước Việt Nam'),
+    ], { generatedAt: 'fixed' });
+    expect(result.flows.map((entry) => entry.id)).toEqual(['FLOW-buy']);
+    const model = JSON.parse(fs.readFileSync(path.join(root, 'comp/screen-flows/FLOW-buy.screen-flow.json'), 'utf8'));
+    expect(model.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({ from: 'buy__6.1.1', to: 'buy__6.3.1', kind: 'inferred' }),
+      expect.objectContaining({ from: 'buy__6.3.1', to: 'buy__6.3.2', kind: 'inferred' }),
+    ]));
+    expect(validateScreenFlowTopology(model)).toMatchObject({ valid: true, orphanScreens: [], unreachableScreens: [] });
+  });
+
   it('recovers document-only screens and navigation from bounded source sections', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'od-screen-flow-recovery-'));
     roots.push(root);
     fs.mkdirSync(path.join(root, 'docs-feature'), { recursive: true });
     fs.writeFileSync(path.join(root, 'docs-feature/buy.md'), [
       '## 6.4.1 Nhập thông tin',
-      'Nhấn: Hiển thị màn hình 6.4.2 chọn địa chỉ giao hàng.',
+      'Nhấn: Chuyển tiếp tới màn hình 6.4.2 chọn địa chỉ giao hàng.',
       'On toggle: Hiển thị bottom sheet Thông tin xuất hóa đơn (6.4.3).',
       'Phần Hóa đơn VAT & Mã giảm giá.',
       '#### 6.4.2 Địa chỉ nhận hàng',
@@ -148,12 +274,13 @@ describe('buildScreenFlowArtifacts', () => {
       make('6.4.3', 'Thông tin xuất hóa đơn'),
       make('6.4.4', 'Mã voucher'),
     ]);
-    expect(result.unresolvedScreens).toEqual([]);
-    expect(result.recoveredScreens).toEqual(['buy__6.4.2', 'buy__6.4.3', 'buy__6.4.4']);
-    expect(result.screens.every((item) => item.flowId === 'FLOW-buy')).toBe(true);
+    expect(result.unresolvedScreens).toEqual(['buy__6.4.4']);
+    expect(result.recoveredScreens).toEqual(['buy__6.4.2', 'buy__6.4.3']);
+    expect(result.screens.filter((item) => item.key !== 'buy__6.4.4').every((item) => item.flowId === 'FLOW-buy')).toBe(true);
     expect(result.screens[0]?.navOut.map((nav) => nav.to)).toEqual(expect.arrayContaining([
-      'buy__6.4.2', 'buy__6.4.3', 'buy__6.4.4',
+      'buy__6.4.2', 'buy__6.4.3',
     ]));
+    expect(result.screens[0]?.navOut.map((nav) => nav.to)).not.toContain('buy__6.4.4');
     expect(result.screens.find((item) => item.key === 'buy__6.4.2')?.navOut.map((nav) => nav.to)).toContain('buy__6.4.1');
   });
 

@@ -3,6 +3,7 @@ import path from 'node:path';
 
 import type {
   ScreenFlowEdge,
+  ScreenFlowEdgeKind,
   ScreenFlowIndexEntry,
   ScreenFlowModel,
   ScreenFlowsIndex,
@@ -91,6 +92,12 @@ interface WalkState {
   conditions: string[];
 }
 
+export interface CollapseToScreenFlowOptions {
+  /** Business nodes that received a deterministic screen mapping from their
+   * labels rather than an explicit source-diagram mapping. */
+  inferredNodeIds?: ReadonlySet<string>;
+}
+
 function screenModel(input: ScreenInput, flowId: string) {
   return {
     key: input.key,
@@ -106,7 +113,7 @@ function screenModel(input: ScreenInput, flowId: string) {
 
 /** Project a business graph onto screens. Invalid (removed) mapped screens are
  * barriers: walking through them would invent predecessor/successor links. */
-export function collapseToScreenFlow(doc: FlowchartDoc, inputs: ScreenInput[]): ScreenFlowModel {
+export function collapseToScreenFlow(doc: FlowchartDoc, inputs: ScreenInput[], options: CollapseToScreenFlowOptions = {}): ScreenFlowModel {
   const ordered = [...inputs].sort(byOrder);
   const validKeys = new Set(ordered.map((screen) => screen.key));
   const byId = new Map(doc.nodes.map((node) => [node.id, node]));
@@ -144,6 +151,11 @@ export function collapseToScreenFlow(doc: FlowchartDoc, inputs: ScreenInput[]): 
             to: node.screen,
             ...(source.label ? { via: source.label } : {}),
             ...(state.conditions.length ? { condition: state.conditions.join(' → ') } : {}),
+            kind: options.inferredNodeIds?.has(source.id) || options.inferredNodeIds?.has(node.id)
+              ? 'inferred'
+              : state.conditions.length
+                ? 'branch'
+                : 'primary',
             flowIds: [doc.id],
             evidence: [{ flowId: doc.id, fromNode: source.id, toNode: node.id, path: state.path }],
           });
@@ -163,18 +175,52 @@ export function collapseToScreenFlow(doc: FlowchartDoc, inputs: ScreenInput[]): 
     }
   }
 
-  const deduped = new Map<string, Omit<ScreenFlowEdge, 'id'>>();
+  // A screen-flow is about navigation between screens, not every business
+  // step that happened between them. Collapse parallel business paths into a
+  // single visual direction and keep all raw paths in evidence.
+  const grouped = new Map<string, {
+    from: string;
+    to: string;
+    vias: Set<string>;
+    conditions: Set<string>;
+    kind: ScreenFlowEdgeKind;
+    flowIds: string[];
+    evidence: ScreenFlowEdge['evidence'];
+  }>();
   for (const edge of candidates) {
     if (edge.from === edge.to) continue;
-    const signature = [edge.from, edge.to, edge.via ?? '', edge.condition ?? ''].join('\u0000');
-    const previous = deduped.get(signature);
-    if (!previous) deduped.set(signature, edge);
-    else previous.evidence.push(...edge.evidence);
+    const kind = edge.kind ?? 'primary';
+    const signature = `${edge.from}\u0000${edge.to}\u0000${kind}`;
+    const previous = grouped.get(signature);
+    if (previous) {
+      if (edge.via) previous.vias.add(edge.via);
+      if (edge.condition) previous.conditions.add(edge.condition);
+      previous.evidence.push(...edge.evidence);
+      continue;
+    }
+    grouped.set(signature, {
+      from: edge.from,
+      to: edge.to,
+      vias: new Set(edge.via ? [edge.via] : []),
+      conditions: new Set(edge.condition ? [edge.condition] : []),
+      kind,
+      flowIds: [...edge.flowIds],
+      evidence: [...edge.evidence],
+    });
   }
   const order = new Map(ordered.map((screen, index) => [screen.key, index]));
-  const edges: ScreenFlowEdge[] = [...deduped.values()]
-    .sort((a, b) => (order.get(a.from)! - order.get(b.from)!) || (order.get(a.to)! - order.get(b.to)!) || (a.condition ?? '').localeCompare(b.condition ?? '') || (a.via ?? '').localeCompare(b.via ?? ''))
-    .map((edge) => ({ ...edge, id: `edge-${stableToken([edge.from, edge.to, edge.via ?? '', edge.condition ?? ''].join('|'))}` }));
+  const edges: ScreenFlowEdge[] = [...grouped.values()]
+    .map((group): Omit<ScreenFlowEdge, 'id'> => ({
+      from: group.from,
+      to: group.to,
+      ...(group.vias.size === 1 ? { via: [...group.vias][0]! } : {}),
+      ...(group.conditions.size > 0 ? { condition: [...group.conditions].join(' / ') } : {}),
+      kind: group.kind,
+      flowIds: group.flowIds,
+      evidence: group.evidence,
+    }))
+    .sort((a, b) => (order.get(a.from)! - order.get(b.from)!) || (order.get(a.to)! - order.get(b.to)!) || (a.kind ?? 'primary').localeCompare(b.kind ?? 'primary') || (a.condition ?? '').localeCompare(b.condition ?? '') || (a.via ?? '').localeCompare(b.via ?? ''))
+    .map((edge) => ({ ...edge, id: `edge-${stableToken([edge.from, edge.to, edge.kind ?? 'primary', edge.via ?? '', edge.condition ?? ''].join('|'))}` }));
   const linkedKeys = new Set(edges.flatMap((edge) => [edge.from, edge.to]));
   const screens = ordered.map((input) => ({ ...screenModel(input, doc.id), linked: linkedKeys.has(input.key) }));
   const roots = doc.nodes.filter((node) => node.type === 'start' || (indegree.get(node.id) ?? 0) === 0).map((node) => node.id);
@@ -209,8 +255,13 @@ export function collapseToScreenFlow(doc: FlowchartDoc, inputs: ScreenInput[]): 
   };
 }
 
-/** Canonical single-page Draw.io. Geometry is intentionally simple and stable;
- * screen identity lives in `od-screen-key`, never in the visible label. */
+function compactLabel(value: string, max = 64): string {
+  const oneLine = value.replace(/<br\s*\/?\s*>/gi, ' ').replace(/\s+/g, ' ').trim();
+  return oneLine.length <= max ? oneLine : `${oneLine.slice(0, max - 1).trimEnd()}…`;
+}
+
+/** Canonical single-page Draw.io export. The app preview uses the responsive
+ * SVG canvas; this remains an editable hand-off artifact. */
 export function renderScreenFlowDrawio(model: ScreenFlowModel): string {
   const linked = model.screens.filter((screen) => screen.linked);
   const unlinked = model.screens.filter((screen) => !screen.linked);
@@ -222,14 +273,15 @@ export function renderScreenFlowDrawio(model: ScreenFlowModel): string {
   linked.forEach((screen, index) => {
     const column = index % 3;
     const row = Math.floor(index / 3);
-    cells.push(`<mxCell id="sf-screen-${stableToken(screen.key)}" od-screen-key="${xml(screen.key)}" value="${xml(screen.name)}" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1"><mxGeometry x="${40 + column * 220}" y="${40 + row * 130}" width="180" height="72" as="geometry"/></mxCell>`);
+    cells.push(`<mxCell id="sf-screen-${stableToken(screen.key)}" od-screen-key="${xml(screen.key)}" value="${xml(compactLabel(screen.name, 72))}" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1"><mxGeometry x="${40 + column * 220}" y="${40 + row * 130}" width="180" height="72" as="geometry"/></mxCell>`);
   });
   unlinked.forEach((screen, index) => {
-    cells.push(`<mxCell id="sf-screen-${stableToken(screen.key)}" od-screen-key="${xml(screen.key)}" value="${xml(screen.name)}" style="rounded=1;whiteSpace=wrap;html=1;dashed=1;" vertex="1" parent="sf-unlinked"><mxGeometry x="30" y="${45 + index * 90}" width="300" height="60" as="geometry"/></mxCell>`);
+    cells.push(`<mxCell id="sf-screen-${stableToken(screen.key)}" od-screen-key="${xml(screen.key)}" value="${xml(compactLabel(screen.name, 72))}" style="rounded=1;whiteSpace=wrap;html=1;dashed=1;" vertex="1" parent="sf-unlinked"><mxGeometry x="30" y="${45 + index * 90}" width="300" height="60" as="geometry"/></mxCell>`);
   });
   model.edges.forEach((edge) => {
-    const label = [edge.via, edge.condition].filter(Boolean).join(' · ');
-    cells.push(`<mxCell id="sf-${xml(edge.id)}"${label ? ` value="${xml(label)}"` : ''} style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;" edge="1" parent="1" source="sf-screen-${stableToken(edge.from)}" target="sf-screen-${stableToken(edge.to)}"><mxGeometry relative="1" as="geometry"/></mxCell>`);
+    const label = compactLabel([edge.condition, edge.via].filter(Boolean).join(' · '), 48);
+    const auxiliary = edge.kind === 'return' || edge.kind === 'secondary';
+    cells.push(`<mxCell id="sf-${xml(edge.id)}"${label ? ` value="${xml(label)}"` : ''} style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;${auxiliary ? 'dashed=1;strokeColor=#94a3b8;' : ''}" edge="1" parent="1" source="sf-screen-${stableToken(edge.from)}" target="sf-screen-${stableToken(edge.to)}"><mxGeometry relative="1" as="geometry"/></mxCell>`);
   });
   const graphXml = `<mxGraphModel><root>${cells.join('')}</root></mxGraphModel>`;
   return encodeMxfile([{ id: `sf-${stableToken(model.flowId)}`, name: 'Luồng màn hình', graphXml }]);
@@ -278,6 +330,7 @@ export interface ScreenNavigationRecovery {
   screens: ScreenInput[];
   recoveredScreens: string[];
   recoveredEdges: number;
+  recoveredNavigation: Array<{ from: string; to: string }>;
   unresolvedScreens: string[];
   warnings: string[];
 }
@@ -285,6 +338,8 @@ export interface ScreenNavigationRecovery {
 const normalizedWords = (value: string): string => value
   .normalize('NFD')
   .replace(/[\u0300-\u036f]/g, '')
+  .replace(/đ/g, 'd')
+  .replace(/Đ/g, 'D')
   .toLocaleLowerCase('vi')
   .replace(/<br\s*\/?\s*>/gi, ' ')
   .replace(/[^a-z0-9]+/g, ' ')
@@ -300,7 +355,10 @@ function navigationAliases(screen: ScreenInput): string[] {
   const baseName = screen.name.split('(')[0]!.trim();
   const names = [screen.name, baseName]
     .map(normalizedWords)
-    .flatMap((name) => [name, name.replace(/^man hinh\s+/, '')])
+    .flatMap((name) => {
+      const withoutCode = name.replace(/^\d+(?:\s+\d+)*\s+/, '');
+      return [name, withoutCode, withoutCode.replace(/^man hinh\s+/, '')];
+    })
     .filter((name) => name.length >= 5);
   const aliases = new Set(names);
   for (const name of [...aliases]) {
@@ -308,6 +366,103 @@ function navigationAliases(screen: ScreenInput): string[] {
     if (name.includes('giam gia')) aliases.add(name.replace(/giam gia/g, 'voucher'));
   }
   return [...aliases].sort((a, b) => b.length - a.length);
+}
+
+export interface RecoveredBusinessScreenMapping {
+  nodeId: string;
+  nodeLabel: string;
+  screenKey: string;
+}
+
+export interface UnmappedBusinessScreenRecovery {
+  doc: FlowchartDoc;
+  screens: ScreenInput[];
+  mappings: RecoveredBusinessScreenMapping[];
+  inferredNodeIds: ReadonlySet<string>;
+}
+
+const PRESENTATION_WORDS = new Set(['man', 'hinh', 'hien', 'thi', 'giao', 'dien', 'screen']);
+
+function strongLabelTokens(value: string): Set<string> {
+  return new Set(normalizedWords(value).split(' ').filter((word) => word.length > 1 && !PRESENTATION_WORDS.has(word)));
+}
+
+/** Deterministically attach an unmapped business node to a screen only when
+ * its normalized label has one unique, high-overlap match. This is evidence
+ * recovery, not order-based guessing: short generic labels and duplicate
+ * screen names deliberately remain unresolved. */
+export function recoverUnmappedBusinessScreens(doc: FlowchartDoc, inputScreens: ScreenInput[]): UnmappedBusinessScreenRecovery {
+  const screens = inputScreens.map((screen) => ({
+    ...screen,
+    navOut: screen.navOut.map((nav) => ({ ...nav })),
+    navIn: [...screen.navIn],
+  }));
+  const explicitlyMapped = new Set(doc.nodes.map((node) => node.screen).filter((key): key is string => Boolean(key)));
+  const eligibleScreens = screens.filter((screen) =>
+    !explicitlyMapped.has(screen.key)
+    && (!screen.flowId || screen.flowId === doc.id)
+    && (!screen.source || !doc.source || screen.source === doc.source),
+  );
+  const proposals: Array<{ nodeId: string; nodeLabel: string; screen: ScreenInput }> = [];
+  for (const node of doc.nodes) {
+    if (node.screen || (node.type !== 'action' && node.type !== 'decision')) continue;
+    const nodeTokens = strongLabelTokens(node.label);
+    if (nodeTokens.size < 3) continue;
+    const matches = eligibleScreens.filter((screen) => {
+      const screenTokens = strongLabelTokens(screen.name);
+      if (screenTokens.size < 3) return false;
+      let common = 0;
+      for (const token of screenTokens) if (nodeTokens.has(token)) common += 1;
+      return common >= 3 && common / Math.min(nodeTokens.size, screenTokens.size) >= 0.8;
+    });
+    if (matches.length === 1) proposals.push({ nodeId: node.id, nodeLabel: node.label, screen: matches[0]! });
+  }
+  const proposalsPerScreen = new Map<string, number>();
+  for (const proposal of proposals) proposalsPerScreen.set(proposal.screen.key, (proposalsPerScreen.get(proposal.screen.key) ?? 0) + 1);
+  const accepted = proposals.filter((proposal) => proposalsPerScreen.get(proposal.screen.key) === 1);
+  const byNode = new Map(accepted.map((mapping) => [mapping.nodeId, mapping.screen.key]));
+  const inferredNodeIds = new Set(byNode.keys());
+  const recoveredKeys = new Set(accepted.map((mapping) => mapping.screen.key));
+  for (const screen of screens) {
+    if (!recoveredKeys.has(screen.key) || screen.flowId) continue;
+    screen.flowId = doc.id;
+    screen.flowTitle = doc.title;
+  }
+  return {
+    doc: {
+      ...doc,
+      nodes: doc.nodes.map((node) => byNode.has(node.id) ? { ...node, screen: byNode.get(node.id)! } : { ...node }),
+      edges: doc.edges.map((edge) => ({ ...edge })),
+    },
+    screens,
+    mappings: accepted.map((mapping) => ({ nodeId: mapping.nodeId, nodeLabel: mapping.nodeLabel, screenKey: mapping.screen.key })),
+    inferredNodeIds,
+  };
+}
+
+/** A document line is evidence of navigation only when it contains an
+ * explicit transition phrase. Generic table actions such as Click/Readonly,
+ * headings that merely reference another section, and "mô tả" must not create
+ * screen edges. */
+function hasExplicitNavigationCue(rawLine: string): boolean {
+  const line = normalizedWords(rawLine);
+  return /\b(?:hien thi|mo)\s+(?:man hinh|bottom sheet|popup|modal)\b/.test(line)
+    || /\bchuyen(?:\s+tiep)?\s+(?:toi|sang)\b/.test(line)
+    || /\bchuyen\s+(?:sang\s+)?tab\b/.test(line)
+    || /\bquay lai(?:\s+(?:man hinh|trang))?\b/.test(line)
+    || /\bdong\s+(?:bottom sheet|popup|modal)\b/.test(line)
+    || /\bdieu huong\s+(?:toi|sang)\b/.test(line)
+    || /\bnavigate(?:s|d)?\s+to\b/.test(line);
+}
+
+function recoveredNavigationLabel(rawLine: string): string {
+  const line = normalizedWords(rawLine);
+  if (/\bquay lai\b|\bdong\s+(?:bottom sheet|popup|modal)\b/.test(line)) return 'Quay lại';
+  if (/\bchuyen\s+(?:sang\s+)?tab\b/.test(line)) return 'Chuyển tab';
+  if (/\b(?:hien thi|mo)\s+bottom sheet\b/.test(line)) return 'Mở bottom sheet';
+  if (/\b(?:hien thi|mo)\s+(?:popup|modal)\b/.test(line)) return 'Mở popup';
+  if (/\bchuyen(?:\s+tiep)?\s+(?:toi|sang)\b|\bdieu huong\s+(?:toi|sang)\b|\bnavigate(?:s|d)?\s+to\b/.test(line)) return 'Điều hướng';
+  return 'Mở màn hình';
 }
 
 function sectionRanges(md: string, screens: ScreenInput[]): Map<string, { start: number; end: number }> {
@@ -366,6 +521,7 @@ export async function recoverScreenNavigationFromDocuments(
     bySource.set(screen.source, [...(bySource.get(screen.source) ?? []), screen]);
   }
   let recoveredEdges = 0;
+  const recoveredNavigation: Array<{ from: string; to: string }> = [];
   for (const [source, sourceScreens] of bySource) {
     const md = await fs.readFile(path.join(cwd, source), 'utf8').catch(() => null);
     if (!md) continue;
@@ -382,9 +538,7 @@ export async function recoverScreenNavigationFromDocuments(
       for (const rawLine of lines.slice(range.start, range.end)) {
         const line = normalizedWords(rawLine);
         if (!line) continue;
-        const hasNavigationCue = /\b(?:click|nhan|bam|chuyen|quay lai|hien thi|mo|dong|hoan thanh|on toggle|on click)\b/.test(line)
-          || /\bphan\b.*\b(?:ma giam gia|voucher)\b/.test(line);
-        if (!hasNavigationCue) continue;
+        if (!hasExplicitNavigationCue(rawLine)) continue;
         const matches = targets
           .filter(({ screen }) => screen.key !== from.key)
           // The source flowchart remains authoritative for pairs that are
@@ -402,9 +556,10 @@ export async function recoverScreenNavigationFromDocuments(
         // A line can contain a stale numeric cross-reference next to the
         // correct screen name. Prefer the strongest name match, but retain
         // genuinely separate references of equal strength.
-        const best = matches[0]!.score;
-        for (const match of matches.filter((item) => item.score === best)) {
-          if (addNav(from, match.target.screen, rawLine.trim().slice(0, 240))) recoveredEdges += 1;
+        const match = matches[0]!;
+        if (addNav(from, match.target.screen, recoveredNavigationLabel(rawLine))) {
+          recoveredEdges += 1;
+          recoveredNavigation.push({ from: from.key, to: match.target.screen.key });
         }
       }
     }
@@ -443,6 +598,7 @@ export async function recoverScreenNavigationFromDocuments(
     screens,
     recoveredScreens: [...recovered].sort(),
     recoveredEdges,
+    recoveredNavigation,
     unresolvedScreens,
     warnings: unresolvedScreens.length
       ? [`${unresolvedScreens.length} màn chưa có đủ bằng chứng để gắn vào một flow.`]
@@ -450,21 +606,32 @@ export async function recoverScreenNavigationFromDocuments(
   };
 }
 
-function mergeDocumentNavigation(model: ScreenFlowModel, screens: ScreenInput[]): void {
+export function classifyScreenFlowEdgeKind(via: string, condition?: string, inferred = false): ScreenFlowEdgeKind {
+  const label = normalizedWords(via);
+  if (/\bquay lai\b|\bdong\s+(?:bottom sheet|popup|modal)\b/.test(label)) return 'return';
+  if (/\bchuyen\s+(?:sang\s+)?tab\b|\blich su\b/.test(label)) return 'secondary';
+  if (inferred) return 'inferred';
+  return condition ? 'branch' : 'primary';
+}
+
+function mergeDocumentNavigation(model: ScreenFlowModel, screens: ScreenInput[], recoveredPairs: ReadonlySet<string>): void {
   const keys = new Set(model.screens.map((screen) => screen.key));
-  const directions = new Set(model.edges.map((edge) => `${edge.from}\0${edge.to}`));
+  const directions = new Set(model.edges.map((edge) => `${edge.from}\0${edge.to}\0${edge.kind ?? 'primary'}`));
   for (const screen of screens) {
     for (const nav of screen.navOut) {
       if (!keys.has(nav.to) || nav.to === screen.key) continue;
-      const direction = `${screen.key}\0${nav.to}`;
+      const pair = `${screen.key}\0${nav.to}`;
+      const kind = classifyScreenFlowEdgeKind(nav.via, nav.condition, recoveredPairs.has(pair));
+      const direction = `${pair}\0${kind}`;
       if (directions.has(direction)) continue;
       directions.add(direction);
       model.edges.push({
-        id: `edge-${stableToken([screen.key, nav.to, nav.via, nav.condition ?? ''].join('|'))}`,
+        id: `edge-${stableToken([screen.key, nav.to, kind, nav.via, nav.condition ?? ''].join('|'))}`,
         from: screen.key,
         to: nav.to,
         via: nav.via,
         ...(nav.condition ? { condition: nav.condition } : {}),
+        kind,
         flowIds: [model.flowId],
         evidence: [{ flowId: model.flowId, fromNode: `doc:${screen.key}`, toNode: `doc:${nav.to}`, path: [screen.key, nav.to] }],
       });
@@ -475,6 +642,77 @@ function mergeDocumentNavigation(model: ScreenFlowModel, screens: ScreenInput[])
   model.unlinkedScreens = model.screens.filter((screen) => !screen.linked).map((screen) => screen.key);
 }
 
+export interface ScreenFlowTopologyValidation {
+  valid: boolean;
+  errors: string[];
+  orphanScreens: string[];
+  unreachableScreens: string[];
+}
+
+/** Pure semantic validation. Layout and the legacy `linked` display hint do
+ * not affect success. Old edges without `kind` are treated as primary. */
+export function validateScreenFlowTopology(model: ScreenFlowModel): ScreenFlowTopologyValidation {
+  const errors: string[] = [];
+  const orderedKeys = model.screens.map((screen) => screen.key);
+  const keys = new Set(orderedKeys);
+  if (keys.size !== orderedKeys.length) errors.push('Screen key bị trùng trong cùng flow.');
+  if (model.flowId === 'UNLINKED') errors.push('Flow UNLINKED không phải topology hợp lệ.');
+
+  const degree = new Map(orderedKeys.map((key) => [key, 0]));
+  const traversable = new Map<string, string[]>();
+  const signatures = new Set<string>();
+  const allowedKinds = new Set<ScreenFlowEdgeKind>(['primary', 'branch', 'return', 'secondary', 'inferred']);
+  for (const edge of model.edges) {
+    const kind = edge.kind ?? 'primary';
+    if (!allowedKinds.has(kind)) {
+      errors.push(`Cạnh ${edge.id} có kind không hợp lệ: ${String(kind)}.`);
+      continue;
+    }
+    if (!keys.has(edge.from) || !keys.has(edge.to)) {
+      errors.push(`Cạnh ${edge.id} có endpoint không tồn tại.`);
+      continue;
+    }
+    if (edge.from === edge.to) {
+      errors.push(`Cạnh ${edge.id} là self-loop.`);
+      continue;
+    }
+    const signature = `${edge.from}\0${edge.to}\0${kind}`;
+    if (signatures.has(signature)) {
+      errors.push(`Cạnh trùng ${edge.from} → ${edge.to} (${kind}).`);
+      continue;
+    }
+    signatures.add(signature);
+    degree.set(edge.from, (degree.get(edge.from) ?? 0) + 1);
+    degree.set(edge.to, (degree.get(edge.to) ?? 0) + 1);
+    if (kind === 'primary' || kind === 'branch' || kind === 'inferred') {
+      traversable.set(edge.from, [...(traversable.get(edge.from) ?? []), edge.to]);
+    }
+  }
+
+  const explicitEntries = [...new Set(model.entryScreens)].filter((key) => keys.has(key));
+  if (model.entryScreens.some((key) => !keys.has(key))) errors.push('Entry screen không tồn tại trong flow.');
+  if (orderedKeys.length > 0 && explicitEntries.length === 0) errors.push('Flow chưa khai entry screen hợp lệ.');
+  const singleExplicit = orderedKeys.length === 1 && explicitEntries.includes(orderedKeys[0]!);
+  const orphanSet = new Set(
+    orderedKeys.filter((key) => !singleExplicit && (degree.get(key) ?? 0) === 0),
+  );
+  for (const key of model.unlinkedScreens) if (keys.has(key) && !singleExplicit) orphanSet.add(key);
+
+  const reachable = new Set<string>();
+  const queue = [...explicitEntries];
+  while (queue.length) {
+    const key = queue.shift()!;
+    if (reachable.has(key)) continue;
+    reachable.add(key);
+    queue.push(...(traversable.get(key) ?? []));
+  }
+  const orphanScreens = orderedKeys.filter((key) => orphanSet.has(key));
+  const unreachableScreens = orderedKeys.filter((key) => !reachable.has(key));
+  if (orphanScreens.length) errors.push(`Có ${orphanScreens.length} screen cô lập: ${orphanScreens.join(', ')}.`);
+  if (unreachableScreens.length) errors.push(`Có ${unreachableScreens.length} screen không reachable từ entry: ${unreachableScreens.join(', ')}.`);
+  return { valid: errors.length === 0, errors, orphanScreens, unreachableScreens };
+}
+
 /** Thin, fail-soft filesystem boundary invoked after dr-comp fan-out. */
 export async function buildScreenFlowArtifacts(
   cwd: string,
@@ -483,6 +721,7 @@ export async function buildScreenFlowArtifacts(
 ): Promise<ScreenFlowsIndex> {
   const recovery = await recoverScreenNavigationFromDocuments(cwd, allScreens);
   allScreens = recovery.screens;
+  const recoveredPairs = new Set(recovery.recoveredNavigation.map((edge) => `${edge.from}\0${edge.to}`));
   const outputDir = path.join(cwd, SCREEN_FLOWS_DIR);
   await fs.rm(outputDir, { recursive: true, force: true });
   await fs.mkdir(outputDir, { recursive: true });
@@ -502,16 +741,24 @@ export async function buildScreenFlowArtifacts(
       continue;
     }
     const flowchartRel = flowEntry.files?.flowchart ?? `flows/${id}.flowchart.json`;
-    const doc = await readJson<FlowchartDoc>(path.join(cwd, flowchartRel));
-    if (!doc || !Array.isArray(doc.nodes) || !Array.isArray(doc.edges)) {
+    const loadedDoc = await readJson<FlowchartDoc>(path.join(cwd, flowchartRel));
+    if (!loadedDoc || !Array.isArray(loadedDoc.nodes) || !Array.isArray(loadedDoc.edges)) {
       warnings.push(`${id}: flowchart JSON hỏng hoặc thiếu — màn của flow được đưa vào UNLINKED.`);
       continue;
     }
+    const inferred = recoverUnmappedBusinessScreens(loadedDoc, allScreens);
+    const doc = inferred.doc;
+    allScreens = inferred.screens;
     const flowScreens = allScreens.filter((screen) => screen.flowId === id).sort(byOrder);
     if (!flowScreens.length) continue;
     flowScreens.forEach((screen) => assigned.add(screen.key));
-    const model = collapseToScreenFlow(doc, flowScreens);
-    mergeDocumentNavigation(model, flowScreens);
+    const model = collapseToScreenFlow(doc, flowScreens, { inferredNodeIds: inferred.inferredNodeIds });
+    mergeDocumentNavigation(model, flowScreens, recoveredPairs);
+    if (inferred.mappings.length) {
+      model.warnings.push(...inferred.mappings.map((mapping) =>
+        `Suy luận ${mapping.screenKey} từ business node ${mapping.nodeId} “${mapping.nodeLabel}”.`,
+      ));
+    }
     const source: ScreenFlowSource = {
       flowId: id,
       kind: flowEntry.kind,
@@ -520,7 +767,7 @@ export async function buildScreenFlowArtifacts(
     };
     const classification = classifySourceScreenFlow(doc, new Set(flowScreens.map((screen) => screen.key)));
     const hasDroppedMappings = (flowEntry.screensDropped?.length ?? 0) > 0;
-    const reusable = classification.reusable && !topologyChanged && !hasDroppedMappings;
+    const reusable = classification.reusable && !topologyChanged && !hasDroppedMappings && inferred.mappings.length === 0;
     model.sourceMode = reusable ? 'reused' : 'generated';
     model.source = source;
     if (reusable && flowEntry.kind === 'drawio') {
@@ -530,7 +777,10 @@ export async function buildScreenFlowArtifacts(
     }
     if (!reusable) model.warnings.push(...classification.reasons);
     if (hasDroppedMappings) model.warnings.push('Nguồn có mapping màn bị loại — không tái sử dụng nguyên topology.');
+    if (inferred.mappings.length) model.warnings.push('Có mapping màn suy luận từ business node — dựng topology canonical.');
     if (topologyChanged && classification.reusable) model.warnings.push('Có override add/remove — dựng lại để không giữ topology đã lệch danh sách màn.');
+    const topology = validateScreenFlowTopology(model);
+    if (!topology.valid) model.warnings.push(...topology.errors);
 
     let drawio = renderScreenFlowDrawio(model);
     if (reusable && flowEntry.kind === 'drawio' && flowEntry.files?.asIs) {

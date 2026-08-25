@@ -159,7 +159,8 @@ function parseDesignSystemByTarget(raw: unknown): Partial<Record<UiTarget, strin
 // a pipeline outside any workflow (cwd root), and while every REAL workflow
 // today happens to resolve to its own id (verified: `docs`, `prd-docs`,
 // `dr-docs` each belong to exactly one workflow, and none of them are
-// target-scoped — `def.inputPlaceholder` short-circuits `resolveRunTargetDir`
+// target-scoped — the stage with `inputKind: source` short-circuits
+// `resolveRunTargetDir`
 // to null for all three, so no `<target>/` nesting ever applies to the
 // ingest stage itself), going through the canonical helper keeps this
 // correct if that ever changes instead of silently drifting from the real
