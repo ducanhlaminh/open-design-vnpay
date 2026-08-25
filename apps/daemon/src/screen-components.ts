@@ -809,6 +809,270 @@ function navOutOf(doc: FlowchartDoc, key: string): ScreenNav[] {
   return out;
 }
 
+// ── Phát hiện màn hình (WP1, 2026-08-25) ───────────────────────────────────
+//
+// Stage MỚI `dr-screens` chạy TRƯỚC dr-comp (server.ts, WP2 — không thuộc
+// module này): agent đọc TOÀN BỘ tài liệu + flows/ rồi tự lập danh sách màn
+// THẬT, ghi `docs-review/screens-discovered.json` (contract dưới đây) — thay
+// cho việc dr-comp phải tự quét bằng `scanDocScreens` (lớp 1), vốn đôi khi
+// nâng một heading CON chỉ mô tả MỘT PHẦN của màn ("Voucher" trong màn "Mua
+// SIM") thành một màn RIÊNG với PRD tự do (heading không theo khuôn MH/SCR).
+//
+// CONTRACT (chốt cứng, xem cùng nội dung ở `pipelines.ts`'s dr-screens def +
+// `skills/docs-screen-discovery/SKILL.md`): file nằm ở GỐC workflow-dir
+// (`docs-review/screens-discovered.json`, NGOÀI `comp/` — sống sót qua mọi
+// lần re-run/clear của dr-comp).
+//   { schema_version: 1, generatedAt: string,
+//     pages: [{ source: '<.md>', screens: [{ code: string|null, name: string,
+//       anchorText: string, why?: string }] }],
+//     excluded: [{ name: string, source: string, reason: string, partOf?: string }] }
+// `anchorText` = nguyên văn MỘT DÒNG DUY NHẤT của trang (đối chiếu tất định
+// bằng `findAnchorTextLines`, cùng kỷ luật với lớp 2 — screen-extract.ts).
+// `code: null` → daemon tự đánh X1, X2… theo thứ tự DÒNG anchor trong trang.
+// Khoá màn = `<file-stem>__<code>` — giống mọi lớp khác.
+export interface DiscoveredScreenEntry {
+  code: string | null;
+  name: string;
+  anchorText: string;
+  why?: string;
+}
+export interface DiscoveredPageEntry {
+  source: string;
+  screens: DiscoveredScreenEntry[];
+}
+export interface DiscoveredExcludedEntry {
+  name: string;
+  source: string;
+  reason: string;
+  partOf?: string;
+}
+export interface DiscoveredDoc {
+  schema_version: 1;
+  generatedAt: string;
+  pages: DiscoveredPageEntry[];
+  excluded: DiscoveredExcludedEntry[];
+}
+
+/** Parse `docs-review/screens-discovered.json` — KHOAN DUNG: JSON hỏng, shape
+ *  lạ, hay thiếu field bắt buộc (`schema_version`/`pages`) → `null` (caller
+ *  lùi về hành vi cũ, xem `resolveDocScreens`). Từng phần tử lạ bên trong
+ *  `pages[].screens[]` / `excluded[]` bị bỏ qua âm thầm thay vì làm hỏng cả
+ *  tài liệu — cùng triết lý khoan dung với `validateDocScreenExtract`
+ *  (screen-extract.ts), chỉ khác là không có kênh "rejected" ra ngoài vì đây
+ *  không phải bước validate cho agent sửa, mà là bước ĐỌC lại một artifact đã
+ *  (kỳ vọng) qua kiểm ở lượt ghi. */
+export function parseScreensDiscovered(raw: string): DiscoveredDoc | null {
+  let doc: unknown;
+  try {
+    doc = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!doc || typeof doc !== 'object' || Array.isArray(doc)) return null;
+  const o = doc as Record<string, unknown>;
+  if (o.schema_version !== 1) return null;
+  if (!Array.isArray(o.pages)) return null;
+
+  const pages: DiscoveredPageEntry[] = [];
+  for (const rawPage of o.pages) {
+    if (!rawPage || typeof rawPage !== 'object') continue;
+    const p = rawPage as Record<string, unknown>;
+    const source = str(p.source);
+    if (!source) continue;
+    const rawScreens = Array.isArray(p.screens) ? p.screens : [];
+    const screens: DiscoveredScreenEntry[] = [];
+    for (const rs of rawScreens) {
+      if (!rs || typeof rs !== 'object') continue;
+      const e = rs as Record<string, unknown>;
+      const anchorText = str(e.anchorText);
+      const name = str(e.name);
+      if (!anchorText || !name) continue;
+      const codeRaw = e.code;
+      const code = codeRaw == null ? null : typeof codeRaw === 'string' ? str(codeRaw) || null : null;
+      const why = typeof e.why === 'string' && e.why.trim() ? e.why.trim() : undefined;
+      screens.push({ code, name, anchorText, ...(why ? { why } : {}) });
+    }
+    pages.push({ source, screens });
+  }
+
+  const excluded: DiscoveredExcludedEntry[] = [];
+  const rawExcluded = Array.isArray(o.excluded) ? o.excluded : [];
+  for (const rx of rawExcluded) {
+    if (!rx || typeof rx !== 'object') continue;
+    const e = rx as Record<string, unknown>;
+    const name = str(e.name);
+    const source = str(e.source);
+    const reason = str(e.reason);
+    if (!name || !source || !reason) continue;
+    const partOf = typeof e.partOf === 'string' && e.partOf.trim() ? e.partOf.trim() : undefined;
+    excluded.push({ name, source, reason, ...(partOf ? { partOf } : {}) });
+  }
+
+  return {
+    schema_version: 1,
+    generatedAt: typeof o.generatedAt === 'string' ? o.generatedAt : '',
+    pages,
+    excluded,
+  };
+}
+
+/** Dựng section `{heading,startLine,endLine,excerpt}` cho một màn discovery
+ *  KHÔNG khớp được `findScreenSection` (thường vì `code` là mã tự đánh
+ *  X1/X2…, không tương ứng heading nào) — anchor tới anchor HỢP LỆ kế tiếp
+ *  trừ 1, màn cuối chạy tới hết trang. Cùng luật cắt 900 ký tự với
+ *  `buildAgentSection` (screen-extract.ts, lớp 2) để hiển thị section HINT
+ *  nhất quán giữa hai lớp — không import được lẫn nhau (screen-extract.ts
+ *  import module NÀY, import ngược lại sẽ vòng). */
+function buildAnchorSection(md: string, startLine: number, endLine: number): NonNullable<ScreenInput['section']> {
+  const lines = md.split(/\r?\n/);
+  const heading = lines[startLine - 1] ?? '';
+  const excerptSrc = lines.slice(startLine - 1, endLine).join('\n').trim();
+  return {
+    heading,
+    startLine,
+    endLine,
+    excerpt: excerptSrc.length > 900 ? `${excerptSrc.slice(0, 900)}…` : excerptSrc,
+  };
+}
+
+export interface ResolveDocScreensInput {
+  /** Doc pages of the run (`listDocPages`): mdPath relative to cwd + title. */
+  pages: { mdPath: string; page: string }[];
+  /** Markdown content per page, keyed by `mdPath` (already read — pure, no fs here). */
+  mdBySource: Map<string, string>;
+  /** Parsed `screens-discovered.json`, or `null` when absent/invalid. */
+  discovered: DiscoveredDoc | null;
+  /** Keys already claimed by flow-origin screens (or a prior call) — never duplicated. */
+  existingKeys: ReadonlySet<string>;
+}
+
+/** Chọn nguồn màn-TÀI-LIỆU cho `prepareScreenComponentInputs`: khi `discovered`
+ *  hợp lệ, danh sách màn lấy THẲNG từ đó (thẩm quyền, KHÔNG chạy
+ *  `scanDocScreens`); khi không có / hỏng, lùi về đúng hành vi cũ (quét
+ *  regex `scanDocScreens`) — tương thích ngược tuyệt đối. Thuần: không fs,
+ *  không mockups (đó là bước fs riêng, caller làm sau khi merge — xem
+ *  `extractSectionMockups`). `order` trong kết quả chỉ là placeholder (0) —
+ *  caller gán lại thứ tự cuối cùng khi merge vào danh sách chính. */
+export function resolveDocScreens(input: ResolveDocScreensInput): ScreenInput[] {
+  const { pages, mdBySource, discovered, existingKeys } = input;
+  const seen = new Set(existingKeys);
+  const out: ScreenInput[] = [];
+
+  if (discovered) {
+    const excludedNames = new Set(discovered.excluded.map((e) => `${e.source}::${normalizeVi(e.name)}`));
+    for (const dp of discovered.pages) {
+      const md = mdBySource.get(dp.source);
+      if (md == null) continue;
+      const stem = path.posix.basename(dp.source, '.md');
+      const pageLines = md.split(/\r?\n/);
+      const pageLineCount = pageLines.length;
+
+      type Candidate = { rawCode: string | null; name: string; anchorText: string; line: number };
+      const candidates: Candidate[] = [];
+      for (const s of dp.screens) {
+        if (excludedNames.has(`${dp.source}::${normalizeVi(s.name)}`)) continue;
+        const hits = findAnchorTextLines(md, s.anchorText);
+        // Anchor phải KHỚP DUY NHẤT — không khớp/khớp nhiều lần thì bỏ qua
+        // (khoan dung: dr-comp không phải nơi validate lỗi khai báo của
+        // dr-screens, xem docblock trên).
+        if (hits.length !== 1) continue;
+        candidates.push({ rawCode: s.code, name: s.name, anchorText: s.anchorText, line: hits[0]! });
+      }
+
+      // code null → X1, X2… theo thứ tự DÒNG anchor trong trang (contract).
+      const nullOrderedByLine = candidates.filter((c) => c.rawCode == null).sort((a, b) => a.line - b.line);
+      const autoCode = new Map<Candidate, string>();
+      nullOrderedByLine.forEach((c, i) => autoCode.set(c, `X${i + 1}`));
+
+      const withFinalCode = candidates.map((c) => ({ ...c, finalCode: c.rawCode ?? autoCode.get(c)! }));
+      const usedCodes = new Set<string>();
+      const accepted: Array<Candidate & { finalCode: string }> = [];
+      for (const c of withFinalCode) {
+        if (usedCodes.has(c.finalCode)) continue; // mã trùng trong cùng trang — cái sau bị bỏ.
+        usedCodes.add(c.finalCode);
+        accepted.push(c);
+      }
+      const bySortedLine = [...accepted].sort((a, b) => a.line - b.line);
+
+      for (const c of accepted) {
+        const key = `${stem}__${c.finalCode}`;
+        if (seen.has(key)) continue; // màn có sẵn (flow-origin) thắng — không nhân đôi.
+        seen.add(key);
+
+        // Ưu tiên `findScreenSection` khi màn có mã THẬT (không phải X1/X2 tự
+        // đánh) — nó cắt section theo CẤP HEADING (tới heading cùng/cao hơn
+        // cấp kế tiếp), đúng ranh giới thật của màn kể cả khi màn có heading
+        // CON bên trong (chính lý do dr-screens tồn tại — xem docblock đầu
+        // block). Chỉ khi không khớp (hoặc mã là X1/X2 tự đánh, không tương
+        // ứng heading nào) mới lùi về ranh giới theo dòng anchor kế tiếp.
+        const byHeading = c.rawCode != null ? findScreenSection(md, c.finalCode, c.name) : null;
+        let section: NonNullable<ScreenInput['section']>;
+        let referenceTable: string | undefined;
+        if (byHeading) {
+          section = { heading: byHeading.heading, startLine: byHeading.startLine, endLine: byHeading.endLine, excerpt: byHeading.excerpt };
+          referenceTable = byHeading.referenceTable;
+        } else {
+          const idx = bySortedLine.indexOf(c);
+          const nextLine = idx + 1 < bySortedLine.length ? bySortedLine[idx + 1]!.line : null;
+          const endLine = nextLine != null ? nextLine - 1 : pageLineCount;
+          section = buildAnchorSection(md, c.line, endLine);
+        }
+
+        out.push({
+          key,
+          name: c.name,
+          order: 0,
+          flowId: '',
+          flowTitle: '',
+          source: dp.source,
+          section,
+          ...(referenceTable ? { referenceTable } : {}),
+          steps: [],
+          navOut: [],
+          navIn: [],
+          findings: [],
+          platformHint: MOBILE_HINT_RE.test(md) ? 'mobile' : 'web',
+          origin: 'agent',
+        });
+      }
+    }
+    return out;
+  }
+
+  // Không có discovery hợp lệ — hành vi cũ Y HỆT (Lượt-2 fallback: quét regex).
+  for (const page of pages) {
+    const md = mdBySource.get(page.mdPath);
+    if (!md) continue;
+    const stem = path.posix.basename(page.mdPath, '.md');
+    for (const h of scanDocScreens(md)) {
+      const key = `${stem}__${h.code}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const section = findScreenSection(md, h.code, h.name);
+      const scanned: ScreenInput = {
+        key,
+        name: h.name,
+        order: 0,
+        flowId: '',
+        flowTitle: '',
+        source: page.mdPath,
+        steps: [],
+        navOut: [],
+        navIn: [],
+        findings: [],
+        platformHint: MOBILE_HINT_RE.test(md) ? 'mobile' : 'web',
+        origin: 'doc',
+      };
+      if (section) {
+        scanned.section = { heading: section.heading, startLine: section.startLine, endLine: section.endLine, excerpt: section.excerpt };
+        if (section.referenceTable) scanned.referenceTable = section.referenceTable;
+      }
+      out.push(scanned);
+    }
+  }
+  return out;
+}
+
 export interface PrepareScreenInputsOptions {
   /** Doc pages of the run (`listDocPages`): mdPath relative to cwd + title. */
   pages: { mdPath: string; page: string }[];
@@ -893,40 +1157,34 @@ export async function prepareScreenComponentInputs(
   // dr-comp dù flow đã gắn được MH1. Từ đây LUÔN quét tài liệu và BỔ SUNG
   // những màn CHƯA có trong danh sách từ flow (so trùng theo key
   // `<file-stem>__<code>`) — không còn thay thế "hoặc-là" như trước.
-  const addedDocKeys: string[] = [];
-  let docOrder = flowScreenCount;
+  // WP1 (2026-08-25, "Phát hiện màn hình"): khi bước dr-screens đã ghi
+  // `screens-discovered.json` HỢP LỆ ở gốc workflow-dir, nó là nguồn màn-
+  // TÀI-LIỆU có thẩm quyền — THAY cho `scanDocScreens` (không còn chạy).
+  // Không có / hỏng file → `resolveDocScreens` tự lùi về đúng hành vi cũ
+  // (tương thích ngược tuyệt đối, xem docblock của nó).
+  const discoveredRaw = await readText(path.join(cwd, 'screens-discovered.json'));
+  const discovered = discoveredRaw != null ? parseScreensDiscovered(discoveredRaw) : null;
+  const mdBySource = new Map<string, string>();
   for (const page of opts.pages) {
     const md = await readMd(page.mdPath);
-    if (!md) continue;
-    const stem = path.posix.basename(page.mdPath, '.md');
-    for (const h of scanDocScreens(md)) {
-      const key = `${stem}__${h.code}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      const section = findScreenSection(md, h.code, h.name);
-      const input: ScreenInput = {
-        key,
-        name: h.name,
-        order: docOrder++,
-        flowId: '',
-        flowTitle: '',
-        source: page.mdPath,
-        steps: [],
-        navOut: [],
-        navIn: [],
-        findings: [],
-        platformHint: MOBILE_HINT_RE.test(md) ? 'mobile' : 'web',
-        origin: 'doc',
-      };
-      if (section) {
-        input.section = { heading: section.heading, startLine: section.startLine, endLine: section.endLine, excerpt: section.excerpt };
-        if (section.referenceTable) input.referenceTable = section.referenceTable;
-        const mockups = await extractSectionMockups(cwd, page.mdPath, md, section);
+    if (md != null) mdBySource.set(page.mdPath, md);
+  }
+  const docScreens = resolveDocScreens({ pages: opts.pages, mdBySource, discovered, existingKeys: seen });
+
+  const addedDocKeys: string[] = [];
+  let docOrder = flowScreenCount;
+  for (const input of docScreens) {
+    seen.add(input.key);
+    input.order = docOrder++;
+    if (input.section && input.source) {
+      const md = mdBySource.get(input.source);
+      if (md != null) {
+        const mockups = await extractSectionMockups(cwd, input.source, md, input.section);
         if (mockups.length) input.mockups = mockups;
       }
-      screens.push(input);
-      addedDocKeys.push(key);
     }
+    screens.push(input);
+    addedDocKeys.push(input.key);
   }
 
   // navIn from navOut — tính SAU khi hợp nhất để một cạnh từ màn-flow trỏ

@@ -86,8 +86,9 @@ test('docs-review: fully independent of docs-to-ui and docs-to-prd — dr-docs -
   assert.equal(WORKFLOWS[0]!.id, 'docs-to-ui');
   const wf = WORKFLOWS.find((w) => w.id === 'docs-review');
   assert.ok(wf, 'docs-review workflow should exist');
-  assert.deepEqual(wf!.pipelineIds, ['dr-docs', 'dr-flow', 'dr-comp', 'dr-review']);
+  assert.deepEqual(wf!.pipelineIds, ['dr-docs', 'dr-flow', 'dr-screens', 'dr-comp', 'dr-review']);
   assert.equal(def('dr-docs').skillId, 'confluence-ingest');
+  assert.equal(def('dr-screens').skillId, 'docs-screen-discovery');
   assert.equal(def('dr-comp').skillId, 'docs-screen-components');
   assert.equal(def('dr-review').skillId, 'docs-spec-review');
   assert.equal(def('dr-flow').skillId, 'docs-flow-ux');
@@ -97,7 +98,10 @@ test('docs-review: fully independent of docs-to-ui and docs-to-prd — dr-docs -
   // cascade sẽ xoá comp/ + wireframes/. dr-review phải chờ CẢ HAI vì nhóm
   // `component` của nó là đọc lại kết quả dr-comp chứ không tự suy.
   assert.deepEqual(def('dr-flow').dependsOn, ['dr-docs']);
-  assert.deepEqual(def('dr-comp').dependsOn, ['dr-docs', 'dr-flow']);
+  // WP1 (2026-08-25): dr-screens ("Phát hiện màn hình") chạy GIỮA dr-flow và
+  // dr-comp — dr-comp tiêu thụ `screens-discovered.json` của nó khi có.
+  assert.deepEqual(def('dr-screens').dependsOn, ['dr-docs', 'dr-flow']);
+  assert.deepEqual(def('dr-comp').dependsOn, ['dr-docs', 'dr-flow', 'dr-screens']);
   // Review là bước CHỐT cuối — chờ đủ cả flow lẫn comp.
   assert.deepEqual(def('dr-review').dependsOn, ['dr-docs', 'dr-flow', 'dr-comp']);
   assert.deepEqual(def('dr-docs').outputs, ['docs/', 'docs-feature/']);
@@ -109,8 +113,12 @@ test('docs-review: fully independent of docs-to-ui and docs-to-prd — dr-docs -
   // flows/ sits at the workflow-dir root, NOT under review/ — see
   // tests/docs-flow-stage.test.ts for why that placement is load-bearing.
   assert.deepEqual(def('dr-flow').outputs, ['flows/']);
+  // dr-screens outputs sit at the workflow-dir root too (NOT under comp/), so
+  // a re-run of dr-comp never clears the discovery file it consumes.
+  assert.deepEqual(def('dr-screens').outputs, ['screens-discovered.json', 'screens-discovered.md', 'comp/_screens.json']);
   // Each id resolves to docs-review's OWN folder namespace.
   assert.equal(workflowDirForPipeline('dr-docs'), 'docs-review');
+  assert.equal(workflowDirForPipeline('dr-screens'), 'docs-review');
   assert.equal(workflowDirForPipeline('dr-comp'), 'docs-review');
   assert.equal(workflowDirForPipeline('dr-review'), 'docs-review');
   assert.equal(workflowDirForPipeline('dr-flow'), 'docs-review');
@@ -953,7 +961,7 @@ test('docsFromUpload VẪN lọc bước ingest kể cả khi người dùng tic
   // Nhánh cũ (không stageIds).
   assert.deepEqual(
     selectRunStages(dr, { docsFromUpload: true }),
-    ['dr-flow', 'dr-comp', 'dr-review'],
+    ['dr-flow', 'dr-screens', 'dr-comp', 'dr-review'],
   );
   // Nhánh tick tay: chạy lại ingest sẽ XOÁ SẠCH tài liệu vừa tải lên (output
   // khai báo của nó chính là docs/), nên việc người dùng lỡ tick không làm điều

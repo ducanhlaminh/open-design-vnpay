@@ -367,7 +367,21 @@ const PIPELINE_DEFS_BASE: readonly PipelineDef[] = [
   // lần re-run dr-review sẽ xoá sạch kết quả, và stagesForOutput sẽ chấm hai
   // stage cho cùng một file. Trùng tên `wireframes/` với stage `ux` là vô hại
   // (namespace theo workflow).
-  { id: 'dr-comp',          name: 'Màn hình → Component',      skillId: 'docs-screen-components',  dependsOn: ['dr-docs', 'dr-flow'], outputs: ['comp/', 'wireframes/'], usesDesignSystemCriteria: true },
+  // Phát hiện màn hình (WP1, 2026-08-25): bước MỚI trước dr-comp. Với PRD tự
+  // do (heading kiểu "2.1 Mua SIM"), quét tất định `scanDocScreens` (lớp 1
+  // của dr-comp) đôi khi nâng một heading CON chỉ mô tả MỘT PHẦN của màn (vd
+  // "Voucher" là một khối trong màn "Mua SIM") thành một màn RIÊNG. Bước này
+  // để agent đọc TOÀN BỘ tài liệu + flows/ rồi tự lập danh sách màn THẬT, ghi
+  // `docs-review/screens-discovered.json` (đặt ở GỐC workflow-dir, NGOÀI
+  // comp/, để sống sót qua mọi lần re-run/clear của dr-comp — xem contract ở
+  // `screen-components.ts`'s `parseScreensDiscovered`) + bản người-đọc
+  // `screens-discovered.md`. dr-comp (`prepareScreenComponentInputs`) đọc file
+  // này làm nguồn TIÊU THỤ có thẩm quyền, thay cho quét regex, khi file tồn
+  // tại và hợp lệ; không có file thì dr-comp lùi về hành vi cũ (tương thích
+  // ngược tuyệt đối). `comp/_screens.json` là gợi ý daemon tự quét cho agent
+  // tham khảo (không phải nguồn sự thật).
+  { id: 'dr-screens',       name: 'Phát hiện màn hình',        skillId: 'docs-screen-discovery',   dependsOn: ['dr-docs', 'dr-flow'], outputs: ['screens-discovered.json', 'screens-discovered.md', 'comp/_screens.json'] },
+  { id: 'dr-comp',          name: 'Màn hình → Component',      skillId: 'docs-screen-components',  dependsOn: ['dr-docs', 'dr-flow', 'dr-screens'], outputs: ['comp/', 'wireframes/'], usesDesignSystemCriteria: true },
   { id: 'dr-review',        name: 'Review tài liệu',           skillId: 'docs-spec-review',      dependsOn: ['dr-docs', 'dr-flow', 'dr-comp'], outputs: ['review/'], usesDesignSystemCriteria: true },
   { id: 'dr-confirm',       name: 'Xác nhận hoàn tất',         skillId: 'docs-review-confirm',   dependsOn: ['dr-review'], outputs: ['confirmation/'] },
 
@@ -530,7 +544,7 @@ const WORKFLOW_DEFS: ReadonlyArray<Omit<Workflow, 'stages'>> = [
     // `dr-confirm` is an internal deterministic action, not a processing
     // stage. The UI exposes it as a dedicated completion CTA after every real
     // stage succeeds, so it must not appear in the stepper or Run All.
-    pipelineIds: ['dr-docs', 'dr-flow', 'dr-comp', 'dr-review'],
+    pipelineIds: ['dr-docs', 'dr-flow', 'dr-screens', 'dr-comp', 'dr-review'],
   },
   {
     id: 'ds-lab',

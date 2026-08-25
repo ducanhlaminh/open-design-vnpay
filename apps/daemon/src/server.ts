@@ -21835,6 +21835,275 @@ export async function startServer({
     return { projectId, completion };
   };
 
+  // "Phát hiện màn hình" (dr-screens, skillId 'docs-screen-discovery',
+  // WP2/screen-discovery 2026-08-25) — DAEMON-ORCHESTRATED, same shape as
+  // runLabKitPlan right above: single read-only agent run (KHÔNG Figma MCP,
+  // KHÔNG promptProfile 'pipeline'), daemon reads/validates the file the
+  // agent writes, daemon sets stage status. Runs BEFORE dr-comp so it can
+  // hand dr-comp an authoritative screen list (comp/_screens.json) without
+  // waiting on dr-comp's own heuristic layer 1/2/3.
+  //
+  // Deterministic hints (comp/_screen-candidates.json) are DAEMON output,
+  // not agent input the agent must trust blind — same anti-hallucination
+  // posture as the rest of dr-comp: the agent still reads full pages, and
+  // whatever it claims in screens-discovered.json is checked against real
+  // page text via `validateDocScreenExtract` (screen-extract.ts, the exact
+  // function dr-comp's own layer-2 extraction already uses — the CONTRACT's
+  // `pages[].screens[].{code,name,anchorText}` shape is intentionally the
+  // same shape that function already validates, so no adapter layer here).
+  const runScreenDiscovery = (
+    pipelineId: string,
+    projectId: string,
+    wfDir: string | null,
+    resetScope: 'stage' | 'downstream' | undefined,
+    scopeHint: string | undefined,
+    project: NonNullable<ReturnType<typeof getProject>>,
+  ): { projectId: string; completion: Promise<'succeeded' | 'failed' | 'idle'> } => {
+    const SCREENS_DISCOVERED_FILE_REL = 'screens-discovered.json';
+    const SCREENS_DISCOVERED_MD_REL = 'screens-discovered.md';
+    const SCREEN_CANDIDATES_FOR_DISCOVERY_FILE_REL = 'comp/_screen-candidates.json';
+    const completion: Promise<'succeeded' | 'failed' | 'idle'> = (async () => {
+      setProjectPipelineStatus(db, projectId, pipelineId, { status: 'running' });
+      try {
+        const projectRoot = await ensureProject(PROJECTS_DIR, projectId);
+        const cwd = wfDir ? path.join(projectRoot, wfDir) : projectRoot;
+
+        // Re-run clear — chỉ outputs khai báo của dr-screens (screens-discovered.json
+        // + .md, xem pipelines.ts) — cùng vòng lặp generic dùng ở lab-kit-plan/lab-map.
+        const regenIds = new Set(stageRegenSet(pipelineId, resetScope === 'downstream'));
+        await commitHistory(projectRoot, { kind: 'manual-edits', by: historyActor() }).catch(() => null);
+        try {
+          const snap = await snapshotPipelineCwd(projectRoot);
+          for (const rel of snap.keys()) {
+            if (relClearedByRegen(rel, regenIds, wfDir)) {
+              await fs.promises.rm(path.join(projectRoot, rel), { force: true }).catch(() => null);
+            }
+          }
+        } catch (error) {
+          console.warn('[dr-screens] re-run clear failed (continuing):', error);
+        }
+        for (const id of regenIds) {
+          if (id !== pipelineId) setProjectPipelineStatus(db, projectId, id, { status: 'idle' });
+        }
+
+        const pages = await listDocPages(cwd);
+        if (pages.length === 0) {
+          const message = 'Không tìm thấy trang tài liệu nào dưới docs/ — chạy bước Tài liệu → Markdown trước, rồi chạy lại bước này.';
+          setProjectPipelineStatus(db, projectId, pipelineId, { status: 'failed', error: message });
+          console.warn(`[dr-screens] no doc pages under ${cwd}/docs — nothing to do`);
+          return 'failed' as const;
+        }
+
+        // Agent mặc định của máy — phiên chỉ đọc tài liệu + ghi 2 file, không
+        // cần MCP nào (giống lab-kit-plan, khác resolveFigmaBuildAgent).
+        let execution: { agentId: string; modelPrefs: { model?: string | null; reasoning?: string | null } };
+        try {
+          execution = await resolveCriteriaAgent();
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          setProjectPipelineStatus(db, projectId, pipelineId, { status: 'failed', error: message });
+          return 'failed' as const;
+        }
+
+        // Gợi ý tất định (KHÔNG quyết định cuối) — quét regex mỗi trang bằng
+        // scanDocScreens (đúng hàm lớp-1 dr-comp dùng), rồi trộn thêm màn đã
+        // biết từ flows/index.json (bước Đánh giá luồng UX, nếu đã chạy) —
+        // agent vẫn phải tự đọc toàn văn, hints chỉ là điểm khởi động.
+        type DiscoveryHint = { source: string; code: string | null; name: string; origin: 'flow' | 'regex'; anchorText?: string };
+        const hints: DiscoveryHint[] = [];
+        const mdBySource = new Map<string, string>();
+        for (const page of pages) {
+          const md = await fs.promises.readFile(path.join(cwd, page.mdPath), 'utf8').catch(() => null);
+          if (md == null) continue;
+          mdBySource.set(page.mdPath, md);
+          for (const s of scanDocScreens(md)) {
+            hints.push({ source: page.mdPath, code: s.code, name: s.name, origin: 'regex', anchorText: s.heading || undefined });
+          }
+        }
+        try {
+          const flowIndexRaw = await fs.promises.readFile(path.join(cwd, SCREEN_FLOWS_DIR, 'index.json'), 'utf8').catch(() => null);
+          const flowIndex = flowIndexRaw != null ? (JSON.parse(flowIndexRaw) as ScreenFlowsIndex) : null;
+          for (const entry of flowIndex?.flows ?? []) {
+            const model = await fs.promises
+              .readFile(path.join(cwd, entry.files.model), 'utf8')
+              .then((raw) => JSON.parse(raw) as ScreenFlowModel)
+              .catch(() => null);
+            for (const screen of model?.screens ?? []) {
+              hints.push({ source: screen.source ?? '', code: null, name: screen.name, origin: 'flow' });
+            }
+          }
+        } catch (error) {
+          console.warn('[dr-screens] đọc flows/index.json thất bại (fail-soft, chỉ ảnh hưởng gợi ý):', error);
+        }
+        await fs.promises.mkdir(path.join(cwd, 'comp'), { recursive: true }).catch(() => null);
+        await fs.promises
+          .writeFile(
+            path.join(cwd, SCREEN_CANDIDATES_FOR_DISCOVERY_FILE_REL),
+            JSON.stringify({ schema_version: 1, hints }, null, 2),
+            'utf8',
+          )
+          .catch((error) => {
+            console.warn('[dr-screens] ghi comp/_screen-candidates.json thất bại (fail-soft):', error);
+          });
+
+        const appFeature = (project.name && String(project.name).trim()) || projectId;
+        const contractSample = JSON.stringify(
+          {
+            schema_version: 1,
+            generatedAt: '<ISO-8601>',
+            pages: [
+              {
+                source: '<đường dẫn trang, ví dụ docs/foo.md>',
+                screens: [{ code: '<string|null>', name: '<string>', anchorText: '<một dòng NGUYÊN VĂN, DUY NHẤT trong trang>', why: '<tuỳ chọn>' }],
+              },
+            ],
+            excluded: [{ name: '<string>', source: '<path>', reason: '<string>', partOf: '<key màn cha, tuỳ chọn>' }],
+          },
+          null,
+          2,
+        );
+        const message = [
+          `# Phát hiện màn hình — ${appFeature}`,
+          '',
+          `Đọc TOÀN VĂN ${pages.length} trang tài liệu dưới đây, liệt kê MỌI màn hình có thẩm quyền (một destination điều hướng riêng):`,
+          ...pages.map((p, i) => `${i + 1}. ${p.mdPath}`),
+          '',
+          `Gợi ý tất định (KHÔNG đầy đủ, KHÔNG phải quyết định cuối) đã quét sẵn tại \`${SCREEN_CANDIDATES_FOR_DISCOVERY_FILE_REL}\` — dùng làm điểm khởi động, không dừng lại ở đó.`,
+          '',
+          'Phân biệt RÕ màn hình thật với chi tiết/biến thể/trạng thái bên trong một màn (ví dụ: "Chi tiết Voucher" mở trong modal của màn Giỏ hàng KHÔNG phải màn riêng) — những mục như vậy đưa vào "excluded" kèm "partOf" trỏ về màn cha.',
+          '',
+          `Ghi kết quả ra đúng hai file: \`${SCREENS_DISCOVERED_FILE_REL}\` (JSON, đúng contract dưới đây) và \`${SCREENS_DISCOVERED_MD_REL}\` (bảng tóm tắt cho người đọc). Mỗi "anchorText" PHẢI là một dòng chép nguyên văn, xuất hiện DUY NHẤT trong trang nguồn — daemon đối chiếu tất định, không khớp sẽ bị loại. KHÔNG push, KHÔNG gọi Figma.`,
+          '',
+          'Contract JSON:',
+          '```json',
+          contractSample,
+          '```',
+        ].join('\n');
+
+        const conversationId = `dr-screens-conv-${randomUUID()}`;
+        const rowNow = Date.now();
+        insertConversation(db, {
+          id: conversationId,
+          projectId,
+          title: `Phát hiện màn hình · ${appFeature}`,
+          createdAt: rowNow,
+          updatedAt: rowNow,
+        });
+        const assistantMessageId = `dr-screens-assistant-${randomUUID()}`;
+        const run = design.runs.create({
+          projectId,
+          conversationId,
+          assistantMessageId,
+          clientRequestId: `dr-screens-${randomUUID()}`,
+          agentId: execution.agentId,
+        });
+        upsertMessage(db, conversationId, { id: `dr-screens-user-${run.id}`, role: 'user', content: message });
+        upsertMessage(db, conversationId, {
+          id: assistantMessageId,
+          role: 'assistant',
+          content: '',
+          agentId: execution.agentId,
+          agentName: getAgentDef(execution.agentId)?.name ?? execution.agentId,
+          runId: run.id,
+          runStatus: 'queued',
+          startedAt: Date.now(),
+        });
+        setProjectPipelineStatus(db, projectId, pipelineId, { status: 'running', lastConversationId: conversationId });
+        const chatBody: Record<string, unknown> = {
+          agentId: execution.agentId,
+          projectId,
+          conversationId,
+          assistantMessageId,
+          clientRequestId: run.clientRequestId,
+          skillId: 'docs-screen-discovery',
+          ...(wfDir ? { cwdSubdir: wfDir } : {}),
+          model: execution.modelPrefs.model ?? null,
+          reasoning: execution.modelPrefs.reasoning ?? null,
+          message,
+          systemPrompt:
+            'Bạn đang chạy một job không có người ngồi cạnh. Không hỏi lại, không chờ input — chọn mặc định hợp lý và hoàn thành.',
+        };
+        // Symbol key — KHÔNG MCP nào (phiên chỉ đọc/ghi file, xem docblock
+        // INTERNAL_MCP_SERVER_IDS đầu file) — giống hệt lab-kit-plan.
+        chatBody[INTERNAL_MCP_SERVER_IDS] = [];
+        design.runs.start(run, () => startChatRun(chatBody, run));
+        const final = await design.runs.wait(run);
+        db.prepare(`UPDATE messages SET run_status = ?, ended_at = ? WHERE id = ?`).run(final.status, Date.now(), assistantMessageId);
+        if (final.status !== 'succeeded') {
+          const failMessage = `Agent kết thúc với trạng thái "${final.status}".`;
+          setProjectPipelineStatus(db, projectId, pipelineId, { status: 'failed', error: failMessage });
+          return 'failed' as const;
+        }
+
+        // Đọc + validate screens-discovered.json — fail-soft TUYỆT ĐỐI theo
+        // nghĩa "không bao giờ ghi discovery rỗng đè lên kết quả cũ": bất kỳ
+        // bước nào ở đây hỏng thì stage failed và comp/_screens.json cũ (nếu
+        // có, từ lần chạy trước) được giữ nguyên — KHÔNG bị ghi đè.
+        const discoveredRaw = await fs.promises.readFile(path.join(cwd, SCREENS_DISCOVERED_FILE_REL), 'utf8').catch(() => null);
+        if (discoveredRaw == null) {
+          const failMessage = `Agent không ghi "${SCREENS_DISCOVERED_FILE_REL}".`;
+          setProjectPipelineStatus(db, projectId, pipelineId, { status: 'failed', error: failMessage });
+          return 'failed' as const;
+        }
+        let discoveredDoc: unknown;
+        try {
+          discoveredDoc = JSON.parse(discoveredRaw);
+        } catch (error) {
+          const failMessage = `"${SCREENS_DISCOVERED_FILE_REL}" không phải JSON hợp lệ: ${error instanceof Error ? error.message : String(error)}`;
+          setProjectPipelineStatus(db, projectId, pipelineId, { status: 'failed', error: failMessage });
+          return 'failed' as const;
+        }
+
+        // validateDocScreenExtract đối chiếu tất định pages[].screens[].anchorText
+        // với nội dung trang thật — cùng hàm dr-comp lớp 2 dùng (screen-extract.ts);
+        // shape CONTRACT của dr-screens khớp thẳng chữ ký hàm này (source/screens/
+        // code/name/anchorText), không cần lớp chuyển đổi riêng.
+        const { accepted, rejected } = validateDocScreenExtract(mdBySource, discoveredDoc);
+        if (rejected.length > 0) {
+          console.warn(`[dr-screens] ${rejected.length} màn bị loại khi validate: ${rejected.map((r) => r.reason).join(' | ')}`);
+        }
+        if (accepted.length === 0) {
+          const failMessage = 'Agent không xuất được màn hình hợp lệ nào (mọi "anchorText" phải là một dòng nguyên văn, duy nhất trong trang).';
+          setProjectPipelineStatus(db, projectId, pipelineId, { status: 'failed', error: failMessage });
+          return 'failed' as const;
+        }
+
+        // excluded — validate khoan dung: chỉ đếm mục có "name" khác rỗng;
+        // các field khác optional. Không chặn stage, chỉ để log — file agent
+        // đã ghi giữ nguyên, daemon không ghi lại phần "excluded".
+        const excludedRaw = (discoveredDoc as Record<string, unknown> | null)?.excluded;
+        const excludedCount = Array.isArray(excludedRaw)
+          ? excludedRaw.filter(
+              (e): e is Record<string, unknown> => !!e && typeof e === 'object' && typeof (e as Record<string, unknown>).name === 'string' && !!(e as Record<string, unknown>).name,
+            ).length
+          : 0;
+
+        // Dựng ScreenInput[] tối thiểu từ accepted rồi build manifest — TÁI
+        // DÙNG mergeExtractedScreens (bắt đầu từ mảng rỗng, không có màn lớp-1
+        // nào để giữ) + buildScreensManifest, đúng cặp hàm dr-comp lớp 2/3 đã
+        // dùng — để comp/_screens.json (route GET /docs-review/screens +
+        // ScreenListManager) đọc được NGAY sau dr-screens, không cần đợi dr-comp.
+        const { screens: mergedScreens } = mergeExtractedScreens([], accepted, mdBySource);
+        const manifest = buildScreensManifest(mergedScreens);
+        await fs.promises.mkdir(path.join(cwd, 'comp'), { recursive: true });
+        await fs.promises.writeFile(path.join(cwd, SCREENS_MANIFEST_FILE), JSON.stringify(manifest, null, 2), 'utf8');
+
+        setProjectPipelineStatus(db, projectId, pipelineId, { status: 'succeeded' });
+        void commitHistory(projectRoot, { kind: 'run', pipelineId, status: 'succeeded', by: historyActor() }).catch(() => null);
+        console.log(
+          `[dr-screens] ${projectId}: phát hiện ${accepted.length} màn hình (loại ${rejected.length}, excluded khai báo ${excludedCount}).`,
+        );
+        return 'succeeded' as const;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setProjectPipelineStatus(db, projectId, pipelineId, { status: 'failed', error: message });
+        console.warn('[dr-screens] run failed:', error);
+        return 'failed' as const;
+      }
+    })();
+    return { projectId, completion };
+  };
+
   const runPipeline = async (
     projectId: string,
     pipelineId: string,
@@ -22096,6 +22365,17 @@ export async function startServer({
     // validate với danh mục DS + danh sách màn, gộp comp/index.json (2.0).
     if (def.skillId === 'docs-screen-components') {
       return runDocsComponentAuditFanout(pipelineId, projectId, wfDir, resetScope);
+    }
+
+    // Docs → Phát hiện màn hình (dr-screens, WP2/screen-discovery 2026-08-25)
+    // → DAEMON-ORCHESTRATED single read-only agent run (see runScreenDiscovery's
+    // own docblock, above runLabKitPlan): reads every doc page, distinguishes
+    // real screens from in-screen detail, writes screens-discovered.json/.md
+    // + comp/_screens.json. Runs BEFORE dr-comp so dr-comp can consume an
+    // authoritative screen list; never falls through to the normal
+    // single-agent path below.
+    if (def.skillId === 'docs-screen-discovery') {
+      return runScreenDiscovery(pipelineId, projectId, wfDir, resetScope, input, project);
     }
 
     // Docs → Review tài liệu (dr-review) → parallel per-page fan-out: the
