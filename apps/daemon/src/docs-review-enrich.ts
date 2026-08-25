@@ -308,8 +308,12 @@ function drawioTargetPattern(stem: string, suffix: string): RegExp {
  *  Trả `null` khi CẢ HAI đều không tìm thấy — section này không chứa sơ đồ
  *  này (trang/section khác của cùng dự án dr-flow, hoặc slice không dùng
  *  draw.io) — gọi phía server.ts hiểu đây là bỏ qua, không phải lỗi. */
-function findDrawioImageBlock(sliceText: string, stem: string): { start: number; end: number } | null {
-  const imgTargetRe = drawioTargetPattern(stem, '(?:-p\\d+)?\\.png');
+function findDrawioImageBlock(sliceText: string, stem: string, pageNumber?: number): { start: number; end: number } | null {
+  // Một attachment nhiều page sinh nhiều FlowIndexEntry nhưng TẤT CẢ cùng
+  // `diagramRel`. Khi biết page, phải match đúng hậu tố -pN; matcher legacy
+  // theo stem sẽ gom p1..pN thành một block và flow đầu tiên nuốt mất các
+  // flow sau (report #6809b85c).
+  const imgTargetRe = drawioTargetPattern(stem, pageNumber == null ? '(?:-p\\d+)?\\.png' : `-p${pageNumber}\\.png`);
   const srcTargetRe = drawioTargetPattern(stem, '\\.drawio');
   const lines = sliceText.split(/\r?\n/);
   const isImgMatch = (line: string) => DRAWIO_IMG_LINE_RE.test(line) && imgTargetRe.test(line);
@@ -323,7 +327,9 @@ function findDrawioImageBlock(sliceText: string, stem: string): { start: number;
 
   if (imgIdx.length > 0) {
     const start = imgIdx[0]!;
-    let end = imgIdx[imgIdx.length - 1]!;
+    // Page-aware: chỉ sở hữu đúng một ảnh. Dòng nguồn chỉ thuộc page cuối vì
+    // BAS đặt nó sau toàn bộ dãy ảnh; nếu ảnh page khác đứng kế tiếp thì dừng.
+    let end = pageNumber == null ? imgIdx[imgIdx.length - 1]! : start;
     let i = end + 1;
     while (i < lines.length) {
       const line = lines[i] ?? '';
@@ -331,7 +337,7 @@ function findDrawioImageBlock(sliceText: string, stem: string): { start: number;
         i += 1;
         continue;
       }
-      if (isImgMatch(line) || isSrcMatch(line)) {
+      if ((pageNumber == null && isImgMatch(line)) || isSrcMatch(line)) {
         end = i;
         i += 1;
         continue;
@@ -340,6 +346,11 @@ function findDrawioImageBlock(sliceText: string, stem: string): { start: number;
     }
     return { start, end };
   }
+
+  // Với multi-page, chỉ page 1 được phép fallback sang preview Confluence
+  // tên bất kỳ khi render per-page thất bại. Page 2+ tuyệt đối không được vơ
+  // block nguồn/preview của page 1.
+  if (pageNumber != null && pageNumber !== 1) return null;
 
   // Fallback: không có ảnh nào khớp stem — định vị qua dòng NGUỒN (đích thật
   // của sơ đồ này, do ingest sinh) rồi lùi lên gom ảnh BẤT KỲ liền kề.
@@ -379,12 +390,21 @@ export function replaceDrawioInSlice(
   opts: {
     diagramRel: string;
     flowId: string;
+    /** Metadata mới từ FlowIndexEntry. Index zero-based. Output 0.8.126 chưa
+     * có field này nên fallback suy từ hậu tố flow id `-pN`. */
+    page?: { index: number; count?: number };
     uxReview: { verdict?: string; summary?: string };
   },
 ): { text: string; change: DocChange } | null {
   const diagramBase = opts.diagramRel.split(/[\\/]/).pop() ?? opts.diagramRel;
   const stem = diagramBase.replace(/\.drawio$/i, '');
-  const block = findDrawioImageBlock(sliceText, stem);
+  const suffixPage = /-p(\d+)(?:-\d+)?$/i.exec(opts.flowId);
+  const pageNumber = Number.isInteger(opts.page?.index)
+    ? opts.page!.index + 1
+    : suffixPage
+      ? Number(suffixPage[1])
+      : undefined;
+  const block = findDrawioImageBlock(sliceText, stem, pageNumber);
   if (!block) return null;
   const { start, end } = block;
   const eol = sliceText.includes('\r\n') ? '\r\n' : '\n';

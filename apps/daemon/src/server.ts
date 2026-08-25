@@ -18743,6 +18743,7 @@ export async function startServer({
                       const replaced = replaceDrawioInSlice(sliceText, {
                         diagramRel: flow.diagram,
                         flowId: flow.id,
+                        ...(flow.page ? { page: flow.page } : {}),
                         uxReview: uxReviewDrawio,
                       });
                       if (!replaced) continue;

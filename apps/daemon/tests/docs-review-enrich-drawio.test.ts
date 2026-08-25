@@ -17,6 +17,7 @@ import { fileURLToPath } from 'node:url';
 import { test } from 'vitest';
 
 import { replaceDrawioInSlice } from '../src/docs-review-enrich.js';
+import { validateChanges } from '../src/docs-review.js';
 import { finalizeFlowUx, prepareFlowUxInputs } from '../src/flow-ux/index.js';
 
 const FIXTURES = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'flow-ux');
@@ -115,6 +116,57 @@ test('replaceDrawioInSlice: cú pháp markdown ![…](…) (2 trang) + dòng ngu
   assert.equal(change.before, lines.slice(2, 5).join('\n'));
   assert.equal(change.severity, 'minor'); // uxReview trống → không needs-improvement/fail → minor
   assert.equal(change.reason, 'Thay sơ đồ luồng bằng bản đề xuất sau rà soát UX.');
+});
+
+test('replaceDrawioInSlice: hai flow p1/p2 cùng diagram chỉ thay đúng ảnh của page mình và self-check cùng đạt', () => {
+  const lines = [
+    '## Sequence diagram — luồng chính',
+    '',
+    '![flow-diagram Untitled — trang 1](attachments/1009587453-Untitled_Diagram-1783562766184-p1.png)',
+    '![flow-diagram Untitled — trang 2](attachments/1009587453-Untitled_Diagram-1783562766184-p2.png)',
+    '*flow-diagram — nguồn sơ đồ (đọc file này để lấy luồng): [1009587453-Untitled_Diagram-1783562766184.drawio](attachments/1009587453-Untitled_Diagram-1783562766184.drawio)*',
+    '',
+    'Bảng mô tả bước.',
+  ];
+  const original = lines.join('\n');
+  const p1 = replaceDrawioInSlice(original, {
+    diagramRel: 'docs-feature/login/attachments/1009587453-Untitled_Diagram-1783562766184.drawio',
+    flowId: 'FLOW-untitled-diagram-1783562766184-p1',
+    page: { index: 0, count: 2 },
+    uxReview: {},
+  });
+  assert.ok(p1);
+  assert.equal(p1.change.before, lines[2]);
+  assert.match(p1.text, /-p2\.png/);
+
+  const p2 = replaceDrawioInSlice(p1.text, {
+    diagramRel: 'docs-feature/login/attachments/1009587453-Untitled_Diagram-1783562766184.drawio',
+    flowId: 'FLOW-untitled-diagram-1783562766184-p2',
+    page: { index: 1, count: 2 },
+    uxReview: {},
+  });
+  assert.ok(p2);
+  assert.equal(p2.change.before, lines.slice(3, 5).join('\n'));
+  assert.deepEqual(validateChanges(original, p2.text, [p1.change, p2.change]), []);
+  assert.match(p2.text, /FLOW-untitled-diagram-1783562766184-p1/);
+  assert.match(p2.text, /FLOW-untitled-diagram-1783562766184-p2/);
+});
+
+test('replaceDrawioInSlice: index 0.8.126 chưa có page vẫn suy đúng p1/p2 từ flow id', () => {
+  const original = [
+    '![p1](attachments/1009587453-Untitled_Diagram-1783562766184-p1.png)',
+    '![p2](attachments/1009587453-Untitled_Diagram-1783562766184-p2.png)',
+    '*nguồn: [drawio](attachments/1009587453-Untitled_Diagram-1783562766184.drawio)*',
+  ].join('\n');
+  const common = {
+    diagramRel: 'docs-feature/login/attachments/1009587453-Untitled_Diagram-1783562766184.drawio',
+    uxReview: {},
+  };
+  const p1 = replaceDrawioInSlice(original, { ...common, flowId: 'FLOW-untitled-diagram-1783562766184-p1' });
+  assert.ok(p1);
+  const p2 = replaceDrawioInSlice(p1.text, { ...common, flowId: 'FLOW-untitled-diagram-1783562766184-p2' });
+  assert.ok(p2);
+  assert.deepEqual(validateChanges(original, p2.text, [p1.change, p2.change]), []);
 });
 
 /* ── (d) stem có ký tự cần encode (dấu tiếng Việt/space) — khớp dạng encoded ─ */
@@ -276,11 +328,13 @@ test('finalizeFlowUx: entry.diagram được ghi lại từ FlowInput.diagram (m
     const entry = fin.index.find((e) => e.id === drawioInput.id)!;
     assert.ok(entry, 'entry tương ứng phải có trong index.json');
     assert.equal(entry.diagram, 'docs-feature/sim/attachments/12345-Luong-mua-sim.drawio');
+    assert.deepEqual(entry.page, drawioInput.page);
 
     // index.json trên đĩa cũng phải mang field này (không chỉ giá trị in-memory).
-    const onDisk = JSON.parse(fs.readFileSync(path.join(cwd, 'flows', 'index.json'), 'utf8')) as Array<{ id: string; diagram?: string }>;
+    const onDisk = JSON.parse(fs.readFileSync(path.join(cwd, 'flows', 'index.json'), 'utf8')) as Array<{ id: string; diagram?: string; page?: { index: number; name: string; count: number } }>;
     const onDiskEntry = onDisk.find((e) => e.id === drawioInput.id)!;
     assert.equal(onDiskEntry.diagram, 'docs-feature/sim/attachments/12345-Luong-mua-sim.drawio');
+    assert.deepEqual(onDiskEntry.page, drawioInput.page);
   } finally {
     fs.rmSync(cwd, { recursive: true, force: true });
   }

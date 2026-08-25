@@ -74,6 +74,9 @@ export interface FlowIndexEntry {
   title: string;
   source: string;
   kind: FlowKind;
+  /** Trang gốc trong attachment draw.io nhiều trang. `index` là zero-based,
+   * giống FlowInput.page. Optional để đọc được index sinh bởi bản cũ. */
+  page?: { index: number; name: string; count: number };
   screens: { key: string; name: string }[];
   note?: string;
   verdict?: UxReview['verdict'];
@@ -756,6 +759,7 @@ export async function finalizeFlowUx(cwd: string): Promise<FinalizeResult> {
       screens: [],
       files: {},
       ...(input.diagram ? { diagram: input.diagram } : {}),
+      ...(input.page ? { page: input.page } : {}),
     };
     const screensFile = (await readJson<ScreensFile>(path.join(dir, 'screens.json'))) ?? {};
     const cellScreens = screensFile.cells ?? {};
