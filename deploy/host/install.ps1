@@ -356,6 +356,29 @@ function Fail($msg) {
   throw [System.InvalidOperationException]::new($msg)
 }
 
+# File.Replace's backup path is not reliably nullable through Windows
+# PowerShell 5.1's .NET binder: `$null` can become an empty string and fail
+# with "The path is not of a legal form." Always pass a real same-directory
+# backup path. Callers that need a durable rollback copy supply -BackupPath;
+# otherwise the short-lived backup is removed after a successful replace.
+function Replace-FileAtomically {
+  param(
+    [Parameter(Mandatory = $true)][string]$Source,
+    [Parameter(Mandatory = $true)][string]$Destination,
+    [string]$BackupPath = ""
+  )
+  $removeBackupAfterReplace = -not $BackupPath
+  if ($removeBackupAfterReplace) {
+    $destinationParent = Split-Path -Parent $Destination
+    $destinationLeaf = Split-Path -Leaf $Destination
+    $BackupPath = Join-Path $destinationParent (".$destinationLeaf.replace-backup-" + [System.Guid]::NewGuid().ToString("N"))
+  }
+  [System.IO.File]::Replace($Source, $Destination, $BackupPath, $true)
+  if ($removeBackupAfterReplace) {
+    Remove-Item -LiteralPath $BackupPath -Force -ErrorAction SilentlyContinue
+  }
+}
+
 function Assert-Parameters {
   $commandCount = ([int][bool]$Start) + ([int][bool]$Stop) + ([int][bool]$Uninstall)
   if ($commandCount -gt 1) { Fail "-Start, -Stop, and -Uninstall are mutually exclusive" }
@@ -1352,7 +1375,7 @@ function Write-ConfigEnv {
     $script:ConfigBackupPath = Join-Path $OdHome (".config.env-backup-" + [System.Guid]::NewGuid().ToString("N"))
     # File.Replace is one filesystem transaction: readers observe either the
     # complete old config or the complete new one, never a half-written file.
-    [System.IO.File]::Replace($configTemp, $configPath, $ConfigBackupPath, $true)
+    Replace-FileAtomically -Source $configTemp -Destination $configPath -BackupPath $ConfigBackupPath
   } else {
     Move-Item -LiteralPath $configTemp -Destination $configPath
   }
@@ -1410,7 +1433,7 @@ function Install-OdLauncher {
   try {
     Copy-Item -LiteralPath $source -Destination $temporary -Force -ErrorAction Stop
     if (Test-Path $LauncherPath) {
-      [System.IO.File]::Replace($temporary, $LauncherPath, $null, $true)
+      Replace-FileAtomically -Source $temporary -Destination $LauncherPath
     } else {
       Move-Item -LiteralPath $temporary -Destination $LauncherPath
     }
@@ -1579,7 +1602,7 @@ function Save-UpdateTransaction {
     )
     icacls $stateTemp /inheritance:r /grant:r "$env:USERDOMAIN\$($env:USERNAME):F" | Out-Null
     if (Test-Path $UpdateTransactionPath) {
-      [System.IO.File]::Replace($stateTemp, $UpdateTransactionPath, $null, $true)
+      Replace-FileAtomically -Source $stateTemp -Destination $UpdateTransactionPath
     } else {
       Move-Item -LiteralPath $stateTemp -Destination $UpdateTransactionPath
     }
@@ -1675,7 +1698,7 @@ function Request-LauncherUpdateRestart {
     # file, so mark the handoff before making it visible.
     $script:RestartHandedOff = $true
     if (Test-Path $RestartRequestPath) {
-      [System.IO.File]::Replace($requestTemp, $RestartRequestPath, $null, $true)
+      Replace-FileAtomically -Source $requestTemp -Destination $RestartRequestPath
     } else {
       Move-Item -LiteralPath $requestTemp -Destination $RestartRequestPath
     }
@@ -1961,7 +1984,7 @@ function Invoke-Rollback {
       try {
         Copy-Item -LiteralPath $ConfigBackupPath -Destination $configRestoreTemp -ErrorAction Stop
         if (Test-Path $configPath) {
-          [System.IO.File]::Replace($configRestoreTemp, $configPath, $null, $true)
+          Replace-FileAtomically -Source $configRestoreTemp -Destination $configPath
         } else {
           Move-Item -LiteralPath $configRestoreTemp -Destination $configPath
         }

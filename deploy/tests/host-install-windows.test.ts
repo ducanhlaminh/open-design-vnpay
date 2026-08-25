@@ -11,6 +11,18 @@ async function source(): Promise<string> {
   return readFile(installScript, 'utf8');
 }
 
+test('Windows atomic file replacement always supplies a legal backup path', async () => {
+  const ps = await source();
+  assert.match(ps, /function Replace-FileAtomically/);
+  assert.match(ps, /\.replace-backup-/);
+  assert.doesNotMatch(ps, /\[System\.IO\.File\]::Replace\([^\r\n]*\$null/);
+  assert.equal(ps.match(/\[System\.IO\.File\]::Replace\(/g)?.length, 1);
+  assert.match(ps, /Replace-FileAtomically -Source \$temporary -Destination \$LauncherPath/);
+  assert.match(ps, /Replace-FileAtomically -Source \$stateTemp -Destination \$UpdateTransactionPath/);
+  assert.match(ps, /Replace-FileAtomically -Source \$requestTemp -Destination \$RestartRequestPath/);
+  assert.match(ps, /Replace-FileAtomically -Source \$configRestoreTemp -Destination \$configPath/);
+});
+
 test('Windows downloads use bounded retries, a STALL timeout (no total cap), Range resume, and partial-file promotion', async () => {
   const ps = await source();
   assert.match(ps, /\$DownloadMaxAttempts\s*=\s*3/);
@@ -77,7 +89,7 @@ test('Windows bundles a stable single-instance launcher that supervises the daem
   const launcher = await readFile(launcherScript, 'utf8');
   const build = await readFile(join(repoRoot, 'scripts/host-runtime/build-runtime.sh'), 'utf8');
   assert.match(ps, /function Install-OdLauncher/);
-  assert.match(ps, /\[System\.IO\.File\]::Replace\(\$temporary, \$LauncherPath, \$null, \$true\)/);
+  assert.match(ps, /Replace-FileAtomically -Source \$temporary -Destination \$LauncherPath/);
   assert.match(ps, /function Start-OdLauncher/);
   assert.match(ps, /function Stop-OdLauncher/);
   assert.match(ps, /-ArgumentList @\("`"\$cliPath`"", "--no-open"\)/);
@@ -256,9 +268,9 @@ test('Windows prunes old releases only after a confirmed healthy start, never on
 
 test('Windows config replacement and rollback are atomic and transaction guarded', async () => {
   const ps = await source();
-  assert.match(ps, /\[System\.IO\.File\]::Replace\(\$configTemp, \$configPath, \$ConfigBackupPath, \$true\)/);
+  assert.match(ps, /Replace-FileAtomically -Source \$configTemp -Destination \$configPath -BackupPath \$ConfigBackupPath/);
   assert.match(ps, /Copy-Item -LiteralPath \$ConfigBackupPath -Destination \$configRestoreTemp/);
-  assert.match(ps, /\[System\.IO\.File\]::Replace\(\$configRestoreTemp, \$configPath, \$null, \$true\)/);
+  assert.match(ps, /Replace-FileAtomically -Source \$configRestoreTemp -Destination \$configPath/);
   assert.match(ps, /-not \$HealthSucceeded -and -not \$RestartHandedOff/);
   assert.match(ps, /PipelineStoppedException \(Ctrl\+C\)/);
   assert.match(ps, /\$rollbackSucceeded = \$pointerRestored -and \$configRestored -and \$releaseRestored -and \$oldDaemonHealthy/);
@@ -293,7 +305,7 @@ test('launcher-owned Start imports durable state and commits or rolls back it ba
   assert.match(saver, /previousCurrent = \$PrevCurrent/);
   assert.match(saver, /configBackupPath = \$ConfigBackupPath/);
   assert.match(saver, /previousReleaseBackup = \$PreviousReleaseBackup/);
-  assert.match(saver, /\[System\.IO\.File\]::Replace\(\$stateTemp, \$UpdateTransactionPath, \$null, \$true\)/);
+  assert.match(saver, /Replace-FileAtomically -Source \$stateTemp -Destination \$UpdateTransactionPath/);
 
   const start = ps.slice(ps.indexOf('function Invoke-StartCommand'), ps.indexOf('function Invoke-UninstallCommand'));
   assert.match(start, /\$transactionPending = Import-UpdateTransaction/);
