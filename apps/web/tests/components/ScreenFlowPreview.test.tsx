@@ -84,6 +84,19 @@ describe('ScreenFlowPreview', () => {
     await waitFor(() => expect(viewerProps?.xml).toContain('id="b1"'));
   });
 
+  it('đổi màn trên rail tự chuyển sang flow chứa màn và không lặp warning', async () => {
+    seed();
+    const index = JSON.parse(FILES['docs-review/comp/screen-flows/index.json']!);
+    index.flows[1].warnings = ['Thiếu cạnh cho màn voucher'];
+    FILES['docs-review/comp/screen-flows/index.json'] = JSON.stringify(index);
+    const { rerender } = render(<ScreenFlowPreview projectId="p1" root="docs-review/" currentScreenKey={K3} onOpenScreen={() => {}} />);
+    await waitFor(() => expect((screen.getByLabelText('Chọn luồng màn hình') as HTMLSelectElement).value).toBe('FLOW-B'));
+    expect(screen.getAllByText('Thiếu cạnh cho màn voucher')).toHaveLength(1);
+    rerender(<ScreenFlowPreview projectId="p1" root="docs-review/" currentScreenKey={K1} onOpenScreen={() => {}} />);
+    await waitFor(() => expect((screen.getByLabelText('Chọn luồng màn hình') as HTMLSelectElement).value).toBe('FLOW-A'));
+    await waitFor(() => expect(viewerProps?.xml).toContain('id="a1"'));
+  });
+
   it('thiếu hoặc hỏng artifact fail-soft và yêu cầu chạy lại riêng dr-comp', async () => {
     FILES['docs-review/comp/screen-flows/index.json'] = null;
     const { rerender } = render(<ScreenFlowPreview projectId="p1" root="docs-review/" currentScreenKey={K1} onOpenScreen={() => {}} />);

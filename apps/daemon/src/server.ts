@@ -697,7 +697,7 @@ import {
   type ScreenComponentsDoc,
   type ScreenComponentsIndex,
 } from './screen-components.js';
-import { buildScreenFlowArtifacts, SCREEN_FLOWS_DIR } from './screen-flow.js';
+import { buildScreenFlowArtifacts, recoverScreenNavigationFromDocuments, SCREEN_FLOWS_DIR } from './screen-flow.js';
 // WP14: nối lớp 2 (trích màn bằng agent khi lớp 1 yếu) + lớp 3 (manifest +
 // overrides người dùng) vào khối docs-comp — xem docblock ở nơi dùng trong
 // runDocsComponentAuditFanout.
@@ -17576,6 +17576,26 @@ export async function startServer({
             }
           }
           if (mockupsEnriched) await persistInputs();
+        }
+
+        // Màn được bổ sung từ tài liệu/agent không đi qua topology của
+        // dr-flow nên trước đây luôn mang flowId/nav rỗng và bị dồn vào
+        // UNLINKED. Phục hồi các cạnh có bằng chứng ngay trong section nguồn
+        // (mã màn hoặc tên màn), rồi truyền metadata đã chốt cho cả fan-out và
+        // artifact screen-flow. Màn còn mơ hồ vẫn giữ rỗng, không nối đoán qua
+        // hai flow khác nhau.
+        {
+          const navigation = await recoverScreenNavigationFromDocuments(cwd, screenInputs);
+          screenInputs = navigation.screens;
+          if (navigation.recoveredScreens.length > 0 || navigation.recoveredEdges > 0) {
+            noteParts.push(
+              `Phục hồi điều hướng từ tài liệu: ${navigation.recoveredScreens.length} màn, ${navigation.recoveredEdges} cạnh.`,
+            );
+            await persistInputs();
+          }
+          if (navigation.unresolvedScreens.length > 0) {
+            console.warn('[docs-comp] screen-flow còn màn chưa xác định điều hướng:', navigation.unresolvedScreens);
+          }
         }
 
         // (do.B.2) buildScreensManifest NGAY SAU khi chốt danh sách màn,

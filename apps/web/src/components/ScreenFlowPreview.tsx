@@ -186,6 +186,16 @@ export function ScreenFlowPreview({ projectId, root, currentScreenKey, onOpenScr
 
   const selected = flows.find((flow) => flow.entry.id === selectedId) ?? null;
 
+  // Rail và flow selector là hai cách chọn cùng một ngữ cảnh. Sau lần tải
+  // đầu, currentScreenKey có thể đổi mà index/model không đổi; trước đây
+  // selectedId giữ nguyên nên người dùng chọn màn thuộc flow A nhưng canvas
+  // vẫn nằm ở UNLINKED/flow B.
+  useEffect(() => {
+    if (!currentScreenKey) return;
+    const owner = flows.find((flow) => flow.model.screens.some((screen) => screen.key === currentScreenKey));
+    if (owner) setSelectedId((current) => current === owner.entry.id ? current : owner.entry.id);
+  }, [currentScreenKey, flows]);
+
   useEffect(() => {
     if (!selected) return;
     let cancelled = false;
@@ -217,7 +227,7 @@ export function ScreenFlowPreview({ projectId, root, currentScreenKey, onOpenScr
   if (status === 'empty') return <div className={styles.message}>Chưa có luồng màn hình — chạy lại bước “Màn hình → Component”.</div>;
   if (status === 'error' || !selected) return <div className={styles.message}>Không đọc được dữ liệu luồng màn hình. Wireframe hiện tại vẫn có thể xem được.</div>;
 
-  const warnings = [...selected.entry.warnings, ...selected.model.warnings];
+  const warnings = [...new Set([...selected.entry.warnings, ...selected.model.warnings])];
   const unlinkedCount = Math.max(selected.entry.unlinkedCount, selected.model.unlinkedScreens.length);
   return (
     <div className={styles.root}>

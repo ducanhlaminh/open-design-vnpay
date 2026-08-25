@@ -10,6 +10,7 @@ import {
   buildScreenFlowArtifacts,
   classifySourceScreenFlow,
   collapseToScreenFlow,
+  recoverScreenNavigationFromDocuments,
   renderScreenFlowDrawio,
 } from '../src/screen-flow.js';
 import type { FlowchartDoc } from '../src/flow-ux/to-flowchart.js';
@@ -118,6 +119,44 @@ describe('screen-flow pure contract', () => {
 });
 
 describe('buildScreenFlowArtifacts', () => {
+  it('recovers document-only screens and navigation from bounded source sections', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'od-screen-flow-recovery-'));
+    roots.push(root);
+    fs.mkdirSync(path.join(root, 'docs-feature'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'docs-feature/buy.md'), [
+      '## 6.4.1 Nhập thông tin',
+      'Nhấn: Hiển thị màn hình 6.4.2 chọn địa chỉ giao hàng.',
+      'On toggle: Hiển thị bottom sheet Thông tin xuất hóa đơn (6.4.3).',
+      'Phần Hóa đơn VAT & Mã giảm giá.',
+      '#### 6.4.2 Địa chỉ nhận hàng',
+      'Hoàn thành: quay lại màn hình Nhập thông tin.',
+      '#### 6.4.3 Thông tin xuất hóa đơn',
+      'Đóng bottom sheet và quay lại Nhập thông tin.',
+      '#### 6.4.4 Mã voucher',
+      'Áp dụng mã giảm giá.',
+    ].join('\n'));
+    const make = (code: string, name: string, flowId = ''): ScreenInput => ({
+      ...screen(`buy__${code}`, flowId, flowId ? 'flow' : 'doc'),
+      name,
+      order: Number(code.split('.').at(-1)),
+      source: 'docs-feature/buy.md',
+      flowTitle: flowId ? 'Mua SIM' : '',
+    });
+    const result = await recoverScreenNavigationFromDocuments(root, [
+      make('6.4.1', 'Nhập thông tin', 'FLOW-buy'),
+      make('6.4.2', 'Địa chỉ nhận hàng'),
+      make('6.4.3', 'Thông tin xuất hóa đơn'),
+      make('6.4.4', 'Mã voucher'),
+    ]);
+    expect(result.unresolvedScreens).toEqual([]);
+    expect(result.recoveredScreens).toEqual(['buy__6.4.2', 'buy__6.4.3', 'buy__6.4.4']);
+    expect(result.screens.every((item) => item.flowId === 'FLOW-buy')).toBe(true);
+    expect(result.screens[0]?.navOut.map((nav) => nav.to)).toEqual(expect.arrayContaining([
+      'buy__6.4.2', 'buy__6.4.3', 'buy__6.4.4',
+    ]));
+    expect(result.screens.find((item) => item.key === 'buy__6.4.2')?.navOut.map((nav) => nav.to)).toContain('buy__6.4.1');
+  });
+
   it('reuses a structural Draw.io screen-flow, converts reusable Mermaid, generates business flow, and writes UNLINKED for doc-only screens', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'od-screen-flow-'));
     roots.push(root);

@@ -274,16 +274,219 @@ export interface BuildScreenFlowOptions {
   generatedAt?: string;
 }
 
+export interface ScreenNavigationRecovery {
+  screens: ScreenInput[];
+  recoveredScreens: string[];
+  recoveredEdges: number;
+  unresolvedScreens: string[];
+  warnings: string[];
+}
+
+const normalizedWords = (value: string): string => value
+  .normalize('NFD')
+  .replace(/[\u0300-\u036f]/g, '')
+  .toLocaleLowerCase('vi')
+  .replace(/<br\s*\/?\s*>/gi, ' ')
+  .replace(/[^a-z0-9]+/g, ' ')
+  .trim()
+  .replace(/\s+/g, ' ');
+
+function shortScreenCode(key: string): string {
+  const marker = key.lastIndexOf('__');
+  return marker >= 0 ? key.slice(marker + 2) : key;
+}
+
+function navigationAliases(screen: ScreenInput): string[] {
+  const baseName = screen.name.split('(')[0]!.trim();
+  const names = [screen.name, baseName]
+    .map(normalizedWords)
+    .flatMap((name) => [name, name.replace(/^man hinh\s+/, '')])
+    .filter((name) => name.length >= 5);
+  const aliases = new Set(names);
+  for (const name of [...aliases]) {
+    if (name.includes('voucher')) aliases.add(name.replace(/voucher/g, 'giam gia'));
+    if (name.includes('giam gia')) aliases.add(name.replace(/giam gia/g, 'voucher'));
+  }
+  return [...aliases].sort((a, b) => b.length - a.length);
+}
+
+function sectionRanges(md: string, screens: ScreenInput[]): Map<string, { start: number; end: number }> {
+  const lines = md.split(/\r?\n/);
+  const starts = screens
+    .map((screen) => {
+      const code = shortScreenCode(screen.key);
+      const escaped = code.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const exact = new RegExp(`^\\s*(?:#{1,6}\\s*)?(?:\\*{1,3})?${escaped}\\.?\\s`, 'i');
+      const line = lines.findIndex((value) => exact.test(value.replace(/\u00a0/g, ' ')));
+      const fallback = screen.section ? Math.max(0, screen.section.startLine - 1) : -1;
+      return { key: screen.key, start: line >= 0 ? line : fallback };
+    })
+    .filter((entry) => entry.start >= 0)
+    .sort((a, b) => a.start - b.start);
+  const ranges = new Map<string, { start: number; end: number }>();
+  starts.forEach((entry, index) => {
+    const next = starts[index + 1];
+    const nextNumberedHeading = lines.findIndex((value, lineIndex) =>
+      lineIndex > entry.start && /^\s*#{1,6}\s+(?:\*{1,3})?\d+(?:\.\d+)*\.?\s/u.test(value.replace(/\u00a0/g, ' ')),
+    );
+    const candidates = [next?.start ?? lines.length, nextNumberedHeading >= 0 ? nextNumberedHeading : lines.length];
+    ranges.set(entry.key, { start: entry.start, end: Math.min(...candidates) });
+  });
+  return ranges;
+}
+
+function addNav(screen: ScreenInput, to: ScreenInput, via: string): boolean {
+  if (screen.key === to.key || screen.navOut.some((nav) => nav.to === to.key)) return false;
+  screen.navOut.push({ to: to.key, via });
+  return true;
+}
+
+/**
+ * Recover navigation for screens discovered from document-only formats.
+ *
+ * The flow scanner intentionally only trusts nodes in the source diagram. A
+ * document can still declare additional screens (bottom sheets, address
+ * pickers, detail screens) and explicit transitions such as "hiển thị màn
+ * hình 6.4.2". This pass reads only each screen's bounded source section,
+ * resolves exact screen codes/names, then propagates an existing flow id over
+ * those evidenced edges. It never joins two different seeded flows.
+ */
+export async function recoverScreenNavigationFromDocuments(
+  cwd: string,
+  inputScreens: ScreenInput[],
+): Promise<ScreenNavigationRecovery> {
+  const screens = inputScreens.map((screen) => ({
+    ...screen,
+    navOut: screen.navOut.map((nav) => ({ ...nav })),
+    navIn: [...screen.navIn],
+  }));
+  const bySource = new Map<string, ScreenInput[]>();
+  for (const screen of screens) {
+    if (!screen.source) continue;
+    bySource.set(screen.source, [...(bySource.get(screen.source) ?? []), screen]);
+  }
+  let recoveredEdges = 0;
+  for (const [source, sourceScreens] of bySource) {
+    const md = await fs.readFile(path.join(cwd, source), 'utf8').catch(() => null);
+    if (!md) continue;
+    const lines = md.split(/\r?\n/);
+    const ranges = sectionRanges(md, sourceScreens);
+    const targets = sourceScreens.map((screen) => ({
+      screen,
+      code: shortScreenCode(screen.key),
+      aliases: navigationAliases(screen),
+    }));
+    for (const from of sourceScreens) {
+      const range = ranges.get(from.key);
+      if (!range) continue;
+      for (const rawLine of lines.slice(range.start, range.end)) {
+        const line = normalizedWords(rawLine);
+        if (!line) continue;
+        const hasNavigationCue = /\b(?:click|nhan|bam|chuyen|quay lai|hien thi|mo|dong|hoan thanh|on toggle|on click)\b/.test(line)
+          || /\bphan\b.*\b(?:ma giam gia|voucher)\b/.test(line);
+        if (!hasNavigationCue) continue;
+        const matches = targets
+          .filter(({ screen }) => screen.key !== from.key)
+          // The source flowchart remains authoritative for pairs that are
+          // already assigned. Document inference is only a recovery bridge
+          // to/from a screen whose flow could not be detected.
+          .filter(({ screen }) => !from.flowId || !screen.flowId)
+          .map((target) => {
+            const codeHit = new RegExp(`(^|[^0-9])${target.code.replace(/\./g, '\\.')}(?=$|[^0-9])`).test(rawLine);
+            const alias = target.aliases.find((value) => line.includes(value));
+            return { target, score: alias ? 4 + alias.length / 1000 : codeHit ? 3 : 0 };
+          })
+          .filter((match) => match.score > 0)
+          .sort((a, b) => b.score - a.score);
+        if (!matches.length) continue;
+        // A line can contain a stale numeric cross-reference next to the
+        // correct screen name. Prefer the strongest name match, but retain
+        // genuinely separate references of equal strength.
+        const best = matches[0]!.score;
+        for (const match of matches.filter((item) => item.score === best)) {
+          if (addNav(from, match.target.screen, rawLine.trim().slice(0, 240))) recoveredEdges += 1;
+        }
+      }
+    }
+  }
+
+  const seedTitle = new Map(screens.filter((screen) => screen.flowId).map((screen) => [screen.flowId, screen.flowTitle]));
+  const recovered = new Set<string>();
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const screen of screens.filter((item) => !item.flowId)) {
+      const neighborKeys = new Set([
+        ...screen.navOut.map((nav) => nav.to),
+        ...screens.filter((candidate) => candidate.navOut.some((nav) => nav.to === screen.key)).map((candidate) => candidate.key),
+      ]);
+      const flowIds = new Set(
+        screens.filter((candidate) => neighborKeys.has(candidate.key) && candidate.flowId).map((candidate) => candidate.flowId),
+      );
+      if (flowIds.size !== 1) continue;
+      screen.flowId = [...flowIds][0]!;
+      screen.flowTitle = seedTitle.get(screen.flowId) ?? screen.flowId;
+      recovered.add(screen.key);
+      changed = true;
+    }
+  }
+
+  for (const screen of screens) screen.navIn = [];
+  const byKey = new Map(screens.map((screen) => [screen.key, screen]));
+  for (const screen of screens) {
+    screen.navOut = screen.navOut.filter((nav) => byKey.has(nav.to));
+    for (const nav of screen.navOut) byKey.get(nav.to)!.navIn.push(screen.key);
+  }
+  for (const screen of screens) screen.navIn = [...new Set(screen.navIn)];
+  const unresolvedScreens = screens.filter((screen) => !screen.flowId).map((screen) => screen.key);
+  return {
+    screens,
+    recoveredScreens: [...recovered].sort(),
+    recoveredEdges,
+    unresolvedScreens,
+    warnings: unresolvedScreens.length
+      ? [`${unresolvedScreens.length} màn chưa có đủ bằng chứng để gắn vào một flow.`]
+      : [],
+  };
+}
+
+function mergeDocumentNavigation(model: ScreenFlowModel, screens: ScreenInput[]): void {
+  const keys = new Set(model.screens.map((screen) => screen.key));
+  const directions = new Set(model.edges.map((edge) => `${edge.from}\0${edge.to}`));
+  for (const screen of screens) {
+    for (const nav of screen.navOut) {
+      if (!keys.has(nav.to) || nav.to === screen.key) continue;
+      const direction = `${screen.key}\0${nav.to}`;
+      if (directions.has(direction)) continue;
+      directions.add(direction);
+      model.edges.push({
+        id: `edge-${stableToken([screen.key, nav.to, nav.via, nav.condition ?? ''].join('|'))}`,
+        from: screen.key,
+        to: nav.to,
+        via: nav.via,
+        ...(nav.condition ? { condition: nav.condition } : {}),
+        flowIds: [model.flowId],
+        evidence: [{ flowId: model.flowId, fromNode: `doc:${screen.key}`, toNode: `doc:${nav.to}`, path: [screen.key, nav.to] }],
+      });
+    }
+  }
+  const linked = new Set(model.edges.flatMap((edge) => [edge.from, edge.to]));
+  for (const screen of model.screens) screen.linked = linked.has(screen.key);
+  model.unlinkedScreens = model.screens.filter((screen) => !screen.linked).map((screen) => screen.key);
+}
+
 /** Thin, fail-soft filesystem boundary invoked after dr-comp fan-out. */
 export async function buildScreenFlowArtifacts(
   cwd: string,
   allScreens: ScreenInput[],
   options: BuildScreenFlowOptions = {},
 ): Promise<ScreenFlowsIndex> {
+  const recovery = await recoverScreenNavigationFromDocuments(cwd, allScreens);
+  allScreens = recovery.screens;
   const outputDir = path.join(cwd, SCREEN_FLOWS_DIR);
   await fs.rm(outputDir, { recursive: true, force: true });
   await fs.mkdir(outputDir, { recursive: true });
-  const warnings: string[] = [];
+  const warnings: string[] = [...recovery.warnings];
   const rawIndex = await readJson<unknown>(path.join(cwd, 'flows/index.json'));
   const flows = Array.isArray(rawIndex) ? (rawIndex as FlowIndexEntry[]) : [];
   if (!Array.isArray(rawIndex)) warnings.push('Không đọc được flows/index.json — mọi màn được đưa vào UNLINKED.');
@@ -308,6 +511,7 @@ export async function buildScreenFlowArtifacts(
     if (!flowScreens.length) continue;
     flowScreens.forEach((screen) => assigned.add(screen.key));
     const model = collapseToScreenFlow(doc, flowScreens);
+    mergeDocumentNavigation(model, flowScreens);
     const source: ScreenFlowSource = {
       flowId: id,
       kind: flowEntry.kind,

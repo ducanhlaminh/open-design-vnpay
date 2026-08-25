@@ -15,6 +15,27 @@ const MIN_SCALE = 0.1;
 const MAX_SCALE = 8;
 const clamp = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, n));
 
+/** Mermaid 11 treats parentheses inside an unquoted square-node label as a
+ * shape token. Agents and imported documents commonly emit
+ * `A[Label (optional)]`; quote only that unsafe label while preserving the
+ * source shown to users. */
+export function normalizeMermaidCodeForRender(code: string): string {
+  return code.replace(/\b([A-Za-z_][\w-]*\s*)\[([^\]\r\n]+)\]/g, (whole, id: string, rawLabel: string) => {
+    const label = rawLabel.trim();
+    if (!/[()]/.test(label) || /^['"]/.test(label)) return whole;
+    const escaped = label.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    return `${id}["${escaped}"]`;
+  });
+}
+
+/** mermaid.render() creates a temporary body child `d<render-id>`. On a
+ * parser exception Mermaid 11.15 leaves that node behind, producing the large
+ * repeated "Syntax error in text" SVGs below unrelated routes. */
+export function cleanupMermaidRenderArtifacts(renderId: string): void {
+  if (typeof document === 'undefined') return;
+  document.getElementById(`d${renderId}`)?.remove();
+}
+
 function prefersDark(): boolean {
   try {
     return window.matchMedia('(prefers-color-scheme: dark)').matches;
@@ -96,6 +117,7 @@ export function MermaidDiagram({ code, svg, initialFit = 'contain' }: MermaidDia
   // Render mermaid → SVG (or mount the given SVG), then fit.
   useEffect(() => {
     let cancelled = false;
+    let renderId: string | null = null;
     void (async () => {
       try {
         let markup = svg;
@@ -107,7 +129,9 @@ export function MermaidDiagram({ code, svg, initialFit = 'contain' }: MermaidDia
             initialized = theme;
           }
           seq += 1;
-          markup = (await mermaid.render(`mmd-${seq}`, code)).svg;
+          renderId = `mmd-${seq}`;
+          markup = (await mermaid.render(renderId, normalizeMermaidCodeForRender(code))).svg;
+          cleanupMermaidRenderArtifacts(renderId);
         }
         if (cancelled || !innerRef.current) return;
         innerRef.current.innerHTML = markup;
@@ -131,11 +155,13 @@ export function MermaidDiagram({ code, svg, initialFit = 'contain' }: MermaidDia
           if (!cancelled) fit();
         });
       } catch (e: unknown) {
+        if (renderId) cleanupMermaidRenderArtifacts(renderId);
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));
       }
     })();
     return () => {
       cancelled = true;
+      if (renderId) cleanupMermaidRenderArtifacts(renderId);
     };
   }, [code, svg, fit]);
 
