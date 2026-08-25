@@ -96,8 +96,17 @@ export interface DocRedlineNote {
   kind: DocRedlineChangeKind;
   severity: DocRedlineSeverity;
   rule_id?: string;
-  /** Nguyên văn một đoạn trong bản GỐC để neo nhận xét vào đúng chỗ. */
+  /** Nguyên văn một đoạn trong bản GỐC để neo nhận xét vào đúng chỗ. Khi note
+   *  mang `tableCells`, đây là MỘT dòng mã nguồn duy nhất nằm trong bảng — chỉ
+   *  dùng để ĐỊNH VỊ lại `<table>` khi render/reload, không phải chữ hiển thị. */
   anchor: string;
+  /** wp-table-highlight.yaml: các ô CỤ THỂ trong bảng mà `anchor` định vị —
+   *  người dùng kéo bôi ô trong bảng thay vì bôi một đoạn chữ liền mạch. `row`
+   *  là chỉ số `<tr>` (kể cả các hàng trong `<thead>`) theo thứ tự DOM trong
+   *  `<table>`; `col` là chỉ số ô trong hàng đó. Có field này thì note được
+   *  tô bằng effect riêng (`useTableCellTint`), KHÔNG qua notePass injectHighlights
+   *  (không cần `<mark>` chữ vì đã định vị bằng toạ độ ô). */
+  tableCells?: { cells: Array<{ row: number; col: number }> };
   /** Như `DocRedlineChange.doc_refs` nhưng nguyên văn lấy từ bản GỐC — note
    *  không sửa gì nên các đoạn nó viện dẫn còn nguyên ở cả hai bản, và neo
    *  được vào bản đã sửa y như vậy. */
@@ -147,6 +156,17 @@ interface DraftAnnotation {
    *  `insertAfterUniqueAnchor` (substring, đúng cho đoạn bôi đen nhưng SAI
    *  cho một dòng heading có thể là tiền tố của heading con). */
   viaHeading?: boolean;
+}
+
+/** wp-table-highlight.yaml (Q2): nháp của một note "tô ô bảng" — ĐƯỜNG MỚI,
+ *  song song với `DraftAnnotation` chứ không dùng chung, vì thao tác này
+ *  không có "nội dung mới"/không sửa markdown (`changedMd: false`), chỉ neo
+ *  toạ độ ô + một lý do. `cells`/`anchor` đã chốt xong lúc mở composer
+ *  (`startTableCellHighlight`); người dùng chỉ còn gõ `reason`. */
+interface TableCellDraft {
+  cells: Array<{ row: number; col: number }>;
+  anchor: string;
+  reason: string;
 }
 
 // Nhãn thao tác đọc được với người không rành thuật ngữ review — thay cho mã
@@ -307,6 +327,27 @@ export function parseDocChanges(raw: string): DocRedlineChange[] | null {
   return parseDocChangesFile(raw)?.changes ?? null;
 }
 
+/** wp-table-highlight.yaml (Q2): kiểm nhẹ `tableCells` khi đọc note — `cells`
+ *  phải là mảng KHÔNG RỖNG toàn {row,col} số nguyên ≥0; sai hình dạng ở BẤT KỲ
+ *  phần tử nào (thiếu, không phải số, âm, lẻ) thì bỏ CẢ field (note vẫn giữ),
+ *  không lọc riêng từng phần tử — dữ liệu toạ độ ô nửa vời còn nguy hiểm hơn là
+ *  không có, vì nó tô nhầm ô. */
+function parseTableCells(raw: unknown): DocRedlineNote['tableCells'] {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const cellsRaw = (raw as { cells?: unknown }).cells;
+  if (!Array.isArray(cellsRaw) || cellsRaw.length === 0) return undefined;
+  const cells: Array<{ row: number; col: number }> = [];
+  for (const item of cellsRaw) {
+    if (!item || typeof item !== 'object') return undefined;
+    const row = (item as Record<string, unknown>).row;
+    const col = (item as Record<string, unknown>).col;
+    if (typeof row !== 'number' || !Number.isInteger(row) || row < 0) return undefined;
+    if (typeof col !== 'number' || !Number.isInteger(col) || col < 0) return undefined;
+    cells.push({ row, col });
+  }
+  return { cells };
+}
+
 /** Cùng tinh thần khoan dung như parseDocChanges: phần tử hỏng bị bỏ qua chứ
  *  không đánh hỏng cả khung nhìn. Trả null khi file nói chung không dùng được. */
 export function parseDocNotes(raw: string): DocRedlineNote[] | null {
@@ -332,6 +373,7 @@ export function parseDocNotes(raw: string): DocRedlineNote[] | null {
         : 'minor') as DocRedlineSeverity,
       rule_id: typeof n.rule_id === 'string' && n.rule_id.trim() ? n.rule_id : undefined,
       anchor: typeof n.anchor === 'string' ? n.anchor : '',
+      tableCells: parseTableCells(n.tableCells),
       doc_refs: Array.isArray(n.doc_refs)
         ? n.doc_refs.filter((ref): ref is string => typeof ref === 'string' && !!ref.trim())
         : undefined,
@@ -380,6 +422,20 @@ function uniqueOccurrenceIndex(source: string, value: string): number | null {
   const first = source.indexOf(value);
   if (first < 0 || source.indexOf(value, first + value.length) >= 0) return null;
   return first;
+}
+
+/** wp-table-highlight.yaml (Q2): chọn dòng mã nguồn dùng làm `anchor` định vị
+ *  một bảng — dòng ĐẦU TIÊN trong `candidates` (chỗ gọi truyền vào theo thứ tự
+ *  ưu tiên: hàng người dùng đã bôi trước, hàng header sau) xuất hiện DUY NHẤT
+ *  một lần trong `source` (cùng chuẩn "duy nhất" như mọi anchor khác trong file
+ *  này, xem `uniqueOccurrenceIndex`). Không dòng nào duy nhất → `null` (bảng có
+ *  dòng trùng, không định vị được). Tách riêng khỏi việc dựng `candidates` từ
+ *  DOM để hàm này test được mà không cần jsdom dựng bảng. */
+export function pickUniqueTableAnchorLine(source: string, candidates: readonly string[]): string | null {
+  for (const line of candidates) {
+    if (line && uniqueOccurrenceIndex(source, line) != null) return line;
+  }
+  return null;
 }
 
 /** Vá N1 (review attempt2): kiểm duy nhất của một dòng heading theo DÒNG,
@@ -859,6 +915,24 @@ function annotationHighlightSegments(raw: string): string[] {
   });
 }
 
+/** wp-table-highlight.yaml (Q2): chuẩn hoá khoảng trắng của một chuỗi
+ *  (`textContent` đã render gộp nhiều khoảng trắng/newline lại) trước khi so
+ *  sánh — dùng ở `useTableCellTint`. */
+function normalizeTableAnchorText(value: string): string {
+  return value.trim().replace(/\s+/g, ' ');
+}
+
+/** wp-table-highlight.yaml (Q2): `note.anchor` của một note tableCells là dòng
+ *  NGUYÊN VĂN mã nguồn markdown (`| a | b |`, giữ pipe — cần thế để khớp
+ *  `uniqueOccurrenceIndex` trên mã nguồn lúc tạo, xem `startTableCellHighlight`
+ *  /`tableRowCandidateLine`). HTML đã render bỏ hết ký tự `|` (bảng markdown
+ *  dựng thành `<table>` thật), nên `table.textContent` không bao giờ chứa
+ *  pipe — phải bỏ pipe khỏi anchor rồi mới so khớp lúc tìm lại `<table>`. */
+function tableAnchorPlainText(anchorLine: string): string {
+  const inner = anchorLine.trim().replace(/^\|/, '').replace(/\|$/, '');
+  return normalizeTableAnchorText(inner.split('|').map((cell) => cell.trim()).join(' '));
+}
+
 /** Nhãn dễ hiểu + lời giải thích của một tiêu chí. Chip hiện `label`, rê chuột
  *  hiện `summary`, bấm vào mở popover hiện `detail`. Ba mức dài dần cho cùng
  *  một ý: liếc qua → hiểu đại khái → đọc đủ. */
@@ -1186,6 +1260,13 @@ export function DocRedlinePreview({
   const [errorById, setErrorById] = useState<Record<string, string>>({});
   const [draft, setDraft] = useState<DraftAnnotation | null>(null);
   const [draftError, setDraftError] = useState('');
+  // wp-table-highlight.yaml (Q2): nháp/lỗi/trạng-thái-bật-nút của đường "Tô ô
+  // bảng" — tách hẳn khỏi `draft`/`draftError` (đường text cũ), đúng
+  // `must_not`: không đổi `startUserAnnotation`/`createUserAnnotation`.
+  const [tableCellDraft, setTableCellDraft] = useState<TableCellDraft | null>(null);
+  const [tableCellError, setTableCellError] = useState('');
+  const [selectionInTable, setSelectionInTable] = useState(false);
+  const [tableCellAnchoredIds, setTableCellAnchoredIds] = useState<ReadonlySet<string>>(EMPTY_SET);
   // wp4.yaml mục 2: "Thêm sau mục…" — picker liệt kê heading của tài liệu,
   // tách khỏi `draft`/`draftError` vì nó là một bước CHỌN anchor, không phải
   // composer (composer mở SAU khi đã chọn xong, dùng lại y hệt `draft`).
@@ -1506,6 +1587,11 @@ export function DocRedlinePreview({
       if (previewMode !== 'notes') return [];
       if (n.status === 'dismissed') return [];
       if (!annotationVisible(`${NOTE_ID_PREFIX}${n.id}`)) return [];
+      // wp-table-highlight.yaml (Q2): note có `tableCells` được định vị bằng
+      // toạ độ ô qua `useTableCellTint` — `anchor` của nó chỉ là dòng nguồn
+      // dùng để TÌM LẠI <table>, không phải chữ cần bọc <mark>. Bọc mark ở
+      // đây sẽ tô thừa nguyên dòng đó như một note chữ bình thường.
+      if (n.tableCells) return [];
       const raw = (n.anchor ?? '').trim();
       if (!raw) return [];
       return annotationHighlightSegments(raw).map((text) => ({
@@ -1755,18 +1841,89 @@ export function DocRedlinePreview({
       const owner = changes.find((change) => change.id === target.id);
       const noteOwner = notes.find((note) => `${NOTE_ID_PREFIX}${note.id}` === target.id);
       const operation = owner ? changeOp(owner) : noteOwner ? 'note' : previewMode === 'notes' ? 'note' : 'edit';
-      block.dataset.redlineBlock = operation;
-      block.dataset.redlineOwner = target.id;
-      if (operation === 'add') block.classList.add(styles.blockTintAdd ?? '');
+      // wp-table-highlight.yaml (Q1): change/note `kind: 'component'` neo
+      // trúng một hàng bảng phải tô CẢ <table>, không chỉ hàng đó — bảng
+      // thành phần thường chỉ neo được vào dòng header (mỗi ô dữ liệu như
+      // "Có"/"Input" không đủ đặc trưng để tự đứng làm anchor), nên chỉ tô
+      // đúng hàng khớp thì phần thân bảng nhìn như chưa được đánh dấu. Loại
+      // annotation khác trúng một hàng vẫn tô đúng một hàng như cũ. `table`
+      // đã nằm trong tập `blocks` được quét (selector có 'table'), nên
+      // `clearBlockTint` dọn sạch nó ở lượt sau mà không cần thêm gì.
+      const isComponentOwner = (owner ?? noteOwner)?.kind === 'component';
+      const tintTarget = (target.kind === 'table' || target.kind === 'table-row') && isComponentOwner
+        ? block.closest('table') ?? block
+        : block;
+      tintTarget.dataset.redlineBlock = operation;
+      tintTarget.dataset.redlineOwner = target.id;
+      if (operation === 'add') tintTarget.classList.add(styles.blockTintAdd ?? '');
       if (
         target.kind === 'table'
         || target.kind === 'table-row'
         || target.kind === 'list-item'
         || annotationWantsFullBlock(owner ?? noteOwner ?? {})
-      ) block.classList.add(styles.blockTintFull ?? '');
+      ) tintTarget.classList.add(styles.blockTintFull ?? '');
     }
     return clearBlockTint;
   }, [docHtml, docRender, changes, notes, previewMode]);
+
+  // wp-table-highlight.yaml (Q2): tint CÁC Ô một note `tableCells` chỉ ra —
+  // effect RIÊNG, không đi qua notePass injectHighlights (`noteRequests` ở
+  // trên loại note này ra): định vị bằng anchor (đã tìm lại đúng <table>) +
+  // toạ độ ô, không cần <mark> chữ. Cùng pattern hiệu ứng DOM-phụ-thuộc như
+  // effect block-tint ngay trên (dọn sạch mọi lần trước khi tô lại).
+  useEffect(() => {
+    const container = docColRef.current;
+    if (!container) return;
+    const cellTintClass = styles.cellTint ?? '';
+    const touchedCells: HTMLElement[] = [];
+    const anchoredIds = new Set<string>();
+    if (cellTintClass && previewMode === 'notes') {
+      const tables = Array.from(container.querySelectorAll<HTMLTableElement>('table'));
+      for (const note of notes) {
+        if (!note.tableCells || note.tableCells.cells.length === 0) continue;
+        if (note.status === 'dismissed') continue;
+        const markId = `${NOTE_ID_PREFIX}${note.id}`;
+        if (!annotationVisible(markId)) continue;
+        const wanted = tableAnchorPlainText(note.anchor ?? '');
+        if (!wanted) continue;
+        // Định vị bằng cách dựng lại text từng HÀNG từ DOM (ô ghép bằng dấu
+        // cách) rồi so BẰNG — KHÔNG dùng `table.textContent` vì renderer nối
+        // các ô không chèn khoảng trắng (`<th>a</th><th>b</th>` → "ab"), nên
+        // "a b" ghép-dấu-cách sẽ không bao giờ `includes` được. Cùng cách
+        // dựng chuỗi với `tableRowCandidateLine` lúc tạo, nên khớp nhất quán.
+        const table = tables.find((t) =>
+          Array.from(t.querySelectorAll<HTMLTableRowElement>('tr')).some(
+            (tr) =>
+              normalizeTableAnchorText(
+                Array.from(tr.children)
+                  .filter((el): el is HTMLTableCellElement => el instanceof HTMLTableCellElement)
+                  .map((el) => (el.textContent ?? '').trim())
+                  .join(' '),
+              ) === wanted,
+          ),
+        );
+        if (!table) continue;
+        const rows = Array.from(table.querySelectorAll<HTMLTableRowElement>('tr'));
+        let matchedAny = false;
+        for (const { row, col } of note.tableCells.cells) {
+          const cell = rows[row]?.children[col];
+          if (!(cell instanceof HTMLElement)) continue;
+          cell.classList.add(cellTintClass);
+          cell.dataset.redlineOwner = markId;
+          touchedCells.push(cell);
+          matchedAny = true;
+        }
+        if (matchedAny) anchoredIds.add(markId);
+      }
+    }
+    setTableCellAnchoredIds(anchoredIds);
+    return () => {
+      for (const cell of touchedCells) {
+        cell.classList.remove(cellTintClass);
+        delete cell.dataset.redlineOwner;
+      }
+    };
+  }, [docHtml, docRender, notes, previewMode, hiddenAnnotationIds]);
 
   // MỘT listener trên CỘT tài liệu, không phải một listener trên mỗi <mark>.
   //
@@ -2088,6 +2245,83 @@ export function DocRedlinePreview({
     setUndoableIds((prev) => new Set(prev).add(id));
   }
 
+  // wp-table-highlight.yaml (Q2): theo dõi selection để bật/tắt nút "Tô ô
+  // bảng" — khác cụm nút text (luôn bật, chỉ kiểm lúc bấm) vì thao tác này
+  // CHỈ có nghĩa khi đang bôi trong một bảng; để nút luôn bật rồi báo lỗi
+  // sau bấm sẽ mời bấm nhầm liên tục trên một tài liệu nhiều bảng dài.
+  useEffect(() => {
+    const check = () => {
+      const selection = window.getSelection();
+      const anchorNode = selection?.anchorNode ?? null;
+      const container = docColRef.current;
+      const anchorEl = anchorNode instanceof Element ? anchorNode : anchorNode?.parentElement ?? null;
+      setSelectionInTable(!!(anchorNode && container?.contains(anchorNode) && anchorEl?.closest('table')));
+    };
+    document.addEventListener('selectionchange', check);
+    check();
+    return () => document.removeEventListener('selectionchange', check);
+  }, []);
+
+  /** wp-table-highlight.yaml (Q2): dòng ứng viên cho `anchor` định vị bảng —
+   *  ghép lại các ô của MỘT hàng theo đúng khuôn nguồn markdown
+   *  (`| ô 1 | ô 2 | ô 3 |`, xem docblock đầu file WP3) để so khớp bằng
+   *  `pickUniqueTableAnchorLine`. Không khớp tuyệt đối với mọi cách format
+   *  markdown (đậm/nghiêng trong ô sẽ lệch), nhưng đủ cho khuôn bảng phổ biến
+   *  daemon sinh ra; hàng không khớp dòng nào chỉ đơn giản không được chọn. */
+  function tableRowCandidateLine(tr: HTMLTableRowElement): string | null {
+    const cellTexts = Array.from(tr.children)
+      .filter((el): el is HTMLTableCellElement => el instanceof HTMLTableCellElement)
+      .map((el) => (el.textContent ?? '').trim());
+    return cellTexts.length > 0 ? `| ${cellTexts.join(' | ')} |` : null;
+  }
+
+  /** wp-table-highlight.yaml (Q2): tạo nháp "tô ô bảng" từ vùng đang bôi —
+   *  đường MỚI, song song với `startUserAnnotation` (không đụng hàm đó). */
+  function startTableCellHighlight() {
+    const selection = window.getSelection();
+    const anchorNode = selection?.anchorNode ?? null;
+    if (!selection || selection.rangeCount === 0 || !anchorNode || !docColRef.current?.contains(anchorNode)) {
+      setTableCellError('Hãy bôi các ô trong một bảng.');
+      return;
+    }
+    const anchorEl = anchorNode instanceof Element ? anchorNode : anchorNode.parentElement;
+    const table = anchorEl?.closest('table') ?? null;
+    if (!table) {
+      setTableCellError('Chỉ dùng cho vùng trong bảng.');
+      return;
+    }
+    const ranges = Array.from({ length: selection.rangeCount }, (_, i) => selection.getRangeAt(i));
+    const rows = Array.from(table.querySelectorAll<HTMLTableRowElement>('tr'));
+    const cells: Array<{ row: number; col: number }> = [];
+    rows.forEach((tr, rowIndex) => {
+      Array.from(tr.children).forEach((cellEl, colIndex) => {
+        if (!(cellEl instanceof HTMLTableCellElement)) return;
+        if (!ranges.some((range) => range.intersectsNode(cellEl))) return;
+        cells.push({ row: rowIndex, col: colIndex });
+      });
+    });
+    if (cells.length === 0) {
+      setTableCellError('Hãy bôi các ô trong một bảng.');
+      return;
+    }
+    // Ứng viên anchor theo thứ tự ưu tiên: các hàng đã chọn trước (thứ tự
+    // xuất hiện trong bảng), rồi hàng đầu tiên (thường là header) sau cùng.
+    const involvedRows = Array.from(new Set(cells.map((c) => c.row))).sort((a, b) => a - b);
+    const candidateRows = rows.length > 0 ? Array.from(new Set([...involvedRows, 0])) : involvedRows;
+    const candidateLines = candidateRows
+      .map((rowIndex) => rows[rowIndex])
+      .filter((tr): tr is HTMLTableRowElement => !!tr)
+      .map(tableRowCandidateLine)
+      .filter((line): line is string => line != null);
+    const anchor = pickUniqueTableAnchorLine(editedText ?? '', candidateLines);
+    if (anchor == null) {
+      setTableCellError('Không định vị được bảng (bảng có dòng trùng).');
+      return;
+    }
+    setTableCellError('');
+    setTableCellDraft({ cells, anchor, reason: '' });
+  }
+
   function startUserAnnotation(operation: DraftAnnotation['operation']) {
     const selection = window.getSelection();
     const selected = selection?.toString().trim() ?? '';
@@ -2186,6 +2420,26 @@ export function DocRedlinePreview({
     }));
   }
 
+  /** wp-table-highlight.yaml (Q2): lưu nháp "tô ô bảng" thành MỘT note
+   *  `kind: 'component'` trong `notes.json` — KHÔNG sửa markdown
+   *  (`changedMd: false`), nên đường lưu này không đụng `changes.json` hay
+   *  `events` như `createUserAnnotation`. */
+  async function createTableCellAnnotation() {
+    if (!tableCellDraft) return;
+    const id = uid('user');
+    const note: DocRedlineNote = {
+      id,
+      kind: 'component',
+      severity: 'minor',
+      anchor: tableCellDraft.anchor,
+      tableCells: { cells: tableCellDraft.cells },
+      finding: tableCellDraft.reason.trim() || 'Người dùng tự đánh dấu ô trong bảng.',
+      suggestion: '',
+    };
+    const ok = await saveAction(id, () => ({ notes: [...notes, note], changedMd: false }));
+    if (ok) setTableCellDraft(null);
+  }
+
   // Sơ đồ không đóng góp vào `anchored` qua text highlight. Mermaid lấy owner
   // trực tiếp từ phần React đã tách; Draw.io vẫn có host theo marker. Có một
   // trong hai thì change sơ đồ được coi là neo thành công.
@@ -2194,11 +2448,21 @@ export function DocRedlinePreview({
       ? anchoredMermaidIds.has(c.id) || drawioMounts.some((m) => m.changeId === c.id)
       : anchored.has(c.id);
 
+  /** wp-table-highlight.yaml (Q2): note `tableCells` không tạo `<mark>` (xem
+   *  `noteRequests`), nên không có mặt trong `anchored` (`docRender.matched`)
+   *  dù nó ĐÃ định vị được bảng và đang tô ô thật — dùng thêm
+   *  `tableCellAnchoredIds` (do `useTableCellTint` cập nhật) để rail coi nó là
+   *  neo được như mọi note khác, thay vì rơi vào nhánh "không tìm thấy". */
+  const isNoteAnchored = (n: DocRedlineNote) => {
+    const markId = `${NOTE_ID_PREFIX}${n.id}`;
+    return anchored.has(markId) || tableCellAnchoredIds.has(markId);
+  };
+
   const navigationItems = useMemo<RedlineNavigationItem[]>(() => {
     if (previewMode === 'notes') {
       return notes.filter((note) => annotationVisible(`${NOTE_ID_PREFIX}${note.id}`)).map((note) => ({
         id: `${NOTE_ID_PREFIX}${note.id}`,
-        anchored: anchored.has(`${NOTE_ID_PREFIX}${note.id}`),
+        anchored: isNoteAnchored(note),
         dismissed: note.status === 'dismissed',
       }));
     }
@@ -2207,7 +2471,7 @@ export function DocRedlinePreview({
       .filter((change) => change.kind !== 'flow-diagram' || kindFilter.diagram)
       .filter((change) => !isComponentTableChange(change) || kindFilter.compTable)
       .map((change) => ({ id: change.id, anchored: isAnchored(change), dismissed: change.status === 'dismissed' }));
-  }, [previewMode, notes, changes, anchored, anchoredMermaidIds, drawioMounts, kindFilter, hiddenAnnotationIds]);
+  }, [previewMode, notes, changes, anchored, anchoredMermaidIds, drawioMounts, kindFilter, hiddenAnnotationIds, tableCellAnchoredIds]);
   const navigationPosition = getNavigationPosition(navigationItems, selectedId);
   function navigate(direction: 'previous' | 'next') {
     const id = getAdjacentNavigationId(navigationItems, selectedId, direction);
@@ -2361,7 +2625,19 @@ export function DocRedlinePreview({
               >
                 Thêm sau mục…
               </button>
+              {/* wp-table-highlight.yaml (Q2): kéo bôi các Ô trong một bảng —
+                  đường MỚI song song với ba nút bôi-đen-chữ ở trên, chỉ bật
+                  khi vùng đang chọn thật sự nằm trong một <table>. */}
+              <button
+                type="button"
+                disabled={!selectionInTable}
+                title={selectionInTable ? undefined : 'Bôi đen vài ô trong một bảng để bật nút này'}
+                onClick={startTableCellHighlight}
+              >
+                Tô ô bảng
+              </button>
               {draftError && !draft ? <span className={styles.toolbarError}>{draftError}</span> : null}
+              {tableCellError && !tableCellDraft ? <span className={styles.toolbarError}>{tableCellError}</span> : null}
             </div>
             {headingPickerOpen ? (
               <div className={styles.headingPicker ?? ''} role="group" aria-label="Chọn mục để thêm sau">
@@ -2430,6 +2706,31 @@ export function DocRedlinePreview({
                     {busyId ? 'Đang lưu...' : 'Lưu thay đổi'}
                   </button>
                   <button type="button" disabled={busyId != null} onClick={() => { setDraft(null); setDraftError(''); }}>Huỷ</button>
+                </div>
+              </div>
+            ) : null}
+            {/* wp-table-highlight.yaml (Q2): composer riêng cho "Tô ô bảng" —
+                không dùng chung `draft` (thao tác này không sửa markdown,
+                không có nội dung mới/loại, chỉ cần một lý do). */}
+            {tableCellDraft ? (
+              <div className={styles.annotationComposer} role="group" aria-label="Tô ô trong bảng">
+                <div className={styles.annotationComposerHead}>
+                  <strong>Tô ô đã chọn trong bảng</strong>
+                  <button type="button" onClick={() => { setTableCellDraft(null); setTableCellError(''); }}>Đóng</button>
+                </div>
+                <p className={styles.selectedQuote}>{tableCellDraft.cells.length} ô đã chọn</p>
+                <input
+                  aria-label="Lý do"
+                  placeholder="Lý do (không bắt buộc)"
+                  value={tableCellDraft.reason}
+                  onChange={(event) => setTableCellDraft((current) => current ? { ...current, reason: event.target.value } : current)}
+                />
+                {tableCellError ? <p className={styles.error}>{tableCellError}</p> : null}
+                <div className={styles.actions}>
+                  <button type="button" disabled={busyId != null} onClick={() => void createTableCellAnnotation()}>
+                    {busyId ? 'Đang lưu...' : 'Lưu thay đổi'}
+                  </button>
+                  <button type="button" disabled={busyId != null} onClick={() => { setTableCellDraft(null); setTableCellError(''); }}>Huỷ</button>
                 </div>
               </div>
             ) : null}
@@ -2743,7 +3044,7 @@ export function DocRedlinePreview({
                               busy={busyId === markId} error={errorById[markId]} undoable={undoableIds.has(markId)} onDismiss={() => void dismissNote(n)}
                             />
                           );
-                          if (visible && anchored.has(markId)) {
+                          if (visible && isNoteAnchored(n)) {
                             return (
                               <div
                                 key={markId}

@@ -131,6 +131,18 @@
   box-shadow: inset 0 1px 0 rgba(139, 92, 246, 0.48), inset 0 -1px 0 rgba(139, 92, 246, 0.48);
 }
 
+/* wp-table-highlight.yaml (Q2): ô người dùng kéo bôi trong một bảng — gắn
+   TRỰC TIẾP lên `<td>`/`<th>` (khác `.blockTintFull` gắn lên `<tr>`/`<table>`
+   cha rồi tô cell qua `>` combinator), nên tự nó đã là selector trên cell,
+   không cần cặp `:global(td)/:global(th)` riêng. Nền vàng nhạt (rgba, không
+   hex đặc) + viền nhẹ giữ tương phản đọc được trên cả nền sáng lẫn tối, cùng
+   kỹ thuật với `.blockTintAdd`/`.blockTintFull` lân cận ở trên. */
+.cellTint {
+  background: rgba(245, 158, 11, 0.16) !important;
+  box-shadow: inset 0 0 0 1px rgba(245, 158, 11, 0.55);
+  cursor: pointer;
+}
+
 .modeToolbar,
 .railToolbar {
   display: flex;
