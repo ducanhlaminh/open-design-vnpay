@@ -51,9 +51,12 @@ hai trường hợp đó; daemon sẽ tin nguyên văn danh sách bạn khai (đ
   `docs/*.md` — kickoff liệt kê chính xác đường dẫn). Đọc TOÀN VĂN từng
   trang, không chỉ phần đầu.
 - **`comp/_screen-candidates.json`** (khi kickoff nhắc tới) — gợi ý daemon tự
-  quét tất định (cùng khuôn `dr-comp` lớp 1 vẫn dùng) để bạn đối chiếu nhanh;
-  đây chỉ là GỢI Ý, không phải danh sách cuối — bạn có thể thêm màn nó bỏ sót,
-  bỏ màn nó nhận nhầm (mục lục, heading nhóm, heading con chỉ là một phần).
+  quét tất định (regex). Đây là tín hiệu **YẾU NHẤT** và thường **LIỆT KÊ DƯ**:
+  nó nâng MỌI mục đánh số nằm dưới bất kỳ chương nào có chữ "giao diện"/"màn
+  hình" trong tiêu đề (vd cả chương "Khung giao diện sơ bộ") thành candidate —
+  nên các trường của form, khối con, bước nhỏ cũng lọt vào danh sách. **KHÔNG
+  BAO GIỜ lấy SỐ LƯỢNG candidate của nó làm số màn**; chỉ dùng làm điểm khởi
+  động rồi cắt bớt theo các tín hiệu mạnh hơn (xem "Đếm số màn theo tài liệu").
 - **`flows/index.json` + `flows/*.flowchart.json`** (khi `dr-flow` đã chạy) —
   cho biết luồng nào đi qua màn nào; dùng để xác nhận thêm một heading có phải
   một màn hình thật (nó xuất hiện như một bước hành động trong luồng) hay chỉ
@@ -85,6 +88,34 @@ Với MỖI trang tài liệu, phân loại từng heading/mục vào một tron
    "Phạm vi", "Ngoài phạm vi", "Quy tắc", "Luồng màn hình"…) → đưa vào
    `excluded[]` kèm lý do, như cũ.
 
+### Đếm số màn theo tài liệu (ĐỘNG — mỗi tài liệu một kiểu)
+
+Số lượng màn **KHÔNG** suy ra từ số heading đánh số, càng không từ số candidate
+regex. Mỗi tài liệu có cách khai màn riêng — hãy tự đọc ra "nguồn thẩm quyền"
+của CHÍNH tài liệu đó rồi đối chiếu, theo thứ tự ưu tiên:
+
+1. **Bảng/phụ lục liệt kê màn của tài liệu** (nếu có) — nhiều PRD có "Phụ lục",
+   "Danh sách màn hình", "Danh mục màn hình", bảng wireframe/mockup, hoặc mục
+   liệt kê đầu chương nêu ĐÍCH DANH các màn. Khi tài liệu tự liệt kê màn như
+   vậy, đó là tín hiệu MẠNH NHẤT cho cả SỐ LƯỢNG lẫn TÊN — danh sách cuối của
+   bạn phải khớp nó; lệch thì phải có lý do rõ (bảng bỏ sót/ghi dư).
+2. **Luồng (`flows/`)** — tập các node-màn RIÊNG trong sơ đồ luồng: một màn thật
+   thường là một điểm đến có cạnh dẫn tới/đi từ nó.
+3. **Quy ước ĐẶT TÊN của chính tài liệu** — nhận ra khuôn tài liệu này dùng cho
+   MÀN rồi áp nhất quán: rất nhiều PRD đặt tiền tố màn thật là "Màn hình …",
+   "Trang …", "Chi tiết …" và để heading của TRƯỜNG/KHỐI/BƯỚC không có tiền tố
+   đó (vd "Mã voucher", "Nhập thông tin", "Địa chỉ nhận hàng"). Đừng hard-code
+   một tiền tố cố định — đọc ra quy ước của tài liệu đang xử lý và dùng nó.
+4. Cuối cùng mới tới đọc hiểu từng section + candidate regex (yếu nhất).
+
+**Mẫu hay gặp — nhóm gộp + trường con:** một mục nhóm (vd "Thông tin chung")
+có các mục con đánh số là CÁC TRƯỜNG/BƯỚC của MỘT form nhập liệu ("Nhập thông
+tin", "Địa chỉ nhận hàng", "Thông tin xuất hóa đơn", "Mã voucher") → thường là
+**MỘT màn** (chính mục nhóm đó) với các mục con là `blocks[]`, KHÔNG phải mỗi
+mục con một màn. Chỉ tách thành nhiều màn khi tài liệu/luồng cho thấy chúng là
+các BƯỚC ĐIỀU HƯỚNG riêng (mỗi bước một màn có nút chuyển tiếp). Đối chiếu với
+phụ lục/luồng ở trên để chốt.
+
 ### Luật cốt lõi (quyết định màn THẬT vs. khối bổ sung của màn khác)
 
 - Một heading là KHỐI BỔ SUNG của màn cha, không phải màn riêng, khi nó chỉ
@@ -102,6 +133,10 @@ Với MỖI trang tài liệu, phân loại từng heading/mục vào một tron
   không có gì trong luồng nhắc tới nó, và nó nằm lồng trực tiếp dưới một màn
   đã nhận diện, coi nó là khối bổ sung của màn cha (`blocks[]`), KHÔNG phải
   `excluded[]`.
+- **Trước khi chốt danh sách**, đối chiếu số lượng + tên màn với nguồn thẩm
+  quyền của tài liệu (phụ lục/danh mục màn, rồi luồng — xem "Đếm số màn theo
+  tài liệu"). Nếu danh sách của bạn nhiều màn hơn phụ lục/luồng, gần như chắc
+  chắn bạn đang tách nhầm trường/khối con thành màn — hạ chúng xuống `blocks[]`.
 - Không tự bịa/gộp/tách. Không suy diễn màn KHÔNG có trong tài liệu.
 
 ## Output — đúng 2 file

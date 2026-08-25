@@ -21987,7 +21987,7 @@ export async function startServer({
           `Đọc TOÀN VĂN ${pages.length} trang tài liệu dưới đây, liệt kê MỌI màn hình có thẩm quyền (một destination điều hướng riêng):`,
           ...pages.map((p, i) => `${i + 1}. ${p.mdPath}`),
           '',
-          `Gợi ý tất định (KHÔNG đầy đủ, KHÔNG phải quyết định cuối) đã quét sẵn tại \`${SCREEN_CANDIDATES_FOR_DISCOVERY_FILE_REL}\` — dùng làm điểm khởi động, không dừng lại ở đó.`,
+          `Gợi ý tất định đã quét sẵn tại \`${SCREEN_CANDIDATES_FOR_DISCOVERY_FILE_REL}\` — đây là tín hiệu YẾU NHẤT và thường LIỆT KÊ DƯ (nâng mọi mục đánh số dưới chương "giao diện/màn hình" thành candidate). KHÔNG lấy SỐ LƯỢNG của nó làm số màn; xác định số màn theo nguồn thẩm quyền của CHÍNH tài liệu (phụ lục/danh mục màn, rồi luồng) như skill \`docs-screen-discovery\` mô tả, rồi cắt bớt trường/khối con thành \`blocks[]\`.`,
           '',
           'Phân biệt RÕ ba loại mục trong tài liệu: (1) MÀN THẬT — có luồng vào/ra riêng, một destination điều hướng — đưa vào "screens[]"; (2) KHỐI BỔ SUNG của một màn khác — BA hay đặt sai chỗ, một khối mô tả THÊM cho màn đã liệt kê, KHÔNG có luồng vào/ra riêng (ví dụ "Voucher" là chi tiết của màn "Mua SIM du lịch") — LỒNG vào "screens[].blocks[]" của màn cha, KHÔNG tách thành màn riêng; (3) MỤC TÀI LIỆU THUẦN — không phải màn, không phải khối bổ sung của màn nào — đưa vào "excluded[]". Khi nghi ngờ một mục là màn hay khối bổ sung, ưu tiên xếp vào "blocks[]" nếu nó không tự dẫn tới đâu (không có lối vào/ra riêng).',
           '',
