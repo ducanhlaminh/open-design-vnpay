@@ -109,6 +109,12 @@ export type ScreenComponentsKickoffOptions =
       roleMapFile: string;
       roleMapPlatform: string;
       sectionLine: string;
+      /** WP nested-blocks-A (2026-08-25): dòng ngữ cảnh liệt kê khối bổ sung
+       *  (`ScreenInput.blocks[]`) của màn RỜI ở chỗ khác trong tài liệu —
+       *  server.ts (WP-B) dựng chuỗi sẵn; builder này chỉ render, KHÔNG tự
+       *  chế nội dung. Rỗng/không có → không thêm dòng nào (byte-identical
+       *  với kickoff cũ). */
+      blockLine?: string;
       navLine: string;
       mockupLine: string;
       outRel: string;
@@ -176,6 +182,7 @@ export function buildScreenComponentsKickoff(opts: ScreenComponentsKickoffOption
     `- ${opts.dsLine.trim()}`,
     `- Bảng map vai trò → component DS của feature đã chốt ở \`${opts.roleMapFile}\` (nền tảng: ${opts.roleMapPlatform}) — BẮT BUỘC dùng đúng bảng đó; lệch phải ghi "why".`,
     `- ${opts.sectionLine.trim()}`,
+    ...(opts.blockLine?.trim() ? [`- ${opts.blockLine.trim()}`] : []),
     `- ${opts.navLine.trim()}`,
     `- ${opts.mockupLine.trim()}`,
     '',

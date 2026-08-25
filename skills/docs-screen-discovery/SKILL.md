@@ -61,27 +61,37 @@ hai trường hợp đó; daemon sẽ tin nguyên văn danh sách bạn khai (đ
 
 ## Nhiệm vụ
 
-Với MỖI trang tài liệu, liệt kê:
+Với MỖI trang tài liệu, phân loại từng heading/mục vào một trong BA loại:
 
 1. **Màn hình THẬT** — một giao diện người dùng nhìn thấy trọn vẹn, điều
    hướng tới được (từ luồng, từ một nút bấm, từ mục lục) và đứng độc lập với
    các màn khác. Ghi vào `pages[].screens[]`.
-2. **KHÔNG PHẢI màn hình** — hai loại, đều đưa vào `excluded[]` kèm lý do:
-   - **Heading/mục NHÓM** của tài liệu: "Danh sách màn hình", "Mô tả các màn
-     hình", "Phạm vi", "Ngoài phạm vi", "Quy tắc", "Luồng màn hình", mục lục…
-     — đây là tiêu đề CỦA tài liệu, không mô tả một giao diện cụ thể nào.
-   - **Heading/khối CON mô tả MỘT PHẦN của một màn** — ví dụ "Voucher",
-     "Thông tin gói cước", một tab, một popup nhỏ, một trạng thái lỗi nằm
-     LỒNG bên trong mục mô tả một màn lớn hơn ("2.1 Mua SIM"). Loại này PHẢI
-     ghi thêm `partOf` = tên màn cha mà nó thuộc về.
+2. **KHỐI BỔ SUNG của một màn khác** (lỗi BA hay mắc: đặt một khối mô tả
+   THÊM cho màn X thành một mục/heading riêng — ví dụ "Voucher" là chi tiết
+   của màn "Mua SIM du lịch" chứ không phải một màn mới) — LỒNG dưới màn cha,
+   KHÔNG đưa vào `excluded[]`: `pages[].screens[].blocks: [{ name, anchorText,
+   why? }]`. Dấu hiệu nhận biết:
+   - **Không có luồng vào/ra riêng** — không ai "điều hướng tới" nó như một
+     điểm đến độc lập trong luồng.
+   - Nó là **thành phần/thông tin/trạng thái PHỤ** của một màn ĐÃ liệt kê ở
+     `screens[]` (một tab con, một khối dữ liệu, một trạng thái/badge…).
+   - Nội dung mô tả **element/nội dung THÊM cho màn đó**, KHÔNG phải điều
+     hướng dẫn sang một màn mới.
+   `anchorText` của block cũng phải là **một dòng chép nguyên văn DUY NHẤT**
+   trong trang, cùng luật với `anchorText` của màn thật (xem dưới) — và block
+   có thể nằm **RỜI ở chỗ khác** trong tài liệu, không cần liền kề màn cha.
+3. **Mục tài liệu THUẦN** — không phải màn, cũng không phải khối bổ sung của
+   màn nào (mục lục, mô tả nghiệp vụ, bảng thuật ngữ, "Danh sách màn hình",
+   "Phạm vi", "Ngoài phạm vi", "Quy tắc", "Luồng màn hình"…) → đưa vào
+   `excluded[]` kèm lý do, như cũ.
 
-### Luật cốt lõi (quyết định màn THẬT vs. một phần của màn)
+### Luật cốt lõi (quyết định màn THẬT vs. khối bổ sung của màn khác)
 
-- Một heading là MỘT PHẦN của màn cha, không phải màn riêng, khi nó chỉ mô tả
-  một khối/trạng thái/biến thể NẰM TRONG bố cục của màn cha — người dùng
-  không "đi tới" nó như một điểm đến độc lập trong luồng, nó luôn xuất hiện
-  CÙNG với màn cha (một section trong cùng một màn hình, một tab con, một
-  trường/khối dữ liệu được mô tả kỹ hơn).
+- Một heading là KHỐI BỔ SUNG của màn cha, không phải màn riêng, khi nó chỉ
+  mô tả một khối/trạng thái/biến thể NẰM TRONG bố cục của màn cha — người
+  dùng không "đi tới" nó như một điểm đến độc lập trong luồng, nó luôn xuất
+  hiện CÙNG với màn cha (một section trong cùng một màn hình, một tab con,
+  một trường/khối dữ liệu được mô tả kỹ hơn).
 - Một heading LÀ màn riêng khi: tài liệu/luồng cho thấy người dùng phải
   **điều hướng tới** nó (một nút, một bước trong sơ đồ luồng dẫn sang nó) VÀ
   nó có bố cục/nội dung của MỘT giao diện đầy đủ (không chỉ một trường hay một
@@ -90,7 +100,8 @@ Với MỖI trang tài liệu, liệt kê:
 - Nghi ngờ giữa hai khả năng: ưu tiên xem `flows/` — nếu heading đó khớp một
   node hành động RIÊNG trong sơ đồ (có cạnh dẫn tới/đi từ nó), nó là màn thật;
   không có gì trong luồng nhắc tới nó, và nó nằm lồng trực tiếp dưới một màn
-  đã nhận diện, coi nó là một phần của màn cha.
+  đã nhận diện, coi nó là khối bổ sung của màn cha (`blocks[]`), KHÔNG phải
+  `excluded[]`.
 - Không tự bịa/gộp/tách. Không suy diễn màn KHÔNG có trong tài liệu.
 
 ## Output — đúng 2 file
@@ -105,18 +116,23 @@ Với MỖI trang tài liệu, liệt kê:
     {
       "source": "docs-feature/2.1-PRD-Mua-SIM.md",
       "screens": [
-        { "code": null, "name": "Mua SIM", "anchorText": "## 2.1 Mua SIM" },
+        {
+          "code": null,
+          "name": "Mua SIM",
+          "anchorText": "## 2.1 Mua SIM",
+          "blocks": [
+            {
+              "name": "Voucher",
+              "anchorText": "### Voucher",
+              "why": "Khối nhập mã giảm giá bên trong màn Mua SIM — không có luồng vào/ra riêng, chỉ là thông tin phụ của màn này."
+            }
+          ]
+        },
         { "code": "SCR-002", "name": "Chọn gói cước", "anchorText": "### 4.2 SCR-002 Chọn gói cước" }
       ]
     }
   ],
   "excluded": [
-    {
-      "name": "Voucher",
-      "source": "docs-feature/2.1-PRD-Mua-SIM.md",
-      "reason": "Chỉ là một khối hiển thị mã giảm giá bên trong màn Mua SIM, không phải một giao diện điều hướng tới được riêng.",
-      "partOf": "Mua SIM"
-    },
     {
       "name": "Danh sách màn hình",
       "source": "docs-feature/2.1-PRD-Mua-SIM.md",
@@ -141,17 +157,34 @@ loại khi `dr-comp` đọc lại, không cảnh báo riêng ở bước này):
 - `name`: tên màn ngắn gọn, đúng chữ tài liệu dùng (không diễn giải lại).
 - `why` (tuỳ chọn): một câu ngắn giải thích vì sao đây là màn thật, hữu ích
   khi ranh giới không hiển nhiên (vd một popup).
-- `excluded[].reason`: bắt buộc, một câu ngắn nêu rõ vì sao KHÔNG phải màn.
-- `excluded[].partOf`: bắt buộc khi lý do là "một phần của màn khác" — ghi
-  đúng `name` của màn cha đã liệt kê ở `pages[].screens[]`.
+- `blocks[]` (tuỳ chọn): khối bổ sung của MÀN NÀY mà bạn thấy BA đặt sai chỗ
+  (loại 2 ở trên) — mỗi phần tử `{ name, anchorText, why? }` cùng luật với
+  màn: `anchorText` chép nguyên văn MỘT DÒNG DUY NHẤT trong trang (được phép
+  nằm RỜI, không cần liền kề màn cha); `name` là tên khối; `why` tuỳ chọn giải
+  thích vì sao nó là khối bổ sung chứ không phải màn riêng. Không có khối nào
+  → bỏ hẳn field (đừng ghi `"blocks": []`).
+- `excluded[].reason`: bắt buộc, một câu ngắn nêu rõ vì sao KHÔNG phải màn
+  cũng không phải khối bổ sung của màn nào.
+- `excluded[].partOf`: hiếm khi cần — chỉ dùng cho trường hợp không rõ ràng
+  thuộc màn cha nào cụ thể dù không phải mục tài liệu thuần; trường hợp bạn đã
+  xác định rõ màn cha thì dùng `blocks[]` (loại 2), không dùng `excluded` +
+  `partOf` nữa.
 - Mỗi trang trong `pages[]` **chỉ liệt kê MỘT LẦN** trong mảng `pages`; gộp
   toàn bộ màn của trang đó vào `screens[]` của đúng một mục.
 
 ### `docs-review/screens-discovered.md`
 
 Bản người-đọc, tóm tắt cùng nội dung trên: theo từng trang, liệt kê danh sách
-màn hình THẬT (tên + mã) và danh sách bị loại kèm lý do + màn cha (`partOf`),
-để người review hiểu nhanh quyết định của bạn mà không cần đọc JSON.
+màn hình THẬT (tên + mã); màn nào có khối bổ sung thì LỒNG chúng dưới màn cha
+bằng sub-bullet, ví dụ:
+
+```
+- Mua SIM
+  - Khối bổ sung: Voucher
+```
+
+và danh sách mục tài liệu bị loại kèm lý do (`excluded[]`), để người review
+hiểu nhanh quyết định của bạn mà không cần đọc JSON.
 
 ## Hard rules
 

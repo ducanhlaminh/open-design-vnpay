@@ -19,6 +19,7 @@ import {
   type DiscoveredDoc,
   type ScreenInput,
 } from '../src/screen-components.js';
+import { buildScreenComponentsKickoff, type ScreenComponentsKickoffOptions } from '../src/pipeline-kickoffs.js';
 
 const SOURCE = 'docs-feature/Mua-SIM.md';
 
@@ -130,6 +131,61 @@ test('parseScreensDiscovered: phần tử lạ/hỏng bên trong pages[].screens
   assert.equal(doc!.pages[0]!.screens[0]!.name, 'Mua SIM');
   assert.equal(doc!.excluded.length, 1);
   assert.equal(doc!.excluded[0]!.name, 'Voucher');
+});
+
+// ── parseScreensDiscovered: screens[].blocks[] (WP nested-blocks-A) ────────
+
+test('parseScreensDiscovered: screens[].blocks[] — giữ hợp lệ, drop phần tử thiếu anchorText/name hay không phải object, blocks toàn rỗng → không set field', () => {
+  const doc = parseScreensDiscovered(
+    JSON.stringify({
+      schema_version: 1,
+      pages: [
+        {
+          source: SOURCE,
+          screens: [
+            {
+              code: null,
+              name: 'Mua SIM',
+              anchorText: '### 2.1 Mua SIM',
+              blocks: [
+                { name: 'Voucher', anchorText: '### Voucher', why: 'chi tiết trong màn Mua SIM' },
+                { name: '', anchorText: 'thiếu tên' }, // name rỗng — bỏ
+                { anchorText: 'thiếu name key' }, // thiếu name — bỏ
+                { name: 'Thiếu anchorText' }, // thiếu anchorText — bỏ
+                'không phải object', // bỏ
+              ],
+            },
+            {
+              code: '2.2',
+              name: 'Chọn gói cước',
+              anchorText: '### 2.2 Chọn gói cước',
+              blocks: [{ name: 'x', anchorText: '' }], // anchorText rỗng — phần tử duy nhất bị bỏ → field vắng
+            },
+          ],
+        },
+      ],
+    }),
+  );
+  assert.ok(doc);
+  const screens = doc!.pages[0]!.screens;
+  const muaSim = screens.find((s) => s.name === 'Mua SIM')!;
+  assert.equal(muaSim.blocks?.length, 1, `expected 1 valid block, got ${JSON.stringify(muaSim.blocks)}`);
+  assert.equal(muaSim.blocks?.[0]!.name, 'Voucher');
+  assert.equal(muaSim.blocks?.[0]!.anchorText, '### Voucher');
+  assert.equal(muaSim.blocks?.[0]!.why, 'chi tiết trong màn Mua SIM');
+  const chonGoi = screens.find((s) => s.name === 'Chọn gói cước')!;
+  assert.equal(chonGoi.blocks, undefined, 'blocks rỗng sau khi lọc → field KHÔNG được set (không phải mảng rỗng)');
+});
+
+test('parseScreensDiscovered: file KHÔNG có blocks → screen.blocks undefined (tương thích ngược tuyệt đối)', () => {
+  const doc = parseScreensDiscovered(
+    JSON.stringify({
+      schema_version: 1,
+      pages: [{ source: SOURCE, screens: [{ code: null, name: 'Mua SIM', anchorText: '### 2.1 Mua SIM' }] }],
+    }),
+  );
+  assert.ok(doc);
+  assert.equal(doc!.pages[0]!.screens[0]!.blocks, undefined);
 });
 
 // ── resolveDocScreens ────────────────────────────────────────────────────
@@ -259,4 +315,150 @@ test('resolveDocScreens: ScreenInput trả về có origin "agent" (nhánh disco
   assert.ok(withDisc.every((s: ScreenInput) => s.origin === 'agent'));
   const withoutDisc = resolveDocScreens({ pages: PAGES, mdBySource: mdMap(), discovered: null, existingKeys: new Set() });
   assert.ok(withoutDisc.every((s: ScreenInput) => s.origin === 'doc'));
+});
+
+// ── resolveDocScreens: screens[].blocks[] → ScreenInput.blocks (WP nested-blocks-A) ─
+//
+// "Voucher" đặt RỜI ở "Phụ lục" cuối tài liệu — non-contiguous, ngoài section
+// (dòng 5-8) của màn cha "Mua SIM" — tái hiện đúng ca BA đặt sai chỗ trong
+// spec: block phải định vị THUẦN bằng anchorText, không phụ thuộc vào có nằm
+// trong section màn cha hay không.
+const BLOCKS_MD = [
+  '# Tài liệu', // 1
+  '', // 2
+  '## 2. Màn hình', // 3
+  '', // 4
+  '### 2.1 Mua SIM', // 5
+  '', // 6
+  'Mô tả tổng quan Mua SIM.', // 7
+  '', // 8
+  '### 2.2 Chọn gói cước', // 9
+  '', // 10
+  'Mô tả màn chọn gói cước.', // 11
+  '', // 12
+  '## Phụ lục', // 13
+  '', // 14
+  '### Voucher', // 15
+  '', // 16
+  'Khối nhập mã giảm giá bên trong màn Mua SIM, đặt RỜI ở phụ lục cuối tài liệu.', // 17
+].join('\n');
+
+function blocksMdMap(): Map<string, string> {
+  return new Map([[SOURCE, BLOCKS_MD]]);
+}
+
+test('resolveDocScreens: Ca "Voucher" — màn có block với anchorText khớp-duy-nhất ĐẶT RỜI (non-contiguous, ngoài section cha) → ScreenInput.blocks có đúng 1 entry với section trỏ đúng khoảng dòng của block; block KHÔNG tạo ScreenInput riêng và KHÔNG chiếm mã X', () => {
+  const disc: DiscoveredDoc = {
+    schema_version: 1,
+    generatedAt: '2026-08-25T00:00:00.000Z',
+    pages: [
+      {
+        source: SOURCE,
+        screens: [
+          { code: null, name: 'Mua SIM', anchorText: '### 2.1 Mua SIM', blocks: [{ name: 'Voucher', anchorText: '### Voucher' }] },
+          { code: null, name: 'Chọn gói cước', anchorText: '### 2.2 Chọn gói cước' },
+        ],
+      },
+    ],
+    excluded: [],
+  };
+  const out = resolveDocScreens({ pages: PAGES, mdBySource: blocksMdMap(), discovered: disc, existingKeys: new Set() });
+
+  // 1 màn cha + 1 màn thường — KHÔNG có màn "Voucher" riêng.
+  assert.equal(out.length, 2, `expected 2 screens (Mua SIM, Chọn gói cước), got ${JSON.stringify(out.map((s) => s.name))}`);
+  assert.ok(!out.some((s) => s.name === 'Voucher'), '"Voucher" không được là ScreenInput riêng');
+
+  const muaSim = out.find((s) => s.name === 'Mua SIM')!;
+  assert.equal(muaSim.key, 'Mua-SIM__X1');
+  assert.equal(muaSim.blocks?.length, 1);
+  assert.equal(muaSim.blocks?.[0]!.name, 'Voucher');
+  assert.equal(muaSim.blocks?.[0]!.section.heading, '### Voucher');
+  assert.equal(muaSim.blocks?.[0]!.section.startLine, 15);
+  // Hết trang (không còn anchor nào sau dòng 15 trong tập-anchor-gộp) → endLine = pageLineCount (17).
+  assert.equal(muaSim.blocks?.[0]!.section.endLine, 17);
+
+  const chonGoi = out.find((s) => s.name === 'Chọn gói cước')!;
+  // Block "Voucher" KHÔNG chiếm mã X — "Chọn gói cước" vẫn là X2 (thứ tự dòng: Mua SIM dòng 5 → X1, Chọn gói cước dòng 9 → X2).
+  assert.equal(chonGoi.key, 'Mua-SIM__X2');
+  assert.equal(chonGoi.blocks, undefined);
+});
+
+test('resolveDocScreens: block anchorText khớp 0 lần (không tìm thấy) → bỏ qua, không vào blocks (field vắng)', () => {
+  const disc: DiscoveredDoc = {
+    schema_version: 1,
+    generatedAt: '2026-08-25T00:00:00.000Z',
+    pages: [
+      {
+        source: SOURCE,
+        screens: [{ code: null, name: 'Mua SIM', anchorText: '### 2.1 Mua SIM', blocks: [{ name: 'Ma', anchorText: 'Dòng không có thật' }] }],
+      },
+    ],
+    excluded: [],
+  };
+  const out = resolveDocScreens({ pages: PAGES, mdBySource: blocksMdMap(), discovered: disc, existingKeys: new Set() });
+  assert.equal(out.find((s) => s.name === 'Mua SIM')!.blocks, undefined);
+});
+
+test('resolveDocScreens: block anchorText khớp ≥2 lần (không duy nhất) → bỏ qua, không vào blocks (field vắng)', () => {
+  const DUP_MD = `${BLOCKS_MD}\n\n### Voucher\n`; // "### Voucher" xuất hiện 2 lần trong trang → không duy nhất.
+  const disc: DiscoveredDoc = {
+    schema_version: 1,
+    generatedAt: '2026-08-25T00:00:00.000Z',
+    pages: [
+      {
+        source: SOURCE,
+        screens: [{ code: null, name: 'Mua SIM', anchorText: '### 2.1 Mua SIM', blocks: [{ name: 'Voucher', anchorText: '### Voucher' }] }],
+      },
+    ],
+    excluded: [],
+  };
+  const out = resolveDocScreens({ pages: PAGES, mdBySource: new Map([[SOURCE, DUP_MD]]), discovered: disc, existingKeys: new Set() });
+  assert.equal(out.find((s) => s.name === 'Mua SIM')!.blocks, undefined);
+});
+
+// ── buildScreenComponentsKickoff (SCREEN mode): blockLine (WP nested-blocks-A) ─
+
+function baseScreenKickoffOpts(): Extract<ScreenComponentsKickoffOptions, { mode: 'screen' }> {
+  return {
+    mode: 'screen',
+    projectId: 'demo',
+    screenKey: 'Mua-SIM__X1',
+    screenName: 'Mua SIM',
+    flowTitle: 'Mua SIM',
+    order: 1,
+    total: 2,
+    flowLine: 'Luồng "Mua SIM" có 2 màn.',
+    dsLine: 'DS: criteria/components.md có 12 component.',
+    roleMapFile: 'comp/_role-map.json',
+    roleMapPlatform: 'mobile',
+    sectionLine: 'Mục tài liệu mô tả màn: dòng 5-8.',
+    navLine: 'Lối đi: "Tiếp tục" → Chọn gói cước.',
+    mockupLine: 'Không có ảnh mockup cho màn này.',
+    outRel: 'comp/Mua-SIM__X1.screen.json',
+    wfRel: 'wireframes/Mua-SIM__X1.html',
+    cssLine: 'dán CSS chung, ',
+    wireframeCssRel: 'wireframes/_wireframe.css',
+  };
+}
+
+test('buildScreenComponentsKickoff (SCREEN): không có blockLine → kickoff byte-identical với kickoff không biết field này (không thêm dòng nào)', () => {
+  const opts = baseScreenKickoffOpts();
+  const withoutField = buildScreenComponentsKickoff(opts);
+  const withUndefinedBlockLine = buildScreenComponentsKickoff({ ...opts, blockLine: undefined });
+  const withBlankBlockLine = buildScreenComponentsKickoff({ ...opts, blockLine: '   ' });
+  assert.equal(withUndefinedBlockLine, withoutField);
+  assert.equal(withBlankBlockLine, withoutField, 'blockLine chỉ khoảng trắng → coi như rỗng, không thêm dòng');
+  assert.ok(!withoutField.includes('Khối bổ sung'));
+});
+
+test('buildScreenComponentsKickoff (SCREEN): có blockLine → thêm ĐÚNG 1 bullet, ngay sau bullet sectionLine và trước navLine', () => {
+  const opts = { ...baseScreenKickoffOpts(), blockLine: 'Khối bổ sung: Voucher — daemon liệt kê dòng 15-17.' };
+  const out = buildScreenComponentsKickoff(opts);
+  const lines = out.split('\n');
+  const sectionIdx = lines.indexOf(`- ${opts.sectionLine.trim()}`);
+  assert.ok(sectionIdx >= 0, 'expected sectionLine bullet present');
+  assert.equal(lines[sectionIdx + 1], `- ${opts.blockLine.trim()}`);
+  assert.equal(lines[sectionIdx + 2], `- ${opts.navLine.trim()}`);
+  const occurrences = out.split(opts.blockLine.trim()).length - 1;
+  assert.equal(occurrences, 1, 'blockLine chỉ xuất hiện đúng 1 lần');
 });

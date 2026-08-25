@@ -105,6 +105,15 @@ export interface ScreenInput {
   provenance?: ScreenOriginProvenance;
   confidence?: number;
   evidence?: ScreenOriginEvidence;
+  /** WP nested-blocks-A (2026-08-25): "khối bổ sung" của màn này mà BA đặt
+   *  RỜI ở chỗ khác trong tài liệu (vd "Voucher" trong màn "Mua SIM") —
+   *  `resolveDocScreens` (nhánh `discovered`) gắn vào đây bằng `anchorText`
+   *  khớp DUY NHẤT, KHÔNG cần nằm trong `section` của màn cha (non-contiguous
+   *  OK). Rỗng/không có block hợp lệ → field vắng (undefined), không `[]`.
+   *  Block không bao giờ tự thành `ScreenInput` riêng. dr-comp (SCREEN mode,
+   *  server.ts — WP-B) đọc thêm các khoảng dòng `section` này như một phần
+   *  của màn. */
+  blocks?: { name: string; section: NonNullable<ScreenInput['section']> }[];
 }
 
 export interface ScreenComponentsInputs {
@@ -824,17 +833,25 @@ function navOutOf(doc: FlowchartDoc, key: string): ScreenNav[] {
 // lần re-run/clear của dr-comp).
 //   { schema_version: 1, generatedAt: string,
 //     pages: [{ source: '<.md>', screens: [{ code: string|null, name: string,
-//       anchorText: string, why?: string }] }],
+//       anchorText: string, why?: string,
+//       blocks?: [{ name: string, anchorText: string, why?: string }] }] }],
 //     excluded: [{ name: string, source: string, reason: string, partOf?: string }] }
 // `anchorText` = nguyên văn MỘT DÒNG DUY NHẤT của trang (đối chiếu tất định
 // bằng `findAnchorTextLines`, cùng kỷ luật với lớp 2 — screen-extract.ts).
 // `code: null` → daemon tự đánh X1, X2… theo thứ tự DÒNG anchor trong trang.
 // Khoá màn = `<file-stem>__<code>` — giống mọi lớp khác.
+// `blocks[]` (WP nested-blocks-A, 2026-08-25): "khối bổ sung" của một màn
+// khác mà BA đặt sai chỗ (vd "Voucher" là chi tiết của màn "Mua SIM" nhưng bị
+// khai thành mục/heading riêng) — LỒNG dưới đúng màn cha thay vì thành màn
+// riêng hay bị `excluded`. `resolveDocScreens` gắn từng block vào
+// `ScreenInput.blocks[]` của màn cha (xem dưới); block KHÔNG BAO GIỜ tự thành
+// `ScreenInput`, KHÔNG chiếm mã X tự đánh, KHÔNG vào `existingKeys`.
 export interface DiscoveredScreenEntry {
   code: string | null;
   name: string;
   anchorText: string;
   why?: string;
+  blocks?: { name: string; anchorText: string; why?: string }[];
 }
 export interface DiscoveredPageEntry {
   source: string;
@@ -890,7 +907,20 @@ export function parseScreensDiscovered(raw: string): DiscoveredDoc | null {
       const codeRaw = e.code;
       const code = codeRaw == null ? null : typeof codeRaw === 'string' ? str(codeRaw) || null : null;
       const why = typeof e.why === 'string' && e.why.trim() ? e.why.trim() : undefined;
-      screens.push({ code, name, anchorText, ...(why ? { why } : {}) });
+      // `blocks[]` — khoan dung y như screens: bỏ phần tử không phải object
+      // hoặc thiếu anchorText/name; giữ `why` khi có; rỗng → bỏ hẳn field.
+      const rawBlocks = Array.isArray(e.blocks) ? e.blocks : [];
+      const blocks: { name: string; anchorText: string; why?: string }[] = [];
+      for (const rb of rawBlocks) {
+        if (!rb || typeof rb !== 'object') continue;
+        const be = rb as Record<string, unknown>;
+        const blockAnchorText = str(be.anchorText);
+        const blockName = str(be.name);
+        if (!blockAnchorText || !blockName) continue;
+        const blockWhy = typeof be.why === 'string' && be.why.trim() ? be.why.trim() : undefined;
+        blocks.push({ name: blockName, anchorText: blockAnchorText, ...(blockWhy ? { why: blockWhy } : {}) });
+      }
+      screens.push({ code, name, anchorText, ...(why ? { why } : {}), ...(blocks.length ? { blocks } : {}) });
     }
     pages.push({ source, screens });
   }
@@ -967,7 +997,13 @@ export function resolveDocScreens(input: ResolveDocScreensInput): ScreenInput[] 
       const pageLines = md.split(/\r?\n/);
       const pageLineCount = pageLines.length;
 
-      type Candidate = { rawCode: string | null; name: string; anchorText: string; line: number };
+      type Candidate = {
+        rawCode: string | null;
+        name: string;
+        anchorText: string;
+        line: number;
+        rawBlocks?: DiscoveredScreenEntry['blocks'];
+      };
       const candidates: Candidate[] = [];
       for (const s of dp.screens) {
         if (excludedNames.has(`${dp.source}::${normalizeVi(s.name)}`)) continue;
@@ -976,7 +1012,7 @@ export function resolveDocScreens(input: ResolveDocScreensInput): ScreenInput[] 
         // (khoan dung: dr-comp không phải nơi validate lỗi khai báo của
         // dr-screens, xem docblock trên).
         if (hits.length !== 1) continue;
-        candidates.push({ rawCode: s.code, name: s.name, anchorText: s.anchorText, line: hits[0]! });
+        candidates.push({ rawCode: s.code, name: s.name, anchorText: s.anchorText, line: hits[0]!, rawBlocks: s.blocks });
       }
 
       // code null → X1, X2… theo thứ tự DÒNG anchor trong trang (contract).
@@ -993,6 +1029,33 @@ export function resolveDocScreens(input: ResolveDocScreensInput): ScreenInput[] 
         accepted.push(c);
       }
       const bySortedLine = [...accepted].sort((a, b) => a.line - b.line);
+
+      // Gắn block vào màn cha: mỗi block của một màn ACCEPTED phải tự khớp
+      // anchorText DUY NHẤT (cùng kỷ luật khoan dung với màn) — không cần
+      // nằm trong section của màn cha (non-contiguous OK). Ranh giới của
+      // TỪNG block là "anchor kế tiếp TRONG TẬP-ANCHOR-GỘP TOÀN TRANG" (màn
+      // accepted + mọi block đã định vị được của chúng), nên phải resolve
+      // MỌI block trước rồi mới gộp+sắp xếp một lần cho cả trang.
+      type ResolvedBlock = { name: string; line: number };
+      const blocksByCandidate = new Map<Candidate & { finalCode: string }, ResolvedBlock[]>();
+      for (const c of accepted) {
+        const rawBlocks = c.rawBlocks ?? [];
+        if (!rawBlocks.length) continue;
+        const resolved: ResolvedBlock[] = [];
+        for (const b of rawBlocks) {
+          const hits = findAnchorTextLines(md, b.anchorText);
+          if (hits.length !== 1) continue; // khớp 0 hoặc ≥2 lần → bỏ qua.
+          resolved.push({ name: b.name, line: hits[0]! });
+        }
+        if (resolved.length) blocksByCandidate.set(c, resolved);
+      }
+      const mergedAnchorLines = [...new Set([...bySortedLine.map((c) => c.line), ...[...blocksByCandidate.values()].flat().map((b) => b.line)])].sort(
+        (a, b) => a - b,
+      );
+      const nextAnchorEndLine = (line: number): number => {
+        const next = mergedAnchorLines.find((l) => l > line);
+        return next != null ? next - 1 : pageLineCount;
+      };
 
       for (const c of accepted) {
         const key = `${stem}__${c.finalCode}`;
@@ -1018,6 +1081,11 @@ export function resolveDocScreens(input: ResolveDocScreensInput): ScreenInput[] 
           section = buildAnchorSection(md, c.line, endLine);
         }
 
+        const resolvedBlocks = blocksByCandidate.get(c);
+        const blocks: ScreenInput['blocks'] = resolvedBlocks?.length
+          ? resolvedBlocks.map((b) => ({ name: b.name, section: buildAnchorSection(md, b.line, nextAnchorEndLine(b.line)) }))
+          : undefined;
+
         out.push({
           key,
           name: c.name,
@@ -1033,6 +1101,7 @@ export function resolveDocScreens(input: ResolveDocScreensInput): ScreenInput[] 
           findings: [],
           platformHint: MOBILE_HINT_RE.test(md) ? 'mobile' : 'web',
           origin: 'agent',
+          ...(blocks ? { blocks } : {}),
         });
       }
     }

@@ -17900,6 +17900,16 @@ export async function startServer({
             s.mockups && s.mockups.length > 0
               ? ` Ảnh mockup của màn: ${s.mockups.map((m) => `"${m}"`).join(', ')}. BẮT BUỘC mở TỪNG ảnh bằng Read. Wireframe vẽ ĐÚNG bố cục trong ảnh (thứ tự khối, hàng/cột, nhóm card). elements[].content chép NỘI DUNG THẬT từ ảnh (tên gói, giá, nhãn, badge); giá trị lệch với bảng field của tài liệu thì bảng thắng và ghi notes. Nhiều ảnh = các trạng thái/đoạn cuộn của CÙNG màn — hợp nhất thành MỘT wireframe; trạng thái phụ (bottom sheet, error, empty…) không vẽ riêng, ghi notes.`
               : ` Tài liệu KHÔNG có ảnh mockup cho màn này — bạn TỰ dựng bố cục hợp lý và nội dung mẫu THỰC TẾ (nhãn/giá/tên hợp ngữ cảnh nghiệp vụ; không lorem, không "Nội dung 1") từ section + referenceTable + steps, và điền elements[].content tương ứng.`;
+          // Nối "khối bổ sung của màn" (screens[].blocks[] — WP-A): nêu đích
+          // danh khoảng dòng của từng khối, BẮT BUỘC agent Read và gộp vào
+          // wireframe/screen.json của màn như một phần của màn, dù nằm rời.
+          // s.blocks rỗng/vắng → blockLine = '' → builder không thêm bullet
+          // (byte-identical với kickoff cũ cho màn không có block).
+          const blockLine = (s.blocks && s.blocks.length)
+            ? ` Màn này có KHỐI BỔ SUNG nằm RỜI ở chỗ khác trong tài liệu (BA đặt tách): ${s.blocks
+                .map((b) => `"${b.name}" ("${s.source}" dòng ${b.section.startLine}–${b.section.endLine})`)
+                .join('; ')}. BẮT BUỘC Read các khoảng dòng này và đưa element/nội dung của chúng vào wireframe + screen.json của màn — coi là MỘT PHẦN của màn, dù nằm ngoài mục chính.`
+            : '';
           const kickoff = buildScreenComponentsKickoff({
             mode: 'screen',
             projectId,
@@ -17915,6 +17925,7 @@ export async function startServer({
             sectionLine,
             navLine,
             mockupLine,
+            blockLine,
             outRel,
             wfRel,
             cssLine,
@@ -21954,7 +21965,15 @@ export async function startServer({
             pages: [
               {
                 source: '<đường dẫn trang, ví dụ docs/foo.md>',
-                screens: [{ code: '<string|null>', name: '<string>', anchorText: '<một dòng NGUYÊN VĂN, DUY NHẤT trong trang>', why: '<tuỳ chọn>' }],
+                screens: [
+                  {
+                    code: '<string|null>',
+                    name: '<string>',
+                    anchorText: '<một dòng NGUYÊN VĂN, DUY NHẤT trong trang>',
+                    why: '<tuỳ chọn>',
+                    blocks: [{ name: '<string>', anchorText: '<một dòng NGUYÊN VĂN, DUY NHẤT trong trang>', why: '<tuỳ chọn>' }],
+                  },
+                ],
               },
             ],
             excluded: [{ name: '<string>', source: '<path>', reason: '<string>', partOf: '<key màn cha, tuỳ chọn>' }],
@@ -21970,9 +21989,9 @@ export async function startServer({
           '',
           `Gợi ý tất định (KHÔNG đầy đủ, KHÔNG phải quyết định cuối) đã quét sẵn tại \`${SCREEN_CANDIDATES_FOR_DISCOVERY_FILE_REL}\` — dùng làm điểm khởi động, không dừng lại ở đó.`,
           '',
-          'Phân biệt RÕ màn hình thật với chi tiết/biến thể/trạng thái bên trong một màn (ví dụ: "Chi tiết Voucher" mở trong modal của màn Giỏ hàng KHÔNG phải màn riêng) — những mục như vậy đưa vào "excluded" kèm "partOf" trỏ về màn cha.',
+          'Phân biệt RÕ ba loại mục trong tài liệu: (1) MÀN THẬT — có luồng vào/ra riêng, một destination điều hướng — đưa vào "screens[]"; (2) KHỐI BỔ SUNG của một màn khác — BA hay đặt sai chỗ, một khối mô tả THÊM cho màn đã liệt kê, KHÔNG có luồng vào/ra riêng (ví dụ "Voucher" là chi tiết của màn "Mua SIM du lịch") — LỒNG vào "screens[].blocks[]" của màn cha, KHÔNG tách thành màn riêng; (3) MỤC TÀI LIỆU THUẦN — không phải màn, không phải khối bổ sung của màn nào — đưa vào "excluded[]". Khi nghi ngờ một mục là màn hay khối bổ sung, ưu tiên xếp vào "blocks[]" nếu nó không tự dẫn tới đâu (không có lối vào/ra riêng).',
           '',
-          `Ghi kết quả ra đúng hai file: \`${SCREENS_DISCOVERED_FILE_REL}\` (JSON, đúng contract dưới đây) và \`${SCREENS_DISCOVERED_MD_REL}\` (bảng tóm tắt cho người đọc). Mỗi "anchorText" PHẢI là một dòng chép nguyên văn, xuất hiện DUY NHẤT trong trang nguồn — daemon đối chiếu tất định, không khớp sẽ bị loại. KHÔNG push, KHÔNG gọi Figma.`,
+          `Ghi kết quả ra đúng hai file: \`${SCREENS_DISCOVERED_FILE_REL}\` (JSON, đúng contract dưới đây) và \`${SCREENS_DISCOVERED_MD_REL}\` (bảng tóm tắt cho người đọc). Mỗi "anchorText" PHẢI là một dòng chép nguyên văn, xuất hiện DUY NHẤT trong trang nguồn — daemon đối chiếu tất định, không khớp sẽ bị loại. "blocks[].anchorText" cũng phải là dòng nguyên văn DUY NHẤT trong trang; daemon đối chiếu tất định, không khớp thì khối đó bị bỏ qua. KHÔNG push, KHÔNG gọi Figma.`,
           '',
           'Contract JSON:',
           '```json',

@@ -93,7 +93,11 @@ Bạn **không review câu chữ, không sửa tài liệu, không sửa `flows/
   màn, nếu tìm thấy), `referenceTable` (bảng cấu trúc — tham khảo), `mockups[]`
   (đường dẫn ảnh mockup THẬT của màn — daemon tự quét, tồn tại trên đĩa, tối
   đa 6, có thể vắng/rỗng khi tài liệu không có ảnh cho màn này; xem nguyên tắc
-  3), `steps[]` (bước luồng diễn ra trên màn), `navOut[]` (đi sang màn nào,
+  3), `blocks[]` (khối bổ sung của màn này mà BA đặt RỜI ở chỗ khác trong tài
+  liệu — dr-screens phát hiện, mỗi khối có `name` + `section` {heading,
+  startLine, endLine, excerpt}; có thể vắng khi màn không có khối bổ sung nào
+  — PHẢI đọc các khoảng dòng này y như `section` chính, xem Chế độ SCREEN),
+  `steps[]` (bước luồng diễn ra trên màn), `navOut[]` (đi sang màn nào,
   qua bước nào, điều kiện gì), `navIn[]`, `findings[]` (phát hiện UX của
   dr-flow chạm màn này), `platformHint`; và `ds` (file nào của DS đang có).
 - **Design System** (có file nào đọc file đó; thiếu là bình thường):
@@ -162,6 +166,15 @@ System và ghi **đúng một file** `comp/_role-map.json`:
 
 Kickoff nêu đích danh SCREEN-KEY, tên màn, khoảng dòng tài liệu, các lối đi
 sang màn khác. Bạn ghi **đúng hai file**.
+
+Một màn có thể có **KHỐI BỔ SUNG** nằm **RỜI ở chỗ khác** trong tài liệu — ví
+dụ "Voucher" là chi tiết thêm của màn "Mua SIM" nhưng BA đặt tách xa, không
+liền `section` chính. Khi kickoff liệt kê thêm (các) khoảng dòng của những
+khối này (`blocks[]` trong `_inputs.json`), bạn **PHẢI Read đúng các khoảng
+dòng đó** — dù nằm ngoài `section` chính của màn — và đưa element/nội dung
+của chúng vào **CẢ** `screen.json` lẫn wireframe của màn này, coi như một
+phần của màn (KHÔNG tạo màn/wireframe riêng cho khối đó, KHÔNG bỏ qua vì nó
+nằm ngoài `section`).
 
 ### 1. `comp/<SCREEN-KEY>.screen.json`
 
