@@ -76,10 +76,11 @@ describe('dr-comp screen-flow recovery gate', () => {
       ok: true,
       issues: [],
       repaired: ['FLOW-buy'],
+      blocking: false,
     });
   });
 
-  it('không false-green UNLINKED và trả đúng từng screen cần hỗ trợ', async () => {
+  it('UNLINKED là CẢNH BÁO (advisory) — không set blocking, vẫn trả đúng từng screen cần hỗ trợ', async () => {
     await writeArtifacts([
       model(),
       model({
@@ -92,28 +93,78 @@ describe('dr-comp screen-flow recovery gate', () => {
       }),
     ]);
     const result = await validateScreenFlowRecoveryArtifacts(cwd);
+    // ok mirrors "còn issue nào không" (không đổi — chỉ cảnh báo); blocking
+    // là cờ mới cho "có chặn stage hay không".
     expect(result.ok).toBe(false);
+    expect(result.blocking).toBe(false);
     expect(result.issues.join('\n')).toContain('VOUCHER');
     expect(result.issues.join('\n')).toContain('Mã voucher');
     expect(result.needsHelp).toEqual(expect.arrayContaining([
-      expect.objectContaining({ key: 'VOUCHER', name: 'Mã voucher', flowId: 'UNLINKED' }),
+      expect.objectContaining({ key: 'VOUCHER', name: 'Mã voucher', flowId: 'UNLINKED', advisory: true }),
     ]));
     expect(result.repaired).toEqual(['FLOW-buy']);
   });
 
-  it('return/secondary không chứng minh reachable và nêu screen unreachable cụ thể', async () => {
+  it('return/secondary không chứng minh reachable (advisory) và nêu screen unreachable cụ thể', async () => {
     await writeArtifacts([model({ edges: [edge('A', 'B', 'secondary')], unlinkedScreens: [] })]);
     const result = await validateScreenFlowRecoveryArtifacts(cwd);
     expect(result.ok).toBe(false);
+    expect(result.blocking).toBe(false);
     expect(result.issues.join('\n')).toContain('B');
     expect(result.issues.join('\n')).toContain('Chi tiết gói');
     expect(result.needsHelp).toEqual([
-      expect.objectContaining({ key: 'B', flowId: 'FLOW-buy', reason: expect.stringContaining('reachable') }),
+      expect.objectContaining({ key: 'B', flowId: 'FLOW-buy', reason: expect.stringContaining('reachable'), advisory: true }),
     ]);
   });
 
-  it('fail-shut khi index/model thiếu hoặc hỏng', async () => {
-    await expect(validateScreenFlowRecoveryArtifacts(cwd)).resolves.toMatchObject({ ok: false, repaired: [] });
+  it('orphan (screen cô lập, không cạnh nào) là advisory, không blocking', async () => {
+    // Không cạnh nào: 'A' (entry) có degree 0 → orphan; 'B' có degree 0 và
+    // không reachable từ entry → unreachable (ưu tiên lý do unreachable).
+    await writeArtifacts([model({ edges: [], unlinkedScreens: [] })]);
+    const result = await validateScreenFlowRecoveryArtifacts(cwd);
+    expect(result.ok).toBe(false);
+    expect(result.blocking).toBe(false);
+    expect(result.needsHelp).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: 'A', flowId: 'FLOW-buy', reason: expect.stringContaining('orphan'), advisory: true }),
+      expect.objectContaining({ key: 'B', flowId: 'FLOW-buy', reason: expect.stringContaining('reachable'), advisory: true }),
+    ]));
+  });
+
+  it('một screen thuộc ≥2 flow là BLOCKING (multi-flow ownership)', async () => {
+    await writeArtifacts([
+      model(),
+      model({
+        flowId: 'FLOW-other',
+        title: 'Luồng khác',
+        entryScreens: ['A'],
+        // 'A' cũng thuộc FLOW-buy ở model() phía trên — trùng ownership.
+        screens: [screen('A', 'Trang chủ')],
+        edges: [],
+        unlinkedScreens: [],
+      }),
+    ]);
+    const result = await validateScreenFlowRecoveryArtifacts(cwd);
+    expect(result.ok).toBe(false);
+    expect(result.blocking).toBe(true);
+    expect(result.needsHelp).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: 'A', advisory: false, reason: expect.stringContaining('nhiều flow') }),
+    ]));
+  });
+
+  it('coverage lệch (totalScreens sai so với số screen duy nhất) là BLOCKING', async () => {
+    await writeArtifacts([model()]);
+    const indexPath = path.join(cwd, 'comp', 'screen-flows', 'index.json');
+    const index = JSON.parse(await fs.readFile(indexPath, 'utf8'));
+    index.totalScreens = 99;
+    await fs.writeFile(indexPath, JSON.stringify(index));
+    const result = await validateScreenFlowRecoveryArtifacts(cwd);
+    expect(result.ok).toBe(false);
+    expect(result.blocking).toBe(true);
+    expect(result.issues.join('\n')).toContain('coverage lệch');
+  });
+
+  it('fail-shut khi index/model thiếu hoặc hỏng (BLOCKING)', async () => {
+    await expect(validateScreenFlowRecoveryArtifacts(cwd)).resolves.toMatchObject({ ok: false, repaired: [], blocking: true });
     await fs.writeFile(path.join(cwd, 'comp', 'screen-flows', 'index.json'), JSON.stringify({
       schema_version: 1,
       flows: [{ id: 'FLOW-buy', files: { model: 'comp/screen-flows/missing.json' } }],
@@ -121,6 +172,7 @@ describe('dr-comp screen-flow recovery gate', () => {
     }));
     const missing = await validateScreenFlowRecoveryArtifacts(cwd);
     expect(missing.ok).toBe(false);
+    expect(missing.blocking).toBe(true);
     expect(missing.issues.join('\n')).toContain('missing.json');
   });
 });

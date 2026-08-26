@@ -444,3 +444,51 @@ export function buildFlowUxRecoveryKickoff(opts: {
   ];
   return lines.join('\n');
 }
+
+/** `docs-flow-ux` RECOVERY kickoff aimed at SCREENS instead of flows — the
+ *  dr-comp auto-link pass (one shot, before the advisory/blocking gate in
+ *  server.ts) for screens dr-comp already built but could not place in a
+ *  flow (UNLINKED/orphan/unreachable — advisory linkage gaps, see
+ *  pipeline-recovery.ts). Reuses the SAME `flows/_screen-recovery.json`
+ *  RECOVERY-schema-v1 as `buildFlowUxRecoveryKickoff` so the docs-flow-ux
+ *  skill recognizes the file shape; only the framing differs (assign an
+ *  EXISTING screen to a flow, not discover a new one). The daemon asks the
+ *  agent to put the exact SCREEN-KEY in the candidate's `name` field so it
+ *  can match the accepted candidate back to the screen deterministically. */
+export function buildScreenLinkRecoveryKickoff(opts: {
+  projectId: string;
+  advisoryScreens: Array<{ key: string; name: string; reason: string }>;
+  flows: Array<{ id: string; title: string; screenNames: string[] }>;
+  pageMdPaths: string[];
+  recoveryFile: string;
+}): string {
+  const screensList = opts.advisoryScreens.length > 0
+    ? opts.advisoryScreens.map((s) => `\`${s.key}\` — "${s.name}" (${s.reason})`).join('; ')
+    : '(không có)';
+  const flowsList = opts.flows.length > 0
+    ? opts.flows
+        .map((f) => `\`${f.id}\` — "${f.title}"${f.screenNames.length ? ` (đã có: ${f.screenNames.join(', ')})` : ' (chưa có màn nào)'}`)
+        .join('; ')
+    : '(chưa có flow nào — không có gì để gán, để nguyên UNLINKED)';
+  const pagesList = opts.pageMdPaths.length > 0 ? opts.pageMdPaths.map((p) => `\`${p}\``).join(', ') : '(không có)';
+  const lines = [
+    '# Tự nối màn vào luồng · RECOVERY',
+    `Chạy skill \`docs-flow-ux\` ở chế độ RECOVERY cho feature \`${opts.projectId}\` — lần này mục tiêu là MÀN dr-comp đã dựng nhưng chưa gắn được flow, không phải phát hiện flow mới.`,
+    '',
+    '## Tình trạng',
+    `- ${opts.advisoryScreens.length} màn chưa gắn được flow: ${screensList}.`,
+    `- Flow hiện có: ${flowsList}.`,
+    '',
+    '## Việc cần làm',
+    `- Đọc mọi trang được liệt kê: ${pagesList}, cộng \`flows/_inputs.json\` và as-is diagram/cells của từng flow hiện có.`,
+    '- Với MỖI màn ở trên, tìm bằng chứng điều hướng thật trong tài liệu (mở từ màn nào, đi tới màn nào) để gán nó vào MỘT flow hiện có (chỉ chọn trong danh sách flow ở trên — không tạo flow mới).',
+    `- Ghi kết quả vào \`${opts.recoveryFile}\` theo đúng schema RECOVERY v1 (giống lượt khôi phục dr-flow): mỗi candidate đặt \`name\` = ĐÚNG SCREEN-KEY màn đang gán (nguyên văn, không dịch/diễn giải), \`flowId\` = id MỘT flow có sẵn ở trên, và \`cells\` = ít nhất một node id THẬT lấy từ as-is diagram/cells của flow đó (bắt buộc — daemon từ chối candidate không có cells hợp lệ); thêm \`anchorText\`/\`diagramEvidence\` khi có để củng cố bằng chứng.`,
+    '',
+    '## Ràng buộc',
+    '- KHÔNG bịa bằng chứng điều hướng không có trong tài liệu, KHÔNG bịa cell id — màn nào không đủ bằng chứng thì BỎ QUA, cứ để nguyên UNLINKED.',
+    '- KHÔNG gán vào một flow không có trong danh sách trên (kể cả khi bạn nghĩ nên gộp nhiều màn CRUD thành flow mới — việc đó daemon chưa hỗ trợ ở lượt này).',
+    '- Đây là job chạy KHÔNG có người ngồi cạnh: chọn mặc định hợp lý theo bằng chứng sẵn có, không hỏi lại, không dừng chờ xác nhận.',
+    '- Không sửa file nào khác ngoài đã nêu.',
+  ];
+  return lines.join('\n');
+}

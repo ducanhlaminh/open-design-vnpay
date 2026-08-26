@@ -588,6 +588,7 @@ import {
   buildPipelineKickoff,
   buildPrdPageReviewKickoff,
   buildScreenComponentsKickoff,
+  buildScreenLinkRecoveryKickoff,
   buildScreenRunKickoff,
 } from './pipeline-kickoffs.js';
 import { validateComponentRecovery, validateFlowRecovery, validateReviewRecovery, validateScreenFlowRecoveryArtifacts } from './pipeline-recovery.js';
@@ -18179,6 +18180,11 @@ export async function startServer({
         const { index, summaryMd } = mergeScreenComponents(okDocs, inputs, failedScreens, new Date().toISOString());
         const anySucceeded = okDocs.length > 0;
         let topologyValidation: Awaited<ReturnType<typeof validateScreenFlowRecoveryArtifacts>> | null = null;
+        // "Exactly one pass prevents loops" (same invariant as the dr-flow
+        // auto-recovery site below) — this flag exists purely so the gate
+        // below reads as a documented invariant even though the enclosing
+        // `if` only runs once per completion; see the auto-link block.
+        let didAutoLinkScreens = false;
         if (anySucceeded) {
           await fs.promises.writeFile(path.join(cwd, 'comp/index.json'), JSON.stringify(index, null, 2), 'utf8');
           await fs.promises.writeFile(path.join(cwd, 'comp/summary.md'), summaryMd, 'utf8');
@@ -18200,33 +18206,230 @@ export async function startServer({
               .catch(() => null);
           });
           topologyValidation = await validateScreenFlowRecoveryArtifacts(cwd);
+          // Auto-link (mirrors dr-flow's own auto-recovery at the
+          // docs-flow-ux completion site above): BEFORE turning any
+          // remaining UNLINKED/orphan/unreachable screen into a mere
+          // warning, spend exactly ONE unattended agent pass trying to
+          // place it in a real flow using document evidence. Gate: only
+          // advisory topology (never for BLOCKING defects or component
+          // failures), and never more than once per completion.
+          const advisoryNeedsHelp = (topologyValidation.needsHelp ?? []).filter((problem) => problem.advisory !== false);
+          if (failedScreens.length === 0 && advisoryNeedsHelp.length > 0 && !didAutoLinkScreens) {
+            didAutoLinkScreens = true;
+            try {
+              const flowsIndexRaw = await fs.promises.readFile(path.join(cwd, 'flows', 'index.json'), 'utf8').catch(() => null);
+              let flowEntries: Array<{ id?: unknown; title?: unknown; screens?: Array<{ key?: unknown; name?: unknown }> }> = [];
+              if (flowsIndexRaw != null) {
+                try {
+                  const parsed = JSON.parse(flowsIndexRaw) as unknown;
+                  if (Array.isArray(parsed)) flowEntries = parsed as typeof flowEntries;
+                } catch {
+                  flowEntries = [];
+                }
+              }
+              const realFlows = flowEntries
+                .map((entry) => ({
+                  id: typeof entry.id === 'string' ? entry.id.trim() : '',
+                  title: typeof entry.title === 'string' && entry.title.trim() ? entry.title.trim() : '',
+                  screenNames: (entry.screens ?? [])
+                    .map((screen) => (typeof screen.name === 'string' ? screen.name : typeof screen.key === 'string' ? screen.key : ''))
+                    .filter((name) => name.length > 0),
+                }))
+                .filter((entry) => entry.id.length > 0 && entry.id !== 'UNLINKED');
+              const markdownBySource: Record<string, string> = {};
+              for (const page of pages) {
+                const markdown = await fs.promises.readFile(path.join(cwd, page.mdPath), 'utf8').catch(() => null);
+                if (markdown != null) markdownBySource[page.mdPath] = markdown;
+              }
+
+              const linkRecoveryRel = 'flows/_screen-recovery.json';
+              await fs.promises.rm(path.join(cwd, linkRecoveryRel), { force: true }).catch(() => null);
+              const linkConversationId = `pipeline-conv-${randomUUID()}`;
+              const linkAssistantId = `pipeline-assistant-${randomUUID()}`;
+              const linkTitle = 'Tự nối màn vào luồng';
+              insertConversation(db, {
+                id: linkConversationId,
+                projectId,
+                title: `${def.name} · ${linkTitle}`,
+                createdAt: Date.now(),
+                updatedAt: Date.now(),
+              });
+              const linkRun = design.runs.create({
+                projectId,
+                conversationId: linkConversationId,
+                assistantMessageId: linkAssistantId,
+                clientRequestId: `docs-comp-screen-link-${randomUUID()}`,
+                agentId: agentId!,
+              });
+              const linkTask = { id: linkConversationId, title: linkTitle, status: 'running' as 'running' | 'succeeded' | 'failed' };
+              setProjectPipelineStatus(db, projectId, pipelineId, { status: 'running', subConversations: [{ ...linkTask }] });
+              const linkKickoff = buildScreenLinkRecoveryKickoff({
+                projectId,
+                advisoryScreens: advisoryNeedsHelp.map((problem) => ({ key: problem.key, name: problem.name, reason: problem.reason })),
+                flows: realFlows,
+                pageMdPaths: pages.map((page) => page.mdPath),
+                recoveryFile: linkRecoveryRel,
+              });
+              // Canceler riêng cho lượt tự nối màn: cancelKey chính (khai ở
+              // đầu hàm) vẫn còn sống tới `finally` cuối completion — đăng
+              // ký lại CÙNG key với activeRuns MỚI để nút Dừng nhắm đúng run
+              // đang chạy (xem cùng note ở site dr-flow, server.ts ~23122).
+              const linkCancelKey = cancelKey;
+              const linkActiveRuns = new Set<{ id: string }>([linkRun]);
+              registerPipelineCanceler(linkCancelKey, linkActiveRuns, () => {});
+              let linkFinal: Awaited<ReturnType<typeof design.runs.wait>>;
+              try {
+                upsertMessage(db, linkConversationId, { id: `pipeline-user-${linkRun.id}`, role: 'user', content: linkKickoff });
+                upsertMessage(db, linkConversationId, {
+                  id: linkAssistantId,
+                  role: 'assistant',
+                  content: '',
+                  agentId: agentId!,
+                  agentName: getAgentDef(agentId!)?.name ?? agentId!,
+                  runId: linkRun.id,
+                  runStatus: 'queued',
+                  startedAt: Date.now(),
+                });
+                design.runs.start(linkRun, () => startChatRun({
+                  agentId: agentId!,
+                  projectId,
+                  conversationId: linkConversationId,
+                  assistantMessageId: linkAssistantId,
+                  clientRequestId: linkRun.clientRequestId,
+                  skillId: 'docs-flow-ux',
+                  ...(wfDir ? { cwdSubdir: wfDir } : {}),
+                  model: modelPrefs.model ?? null,
+                  reasoning: modelPrefs.reasoning ?? null,
+                  message: linkKickoff,
+                  promptProfile: 'pipeline',
+                  pipelineUsesDesignSystem: false,
+                  systemPrompt: 'Bạn đang chạy một job không có người ngồi cạnh: chọn mặc định hợp lý theo bằng chứng sẵn có, không hỏi lại, không dừng chờ xác nhận.',
+                }, linkRun));
+                linkFinal = await design.runs.wait(linkRun);
+              } finally {
+                pipelineCancelers.delete(linkCancelKey);
+              }
+              db.prepare(`UPDATE messages SET run_status = ?, ended_at = ? WHERE id = ?`).run(linkFinal.status, Date.now(), linkAssistantId);
+
+              let linkedCount = 0;
+              if (linkFinal.status === 'succeeded') {
+                const raw = await fs.promises.readFile(path.join(cwd, linkRecoveryRel), 'utf8').catch(() => null);
+                if (raw != null) {
+                  const parsed = parseScreenRecovery(raw);
+                  if (parsed.document) {
+                    const flowsCtx: Record<string, { cells: ScreenRecoveryCell[] }> = {};
+                    for (const flow of realFlows) {
+                      let cells: ScreenRecoveryCell[] = [];
+                      const cellsRaw = await fs.promises.readFile(path.join(cwd, 'flows', flow.id, 'cells.json'), 'utf8').catch(() => null);
+                      if (cellsRaw != null) {
+                        try {
+                          const parsedCells = JSON.parse(cellsRaw) as unknown;
+                          if (Array.isArray(parsedCells)) {
+                            cells = parsedCells
+                              .filter((cell): cell is Record<string, unknown> => !!cell && typeof cell === 'object' && !Array.isArray(cell))
+                              .map((cell) => ({
+                                id: typeof cell.id === 'string' ? cell.id : '',
+                                label: typeof cell.label === 'string' ? cell.label : '',
+                                ...(typeof cell.kind === 'string' ? { kind: cell.kind } : {}),
+                              }))
+                              .filter((cell) => cell.id.length > 0);
+                          }
+                        } catch {
+                          cells = [];
+                        }
+                      }
+                      if (cells.length === 0) {
+                        try {
+                          const chart = JSON.parse(await fs.promises.readFile(path.join(cwd, `flows/${flow.id}.flowchart.json`), 'utf8')) as {
+                            nodes?: Array<{ id?: unknown; label?: unknown; type?: unknown }>;
+                          };
+                          cells = (chart.nodes ?? [])
+                            .map((node) => ({
+                              id: typeof node.id === 'string' ? node.id : '',
+                              label: typeof node.label === 'string' ? node.label : '',
+                              ...(typeof node.type === 'string' ? { type: node.type } : {}),
+                            }))
+                            .filter((cell) => cell.id.length > 0);
+                        } catch {
+                          cells = [];
+                        }
+                      }
+                      flowsCtx[flow.id] = { cells };
+                    }
+                    const validation = validateScreenRecovery(parsed.document, { markdownBySource, flows: flowsCtx });
+                    const advisoryByKey = new Map(advisoryNeedsHelp.map((problem) => [problem.key, problem]));
+                    for (const candidate of validation.accepted) {
+                      // The agent is asked to put the exact dr-comp SCREEN-KEY
+                      // in `name` (candidate.key is a document-derived hash,
+                      // not one of our keys — see pipeline-kickoffs.ts). Only
+                      // apply candidates that (a) resolve one of the screens
+                      // we actually asked about and (b) target a flow that
+                      // genuinely exists (validateScreenRecovery already
+                      // refused unknown flow ids).
+                      const targetKey = candidate.name.trim();
+                      if (!advisoryByKey.has(targetKey)) continue;
+                      const screenInput = screenInputs.find((screen) => screen.key === targetKey);
+                      if (!screenInput) continue;
+                      screenInput.flowId = candidate.flowId;
+                      const matchedFlow = realFlows.find((flow) => flow.id === candidate.flowId);
+                      if (matchedFlow?.title) screenInput.flowTitle = matchedFlow.title;
+                      linkedCount += 1;
+                    }
+                    if (linkedCount > 0) {
+                      await persistInputs();
+                      await buildScreenFlowArtifacts(cwd, screenInputs).catch((error) => {
+                        console.warn(`[docs-comp] tự nối màn: dựng lại luồng thất bại (giữ cảnh báo cũ):`, error);
+                      });
+                      topologyValidation = await validateScreenFlowRecoveryArtifacts(cwd);
+                    }
+                  }
+                }
+              }
+              linkTask.status = linkedCount > 0 ? 'succeeded' : 'failed';
+              setProjectPipelineStatus(db, projectId, pipelineId, { status: 'running', subConversations: [{ ...linkTask }] });
+              console.log(`[docs-comp] tự nối màn: +${linkedCount}/${advisoryNeedsHelp.length} màn (agent ${linkFinal.status})`);
+            } catch (error) {
+              // Agent lỗi/không nối được KHÔNG được làm hỏng stage — advisory
+              // linkage gaps vẫn chỉ là cảnh báo ở bước dưới.
+              console.warn('[docs-comp] tự nối màn thất bại (bỏ qua, giữ cảnh báo):', error);
+            }
+          }
         } else {
           await writeDocsComponentFailureNote(cwd, summaryMd);
           await fs.promises.rm(wireframesDir, { recursive: true, force: true }).catch(() => null);
         }
         // Partial output is retained for review/recovery, but the stage must
-        // not turn green while either component files or semantic navigation
-        // topology remain unresolved.
+        // not turn green while component files remain unresolved or topology
+        // has a genuinely BLOCKING defect. UNLINKED/orphan/unreachable
+        // screens are linkage GAPS (advisory) — they warn, they do not fail
+        // the stage; see pipeline-recovery.ts's advisory/blocking split.
         const next: 'succeeded' | 'failed' = anySucceeded
           && failedScreens.length === 0
-          && topologyValidation?.ok === true
+          && topologyValidation?.blocking !== true
           ? 'succeeded'
           : 'failed';
         const topologyScreens = topologyValidation?.needsHelp ?? [];
+        const blockingTopologyScreens = topologyScreens.filter((problem) => problem.advisory === false);
+        const advisoryTopologyScreens = topologyScreens.filter((problem) => problem.advisory !== false);
         const recoveryByKey = new Map<string, { key: string; name: string; errors: string[]; topology: boolean }>();
         for (const failed of failedScreens) {
           recoveryByKey.set(failed.key, { key: failed.key, name: failed.name, errors: failed.errors ?? [], topology: false });
         }
-        for (const problem of topologyScreens) {
+        // Only BLOCKING topology problems (multi-flow ownership, corrupt/
+        // missing model, coverage mismatch) open an interactive recovery
+        // unit; advisory linkage gaps are surfaced as a warning below
+        // instead, never as a recovery unit the user has to act on.
+        for (const problem of blockingTopologyScreens) {
           const existing = recoveryByKey.get(problem.key);
           const error = `${problem.flowId}: ${problem.reason}`;
           if (existing) existing.errors.push(error);
           else recoveryByKey.set(problem.key, { key: problem.key, name: problem.name, errors: [error], topology: true });
         }
-        // Corrupt/missing topology may not identify one screen. Keep recovery
-        // actionable by attaching the deterministic issue to the first screen
-        // instead of silently failing with no recovery unit.
-        if (topologyValidation && !topologyValidation.ok && recoveryByKey.size === 0 && screenInputs[0]) {
+        // Corrupt/missing topology (BLOCKING) may not identify one screen.
+        // Keep recovery actionable by attaching the deterministic issue to
+        // the first screen instead of silently failing with no recovery
+        // unit. Advisory-only topology never reaches this branch.
+        if (topologyValidation?.blocking && recoveryByKey.size === 0 && screenInputs[0]) {
           recoveryByKey.set(screenInputs[0].key, {
             key: screenInputs[0].key,
             name: screenInputs[0].name,
@@ -18276,6 +18479,20 @@ export async function startServer({
                 `Daemon vẫn sẽ validate tất định, chat không thể bỏ qua validator.`,
             });
           }
+        }
+        // Advisory linkage gaps (UNLINKED/orphan/unreachable) never block the
+        // stage — gather them into one warning line in comp/summary.md
+        // instead of an interactive recovery unit, so the gap stays visible
+        // without stopping run-all.
+        const advisoryWarning = advisoryTopologyScreens.length > 0
+          ? `${advisoryTopologyScreens.length} màn chưa gắn được flow (điều hướng prototype sẽ thiếu): ` +
+            `${advisoryTopologyScreens.map((s) => s.name || s.key).join(', ')}.`
+          : null;
+        if (advisoryWarning) {
+          console.warn(`[docs-comp] ${advisoryWarning}`);
+          await fs.promises
+            .appendFile(path.join(cwd, 'comp', 'summary.md'), `\n> ⚠️ ${advisoryWarning}\n`, 'utf8')
+            .catch(() => null);
         }
         if (failureDetail) {
           attachStageFailureContext(projectId, pipelineId, {

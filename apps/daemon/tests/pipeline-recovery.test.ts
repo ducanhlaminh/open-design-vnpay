@@ -99,8 +99,11 @@ describe('multi-turn pipeline recovery finalizers', () => {
     expect(index.failed).toEqual([]);
 
     // Topology recovery is a deterministic re-check: retain the two valid
-    // per-screen outputs, block while DETAIL is unreachable, then pass as soon
-    // as evidenced topology is repaired. No component agent fan-out is needed.
+    // per-screen outputs. DETAIL starts with no navigation edge to it at all
+    // (orphan) — that is now an ADVISORY linkage gap, not a stage-blocking
+    // defect, so "Kiểm tra & tiếp tục" still succeeds; only genuinely
+    // BLOCKING topology (multi-flow ownership, coverage mismatch, corrupt
+    // model — see tests/pipeline-recovery-topology.test.ts) still fails it.
     const detail = 'DETAIL';
     const detailInput = {
       ...inputs.screens[0],
@@ -133,11 +136,13 @@ describe('multi-turn pipeline recovery finalizers', () => {
       ],
       edges: [],
     }));
-    const topologyBlocked = await validateComponentRecovery(cwd);
-    expect(topologyBlocked.ok).toBe(false);
-    expect(topologyBlocked.issues.join('\n')).toContain(detail);
-    expect(topologyBlocked.needsHelp).toEqual(expect.arrayContaining([expect.objectContaining({ key: detail })]));
-    await expect(fs.access(path.join(cwd, 'recovery', 'dr-comp', 'inputs.json'))).resolves.toBeUndefined();
+    const topologyAdvisory = await validateComponentRecovery(cwd);
+    expect(topologyAdvisory.ok).toBe(true);
+    expect(topologyAdvisory.issues.join('\n')).toContain(detail);
+    expect(topologyAdvisory.needsHelp).toEqual(expect.arrayContaining([expect.objectContaining({ key: detail, advisory: true })]));
+    // Advisory-only linkage gaps never open (or keep open) the recovery
+    // workspace — "Kiểm tra & tiếp tục" already succeeded above.
+    await expect(fs.access(path.join(cwd, 'recovery', 'dr-comp', 'inputs.json'))).rejects.toThrow();
 
     await fs.writeFile(path.join(cwd, 'flows', 'login.flowchart.json'), JSON.stringify({
       id: 'login',
@@ -153,6 +158,73 @@ describe('multi-turn pipeline recovery finalizers', () => {
     expect(topologyRecovered.ok).toBe(true);
     expect(topologyRecovered.issues).toEqual([]);
     await expect(fs.access(path.join(cwd, 'recovery', 'dr-comp', 'inputs.json'))).rejects.toThrow();
+  });
+
+  it('a screen owned by two flows is a BLOCKING defect — "Kiểm tra & tiếp tục" still refuses it', async () => {
+    // Two screen-input entries share the SAME key ('X') but declare two
+    // different flows — this is exactly the multi-flow-ownership defect
+    // validateScreenFlowRecoveryArtifacts refuses, unlike a plain UNLINKED/
+    // orphan/unreachable linkage gap (advisory, tested above).
+    const key = 'X';
+    const baseScreen = {
+      key,
+      name: 'Màn dùng chung',
+      order: 0,
+      flowTitle: 'Flow A',
+      source: 'docs-feature/shared.md',
+      steps: [],
+      navOut: [],
+      navIn: [],
+      findings: [],
+      platformHint: 'web',
+    };
+    const inputs = {
+      schema_version: '2.0',
+      generatedAt: new Date().toISOString(),
+      ds: { components: false, catalog: false, rules: false, examples: false, figmaCatalog: false },
+      screens: [
+        { ...baseScreen, flowId: 'A' },
+        { ...baseScreen, flowId: 'B', order: 1, flowTitle: 'Flow B' },
+      ],
+    };
+    await fs.mkdir(path.join(cwd, 'comp'), { recursive: true });
+    await fs.mkdir(path.join(cwd, 'wireframes'), { recursive: true });
+    await fs.writeFile(path.join(cwd, 'comp', '_inputs.json'), JSON.stringify(inputs));
+    await fs.writeFile(path.join(cwd, 'comp', `${key}.screen.json`), JSON.stringify({
+      schema_version: '2.0',
+      key,
+      name: 'Màn dùng chung',
+      flowId: 'A',
+      platform: 'web',
+      source: 'docs-feature/shared.md',
+      elements: [{ id: 'body', label: 'Nội dung', role: 'content', ds: null, confidence: 'high', provenance: 'text', why: 'Không có DS' }],
+      nav: [],
+    }));
+    await fs.writeFile(
+      path.join(cwd, 'wireframes', `${key}.html`),
+      '<!doctype html><html><head><style>.x{display:block}</style></head><body data-screen="X" data-layout="web"><main data-el="body">Nội dung</main></body></html>',
+    );
+    await fs.mkdir(path.join(cwd, 'flows'), { recursive: true });
+    await fs.writeFile(path.join(cwd, 'flows', 'index.json'), JSON.stringify([
+      { id: 'A', title: 'Flow A', source: 'docs-feature/shared.md', kind: 'mermaid', screens: [{ key, name: 'Màn dùng chung' }], files: { flowchart: 'flows/A.flowchart.json' } },
+      { id: 'B', title: 'Flow B', source: 'docs-feature/shared.md', kind: 'mermaid', screens: [{ key, name: 'Màn dùng chung' }], files: { flowchart: 'flows/B.flowchart.json' } },
+    ]));
+    await fs.writeFile(path.join(cwd, 'flows', 'A.flowchart.json'), JSON.stringify({
+      id: 'A', title: 'Flow A', source: 'docs-feature/shared.md',
+      nodes: [{ id: 'a', type: 'start', label: 'X', screen: key }], edges: [],
+    }));
+    await fs.writeFile(path.join(cwd, 'flows', 'B.flowchart.json'), JSON.stringify({
+      id: 'B', title: 'Flow B', source: 'docs-feature/shared.md',
+      nodes: [{ id: 'b', type: 'start', label: 'X', screen: key }], edges: [],
+    }));
+
+    const recovered = await validateComponentRecovery(cwd);
+    expect(recovered.ok).toBe(false);
+    expect(recovered.needsHelp).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key, advisory: false, reason: expect.stringContaining('nhiều flow') }),
+    ]));
+    // BLOCKING keeps the recovery workspace open, unlike the advisory case.
+    await expect(fs.access(path.join(cwd, 'recovery', 'dr-comp', 'inputs.json'))).resolves.toBeUndefined();
   });
 
   it('rebuilds review/index.json only when every source page has a valid canonical review output', async () => {

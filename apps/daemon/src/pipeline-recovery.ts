@@ -28,8 +28,18 @@ export interface PipelineRecoveryValidation {
   ok: boolean;
   issues: string[];
   repaired: string[];
-  /** Screens that still need an evidenced navigation edge/user decision. */
-  needsHelp?: Array<{ key: string; name: string; flowId: string; reason: string }>;
+  /** Screens that still need an evidenced navigation edge/user decision.
+   *  `advisory: true` (UNLINKED / orphan / unreachable) means the run-all
+   *  gate no longer blocks on it — a navigation gap warns instead of
+   *  failing the stage. `advisory: false` is a genuine BLOCKING defect (a
+   *  screen owned by more than one flow) that still fails the stage. */
+  needsHelp?: Array<{ key: string; name: string; flowId: string; reason: string; advisory: boolean }>;
+  /** True when at least one BLOCKING (non-advisory) issue exists: multi-flow
+   *  screen ownership, index/model corruption, or screen-count coverage
+   *  mismatch. UNLINKED/orphan/unreachable screens never set this — they
+   *  are pure linkage warnings. Consumers that used to gate on `ok` for
+   *  topology correctness should gate on `blocking` instead. */
+  blocking?: boolean;
 }
 
 async function readJson<T>(absolute: string): Promise<T | null> {
@@ -75,31 +85,38 @@ export async function validateScreenFlowRecoveryArtifacts(cwd: string): Promise<
   const indexPath = path.join(cwd, SCREEN_FLOWS_DIR, 'index.json');
   const index = await readJson<ScreenFlowIndexLike>(indexPath);
   if (!index || !Array.isArray(index.flows) || index.flows.length === 0) {
-    return { ok: false, issues: [`Thiếu hoặc hỏng "${SCREEN_FLOWS_DIR}/index.json".`], repaired: [] };
+    return { ok: false, issues: [`Thiếu hoặc hỏng "${SCREEN_FLOWS_DIR}/index.json".`], repaired: [], blocking: true };
   }
 
   const issues: string[] = [];
   const repaired: string[] = [];
-  const needsHelp = new Map<string, { key: string; name: string; flowId: string; reason: string }>();
+  const needsHelp = new Map<string, { key: string; name: string; flowId: string; reason: string; advisory: boolean }>();
   const ownerByScreen = new Map<string, string>();
   const seenScreens = new Set<string>();
   const cwdRoot = path.resolve(cwd);
+  // Structural defects (missing/corrupt model files, corrupt edges, coverage
+  // mismatch) are the only things that still fail dr-comp. UNLINKED/orphan/
+  // unreachable are linkage GAPS, not defects — they stay advisory.
+  let structuralBlocking = false;
 
   for (const entry of index.flows) {
     const flowId = typeof entry.id === 'string' && entry.id.trim() ? entry.id.trim() : '(không-id)';
     const modelRel = entry.files?.model;
     if (!modelRel) {
       issues.push(`${flowId}: index thiếu đường dẫn screen-flow model.`);
+      structuralBlocking = true;
       continue;
     }
     const modelPath = path.resolve(cwd, modelRel);
     if (modelPath !== cwdRoot && !modelPath.startsWith(`${cwdRoot}${path.sep}`)) {
       issues.push(`${flowId}: đường dẫn model vượt khỏi workspace: ${modelRel}.`);
+      structuralBlocking = true;
       continue;
     }
     const rawModel = await readJson<unknown>(modelPath);
     if (!screenFlowModelShape(rawModel)) {
       issues.push(`${flowId}: thiếu hoặc hỏng "${modelRel}".`);
+      structuralBlocking = true;
       continue;
     }
     const model = rawModel;
@@ -110,7 +127,10 @@ export async function validateScreenFlowRecoveryArtifacts(cwd: string): Promise<
       if (owner && owner !== model.flowId) {
         const reason = `screen xuất hiện trong nhiều flow (${owner}, ${model.flowId})`;
         issues.push(`Screen "${screen.name || screen.key}" (${screen.key}): ${reason}.`);
-        needsHelp.set(screen.key, { key: screen.key, name: screen.name || screen.key, flowId: model.flowId, reason });
+        // Multi-flow ownership is the one screen-level defect that still
+        // BLOCKS — it means the model itself is inconsistent, not merely
+        // unlinked.
+        needsHelp.set(screen.key, { key: screen.key, name: screen.name || screen.key, flowId: model.flowId, reason, advisory: false });
       } else ownerByScreen.set(screen.key, model.flowId);
     }
 
@@ -127,22 +147,38 @@ export async function validateScreenFlowRecoveryArtifacts(cwd: string): Promise<
         : topology.unreachableScreens.includes(key)
           ? 'không reachable từ entry qua cạnh primary|branch|inferred'
           : 'không có cạnh topology hợp lệ (orphan)';
-      needsHelp.set(key, { key, name, flowId: model.flowId, reason });
       issues.push(`Screen "${name}" (${key}) · ${model.flowId}: ${reason}.`);
+      // Never downgrade an already-BLOCKING (multi-flow) classification for
+      // the same screen key to advisory.
+      const existing = needsHelp.get(key);
+      if (!existing || existing.advisory) needsHelp.set(key, { key, name, flowId: model.flowId, reason, advisory: true });
     }
     for (const error of topology.errors) {
       if (!issues.some((issue) => issue.includes(error))) issues.push(`${model.flowId}: ${error}`);
+      // Orphan/unreachable aggregate lines, and the UNLINKED bucket's
+      // always-invalid/no-entry-screen markers (that bucket is deliberately
+      // built without entries), are linkage artifacts already accounted for
+      // above — not a NEW structural defect. Anything else surfaced by
+      // validateScreenFlowTopology on a real flow model (corrupt/duplicate
+      // edges, dangling endpoints, a real flow missing an entry) is.
+      const isLinkageSummary = /^Có \d+ screen (?:cô lập|không reachable)/.test(error);
+      const isUnlinkedArtifact = model.flowId === 'UNLINKED'
+        && (error === 'Flow UNLINKED không phải topology hợp lệ.' || error === 'Flow chưa khai entry screen hợp lệ.');
+      if (!isLinkageSummary && !isUnlinkedArtifact) structuralBlocking = true;
     }
     if (topology.valid && model.flowId !== 'UNLINKED') repaired.push(model.flowId);
   }
 
   if (typeof index.totalScreens !== 'number' || index.totalScreens !== seenScreens.size) {
     issues.push(`Screen-flow coverage lệch: index khai ${index.totalScreens ?? 'không rõ'}, model có ${seenScreens.size} screen duy nhất.`);
+    structuralBlocking = true;
   }
+  const blocking = structuralBlocking || [...needsHelp.values()].some((help) => !help.advisory);
   return {
     ok: issues.length === 0,
     issues,
     repaired: [...new Set(repaired)].sort(),
+    blocking,
     ...(needsHelp.size > 0 ? { needsHelp: [...needsHelp.values()].sort((a, b) => a.key.localeCompare(b.key)) } : {}),
   };
 }
@@ -235,9 +271,12 @@ export async function validateComponentRecovery(cwd: string): Promise<PipelineRe
         ok: false,
         issues: [`Không dựng/kiểm tra được screen-flow: ${error instanceof Error ? error.message : String(error)}`],
         repaired: [],
+        blocking: true,
       };
     }
-    if (topology.ok) {
+    // Advisory linkage gaps (UNLINKED/orphan/unreachable) no longer keep
+    // "Kiểm tra & tiếp tục" from succeeding — only a BLOCKING defect does.
+    if (!topology.blocking) {
       await fs.rm(path.join(cwd, 'recovery', 'dr-comp'), { recursive: true, force: true });
     } else {
       await fs.mkdir(path.join(cwd, 'recovery', 'dr-comp'), { recursive: true });
@@ -250,7 +289,7 @@ export async function validateComponentRecovery(cwd: string): Promise<PipelineRe
   }
   const topologyIssues = topology?.issues ?? [];
   return {
-    ok: failed.length === 0 && (topology?.ok ?? false),
+    ok: failed.length === 0 && !(topology?.blocking ?? true),
     issues: [
       ...failed.flatMap((item) => item.errors.map((error) => `${item.key}: ${error}`)),
       ...topologyIssues,
