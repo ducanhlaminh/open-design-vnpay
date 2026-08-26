@@ -19259,7 +19259,12 @@ export async function startServer({
                 // WP8b: đối chiếu (basePrime, slice) — không phải (original,
                 // revised) cấp trang — với locateIn = cả trang đã sửa để
                 // anchor/doc_refs trỏ sang section khác vẫn định vị được.
-                secErrors.push(...validateChanges(basePrime, slice, agentChanges, { locateIn: revisedPageDraft }));
+                // proposals: true (WP-A) — agent không còn sửa chữ vào lát
+                // (`slice`), chỉ khai `quote` là chữ ĐỀ XUẤT trong changes.json;
+                // quote không cần có mặt trong `slice` nữa.
+                secErrors.push(
+                  ...validateChanges(basePrime, slice, agentChanges, { locateIn: revisedPageDraft, proposals: true }),
+                );
 
                 // Note neo trượt: cảnh báo, KHÔNG hỏng section (xem partitionNotesByAnchor).
                 const partitioned = partitionNotesByAnchor(original, sectionNotes);
@@ -19361,10 +19366,21 @@ export async function startServer({
                 }
               }
 
+              // `revised` (finalSlices) vẫn giữ nội dung agent ĐÃ CHẠM vào lát
+              // (đọc lại từ đĩa) — chỉ dùng cho self-check daemon bên dưới,
+              // KHÔNG còn được ghi ra file người đọc thấy. `writtenReview`
+              // (basePrimes — baseline đã enrich bảng/sơ đồ, KHÔNG có sửa chữ
+              // agent) mới là bản ghi ra: dr-review đảo doctrine từ "sửa trực
+              // tiếp tài liệu" sang "đề xuất trong changes.json, web overlay".
               let revised = '';
+              let writtenReview = '';
               try {
                 revised = rebuildPageFromSlices(finalSlices, pageEol);
-                await fs.promises.writeFile(path.join(cwd, reviewRel), revised, 'utf8');
+                writtenReview = rebuildPageFromSlices(
+                  sections.map((_, i) => basePrimes[i] ?? baseSlices[i]!),
+                  pageEol,
+                );
+                await fs.promises.writeFile(path.join(cwd, reviewRel), writtenReview, 'utf8');
               } catch (error) {
                 errors.push(`Không ghép lại được trang từ các lát: ${error instanceof Error ? error.message : String(error)}`);
               }
@@ -19421,13 +19437,16 @@ export async function startServer({
               // lại chính những gì daemon vừa dựng — đây là bug DAEMON nếu
               // trượt (agent chỉ chạm tới `slice`, không chạm `basePrime`),
               // nên fail-shut để lộ ra thay vì âm thầm ghi một trang sai.
+              // `writtenReview` tái dùng từ khối ghi file phía trên (CHÍNH bản
+              // baseline đã ghi ra) — không tính lại lần hai.
               if (errors.length === 0) {
-                const baselinePrimePage = rebuildPageFromSlices(
-                  sections.map((_, i) => basePrimes[i] ?? baseSlices[i]!),
-                  pageEol,
-                );
-                const selfCheckSys = validateChanges(original, baselinePrimePage, sysChanges);
-                const selfCheckAgent = validateChanges(baselinePrimePage, revised, keptChanges, { locateIn: revised });
+                const selfCheckSys = validateChanges(original, writtenReview, sysChanges);
+                // proposals: true (WP-A) — keptChanges là ĐỀ XUẤT của agent,
+                // `quote` không còn được áp vào `writtenReview`/`revised` nữa.
+                const selfCheckAgent = validateChanges(writtenReview, revised, keptChanges, {
+                  locateIn: revised,
+                  proposals: true,
+                });
                 // WP8d (mục non-blocking của review WP8b) — `sysChanges` (sơ
                 // đồ + bảng do daemon TỰ tạo) trước giờ không đi qua
                 // validateRuleIds ở đâu cả: đúng-do-cấu-tạo (rule_id lấy

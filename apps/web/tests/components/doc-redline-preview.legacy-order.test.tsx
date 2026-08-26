@@ -21,9 +21,12 @@ const DOC = [
   'Chi tiết phân quyền.',
 ].join('\n');
 
+// `anchor` neo trên chữ CÒN NGUYÊN trong DOC (bằng chính `quote` ở đây — dữ
+// liệu legacy chỉ có `quote`, nhưng test này đo THỨ TỰ, không đo ngữ nghĩa
+// add/anchor, nên dùng luôn đoạn đã có sẵn trong tài liệu làm điểm neo).
 const CHANGES = JSON.stringify([
-  { id: 'later', kind: 'ux-writing', severity: 'minor', quote: 'Nội dung thay đổi sau.', reason: 'sau' },
-  { id: 'earlier', kind: 'ux-writing', severity: 'minor', quote: 'Nội dung thay đổi trước.', reason: 'trước' },
+  { id: 'later', kind: 'ux-writing', severity: 'minor', anchor: 'Nội dung thay đổi sau.', quote: 'Nội dung thay đổi sau.', reason: 'sau' },
+  { id: 'earlier', kind: 'ux-writing', severity: 'minor', anchor: 'Nội dung thay đổi trước.', quote: 'Nội dung thay đổi trước.', reason: 'trước' },
 ]);
 const NOTES = JSON.stringify([
   { id: 'legacy-note', kind: 'gap', severity: 'minor', anchor: '### Phân quyền theo tính năng', finding: 'thiếu', suggestion: 'bổ sung' },
@@ -45,11 +48,8 @@ beforeAll(() => {
 });
 
 describe('DocRedlinePreview legacy ordering and scope', () => {
-  it('rail, badge và navigation theo thứ tự tài liệu dù JSON bị đảo', async () => {
+  it('badge và navigation theo thứ tự tài liệu dù JSON bị đảo', async () => {
     const { container } = render(<DocRedlinePreview projectId="p" file={FILE} />);
-    await waitFor(() => expect(container.querySelector('[data-change-item="earlier"]')).not.toBeNull());
-    const items = Array.from(container.querySelectorAll('[data-change-item]'));
-    expect(items.map((item) => item.getAttribute('data-change-item'))).toEqual(['earlier', 'later']);
     await waitFor(() => {
       expect(container.querySelector('mark[data-change-id="earlier"]')?.getAttribute('data-od-idx')).toBe('1');
       expect(container.querySelector('mark[data-change-id="later"]')?.getAttribute('data-od-idx')).toBe('2');
@@ -58,7 +58,9 @@ describe('DocRedlinePreview legacy ordering and scope', () => {
     const nav = within(container).getByRole('navigation', { name: 'Điều hướng thay đổi' });
     fireEvent.click(within(nav).getByRole('button', { name: 'Thay đổi sau' }));
     await waitFor(() => expect(nav.textContent).toContain('1 / 2'));
-    expect(container.querySelector('[data-change-item="earlier"]')?.className).toContain('itemActive');
+    // "Sau" đi tới chỗ sửa ĐẦU tiên theo thứ tự tài liệu — "earlier" đứng
+    // trước "later" trong tài liệu dù JSON liệt kê "later" trước.
+    expect(container.querySelector('mark[data-change-id="earlier"]')?.className).toMatch(/Active/i);
   });
 
   it('legacy note trùng mục lục được bôi ở heading thật', async () => {

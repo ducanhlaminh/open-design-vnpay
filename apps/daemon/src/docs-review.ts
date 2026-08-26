@@ -950,15 +950,28 @@ function lineMultiset(text: string): Map<string, number> {
  *  `revised`) và `before` (vẫn tìm trong `original`) — cùng phép phủ (b) trên
  *  cặp (original, revised) — GIỮ NGUYÊN vì chúng đối chiếu đúng những gì agent
  *  sửa TRONG lát này, không phải toàn trang. Không truyền `opts` → hành vi
- *  y hệt trước khi có WP8a (locateIn ngầm định = revised). */
+ *  y hệt trước khi có WP8a (locateIn ngầm định = revised).
+ *
+ *  `opts.proposals` (WP-A — dr-review ngừng nướng chữ agent vào tài liệu):
+ *  khi `true`, `quote` là NỘI DUNG ĐỀ XUẤT của agent (Thêm/Sửa) — nó KHÔNG
+ *  được áp vào bản ghi ra nữa, nên khẳng định `quote∈revised` ở (a) bị BỎ
+ *  (đối chiếu sai phía: `revised` ở chế độ này chính là bản ĐÃ GHI — baseline
+ *  đã-enrich — nơi chữ đề xuất chưa từng xuất hiện). `before∈original` và neo
+ *  `anchor`/`doc_refs` ở (c) GIỮ NGUYÊN khắt khe — agent vẫn phải trích đúng
+ *  nguyên văn từ tài liệu thật để trỏ đề xuất vào đúng chỗ. Vòng phủ (b) ở
+ *  chế độ này cũng được bỏ qua: caller truyền `original`/`revised` là một CẶP
+ *  KHÔNG đổi (không gì được áp vào bản ghi), nên "dòng đã đổi/thêm" không có
+ *  ý nghĩa — bỏ qua để không sinh cảnh báo giả. Không truyền `opts.proposals`
+ *  (hoặc `false`) → hành vi y HỆT trước khi có chế độ này. */
 export function validateChanges(
   original: string,
   revised: string,
   changes: DocChange[],
-  opts?: { locateIn?: string },
+  opts?: { locateIn?: string; proposals?: boolean },
 ): string[] {
   const errors: string[] = [];
   const locateIn = opts?.locateIn ?? revised;
+  const proposals = opts?.proposals === true;
 
   for (const change of changes) {
     const quote = (change.quote ?? '').trim();
@@ -967,7 +980,7 @@ export function validateChanges(
       errors.push(`Change "${change.id}" không có cả 'quote' lẫn 'before' — không có gì để đối chiếu.`);
       continue;
     }
-    if (quote && !fuzzyIncludes(revised, quote)) {
+    if (quote && !proposals && !fuzzyIncludes(revised, quote)) {
       errors.push(`Change "${change.id}" có quote không tìm thấy trong bản đã sửa: "${clipQuote(quote)}"`);
     }
     if (before && !fuzzyIncludes(original, before)) {
@@ -1006,25 +1019,31 @@ export function validateChanges(
       return fuzzyIncludes(v, line) || fuzzyIncludes(line, v);
     });
 
-  const originalLines = lineMultiset(original);
-  const revisedLines = lineMultiset(revised);
+  // Ở chế độ `proposals`, caller truyền `original`/`revised` là một CẶP
+  // KHÔNG đổi (đề xuất của agent không được áp vào bản ghi), nên "dòng đã
+  // đổi/thêm/xoá" không có ý nghĩa gì để phủ — bỏ qua toàn bộ vòng này thay
+  // vì dựa vào việc hai chuỗi tình cờ giống hệt nhau.
+  if (!proposals) {
+    const originalLines = lineMultiset(original);
+    const revisedLines = lineMultiset(revised);
 
-  const addedOrChanged: string[] = [];
-  for (const [line, count] of revisedLines) {
-    const before = originalLines.get(line) ?? 0;
-    if (count > before && !isCoveredByField(line, 'quote')) addedOrChanged.push(line);
-  }
-  for (const line of addedOrChanged) {
-    errors.push(`Dòng đã đổi/thêm nhưng không có change.quote nào khai báo: "${clipQuote(line)}"`);
-  }
+    const addedOrChanged: string[] = [];
+    for (const [line, count] of revisedLines) {
+      const before = originalLines.get(line) ?? 0;
+      if (count > before && !isCoveredByField(line, 'quote')) addedOrChanged.push(line);
+    }
+    for (const line of addedOrChanged) {
+      errors.push(`Dòng đã đổi/thêm nhưng không có change.quote nào khai báo: "${clipQuote(line)}"`);
+    }
 
-  const deleted: string[] = [];
-  for (const [line, count] of originalLines) {
-    const after = revisedLines.get(line) ?? 0;
-    if (count > after && !isCoveredByField(line, 'before')) deleted.push(line);
-  }
-  for (const line of deleted) {
-    errors.push(`Dòng đã bị xoá nhưng không có change.before nào khai báo: "${clipQuote(line)}"`);
+    const deleted: string[] = [];
+    for (const [line, count] of originalLines) {
+      const after = revisedLines.get(line) ?? 0;
+      if (count > after && !isCoveredByField(line, 'before')) deleted.push(line);
+    }
+    for (const line of deleted) {
+      errors.push(`Dòng đã bị xoá nhưng không có change.before nào khai báo: "${clipQuote(line)}"`);
+    }
   }
 
   return errors;

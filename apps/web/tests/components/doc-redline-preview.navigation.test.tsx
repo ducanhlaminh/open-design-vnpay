@@ -2,13 +2,16 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, waitFor, within } from '@testing-library/react';
 
-const DOC = ['# A', '', 'Đoạn thêm mới hoàn chỉnh.', '', 'Đoạn sửa hoàn chỉnh.', '', 'Neo xoá còn sống.'].join('\n');
+// Tài liệu KHÔNG BAO GIỜ bị sửa: mọi `before`/`anchor` phải là chữ CÒN NGUYÊN
+// trong DOC này. `quote` chỉ là đề xuất (hiện trong modal), không cần khớp gì
+// ở đây.
+const DOC = ['# A', '', 'Đoạn gốc làm điểm neo thêm.', '', 'Đoạn gốc trước khi sửa.', '', 'Đoạn đã xoá còn nguyên trong tài liệu.'].join('\n');
 const CHANGES = JSON.stringify([
-  { id: 'add', kind: 'gap', severity: 'minor', quote: 'Đoạn thêm mới hoàn chỉnh.', reason: 'thêm', operation: 'add', sectionIndex: 0, sectionHeading: '# A' },
-  { id: 'edit', kind: 'ux-writing', severity: 'major', before: 'Đoạn cũ.', quote: 'Đoạn sửa hoàn chỉnh.', reason: 'sửa', sectionIndex: 0, sectionHeading: '# A' },
-  { id: 'del', kind: 'gap', severity: 'minor', before: 'Đoạn đã xoá.', anchor: 'Neo xoá còn sống.', reason: 'xoá', operation: 'delete', sectionIndex: 0, sectionHeading: '# A' },
+  { id: 'add', kind: 'gap', severity: 'minor', anchor: 'Đoạn gốc làm điểm neo thêm.', quote: 'Đoạn thêm mới hoàn chỉnh.', reason: 'thêm', operation: 'add', sectionIndex: 0, sectionHeading: '# A' },
+  { id: 'edit', kind: 'ux-writing', severity: 'major', before: 'Đoạn gốc trước khi sửa.', quote: 'Đoạn sửa hoàn chỉnh.', reason: 'sửa', sectionIndex: 0, sectionHeading: '# A' },
+  { id: 'del', kind: 'gap', severity: 'minor', before: 'Đoạn đã xoá còn nguyên trong tài liệu.', reason: 'xoá', operation: 'delete', sectionIndex: 0, sectionHeading: '# A' },
 ]);
-const NOTES = JSON.stringify([{ id: 'n', kind: 'gap', severity: 'minor', anchor: 'Đoạn sửa hoàn chỉnh.', finding: 'note', suggestion: 'fix', sectionIndex: 0, sectionHeading: '# A' }]);
+const NOTES = JSON.stringify([{ id: 'n', kind: 'gap', severity: 'minor', anchor: 'Đoạn gốc trước khi sửa.', finding: 'note', suggestion: 'fix', sectionIndex: 0, sectionHeading: '# A' }]);
 
 vi.mock('../../src/providers/registry', () => ({ fetchProjectFileText: async (_p: string, name: string) => name.endsWith('.changes.json') ? CHANGES : name.endsWith('.notes.json') ? NOTES : DOC, projectRawUrl: () => '' }));
 vi.mock('../../src/components/Icon', () => ({ Icon: () => null }));
@@ -48,22 +51,24 @@ describe('DocRedlinePreview navigation integration', () => {
     expect(container.querySelector('mark[data-change-id="add"]')?.closest('[data-redline-block="add"]')).not.toBeNull();
     const editBlock = container.querySelector('mark[data-change-id="edit"]')?.closest('[data-redline-block="edit"]');
     expect(editBlock).not.toBeNull();
-    const deletion = container.querySelector('mark[data-change-id="del"][data-op="del"]');
+    // Xoá: mark neo trên `before` (còn nguyên trong tài liệu), lớp `hlDel`
+    // mang gạch ngang — không còn `data-op="del"` (đó là dấu của
+    // `injectDeletedRuns`, đã bỏ, xem docblock đầu component).
+    const deletion = container.querySelector('mark[data-change-id="del"][class*="hlDel"]');
     expect(deletion).not.toBeNull();
-    fireEvent.click(container.querySelector('[data-change-item="del"]')!);
-    await waitFor(() => expect(calls).toContain(deletion));
+    // Bấm vùng bôi mở MODAL chi tiết (không còn cuộn rail — rail đã bỏ).
+    fireEvent.click(deletion!);
+    await waitFor(() => expect(container.querySelector('[role="dialog"]')).not.toBeNull());
   });
 
-  it('tabpanel document và rail được nối với tab đang chọn', async () => {
+  it('có đúng MỘT tabpanel tài liệu, nối với tab đang chọn', async () => {
     const { container } = render(<DocRedlinePreview projectId="p" file={FILE} />);
     await within(container).findByRole('navigation', { name: 'Điều hướng thay đổi' });
     const panels = within(container).getAllByRole('tabpanel');
-    expect(panels).toHaveLength(2);
+    expect(panels).toHaveLength(1);
     const tabs = within(container).getAllByRole('tab');
-    for (const panel of panels) {
-      const labelledBy = panel.getAttribute('aria-labelledby');
-      expect(labelledBy).toBeTruthy();
-      expect(tabs.find((tab) => tab.id === labelledBy)?.getAttribute('aria-selected')).toBe('true');
-    }
+    const labelledBy = panels[0]!.getAttribute('aria-labelledby');
+    expect(labelledBy).toBeTruthy();
+    expect(tabs.find((tab) => tab.id === labelledBy)?.getAttribute('aria-selected')).toBe('true');
   });
 });

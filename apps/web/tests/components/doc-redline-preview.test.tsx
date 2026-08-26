@@ -26,20 +26,6 @@ const ORIGINAL = [
   '',
 ].join('\n');
 
-const EDITED = [
-  '# Quản lý khách hàng',
-  '',
-  '| Nút | Mô tả |',
-  '| --- | --- |',
-  '| Xuất Excel | Chi tiết: Luồng thay thế AF-18 (Xuất Excel). |',
-  '',
-  '- SCR-012 — Nhập Excel',
-  '- SCR-013 — Xuất Excel',
-  '',
-  'Người dùng nhập mã OTP gồm 6 chữ số.',
-  '',
-].join('\n');
-
 const REASON_C1 = 'Mã màn hình sai và trùng với popup khác.';
 const REASON_C2 = 'AF-16 là luồng Nhập Excel sai định dạng, không phải Xuất Excel.';
 const REASON_C3 = 'Nêu rõ định dạng OTP để người đọc không phải đoán.';
@@ -70,22 +56,25 @@ const CHANGES = JSON.stringify([
     quote: 'Người dùng nhập mã OTP gồm 6 chữ số.',
     reason: REASON_C3,
   },
-  // Chỗ sửa KHÔNG NEO ĐƯỢC: `quote` là câu chắc chắn không có trong bản đã
-  // sửa, nên injectHighlights không tạo <mark> nào cho nó.
+  // Chỗ sửa KHÔNG NEO ĐƯỢC: `before` là câu chắc chắn không có trong tài
+  // liệu (đã enrich nhưng KHÔNG BAO GIỜ bị sửa), nên injectHighlights không
+  // tạo <mark> nào cho nó.
   {
     id: 'c4',
     kind: 'edge-case',
     severity: 'blocker',
-    before: 'Một câu cũ nào đó.',
-    quote: 'Câu này tuyệt đối không xuất hiện ở bất kỳ đâu trong tài liệu đã sửa.',
+    before: 'Một câu cũ nào đó tuyệt đối không xuất hiện ở bất kỳ đâu trong tài liệu.',
+    quote: 'Câu đề xuất thay thế.',
     reason: REASON_C4,
   },
 ]);
 
+// Tài liệu hiển thị LUÔN là bản GỐC đã enrich — component không bao giờ ghi
+// lại `file.name`, nên chỉ có MỘT phiên bản để phục vụ, không còn khái niệm
+// "bản đã sửa" phân biệt theo đường dẫn như trước.
 vi.mock('../../src/providers/registry', () => ({
   fetchProjectFileText: async (_projectId: string, name: string) => {
     if (name.endsWith('.changes.json')) return CHANGES;
-    if (name.includes('/review/docs/')) return EDITED;
     return ORIGINAL;
   },
   projectRawUrl: (projectId: string, filePath: string) => `/api/projects/${projectId}/raw/${filePath}`,
@@ -98,7 +87,7 @@ const { DocRedlinePreview, extractRuleSection } = await import('../../src/compon
 const FILE = {
   name: 'docs-review/review/docs/confluence/urd.md',
   kind: 'text',
-  size: EDITED.length,
+  size: ORIGINAL.length,
   mtime: 1,
 } as never;
 
@@ -126,12 +115,11 @@ beforeEach(() => {
 });
 
 /** Chờ mark của MỌI change neo được xuất hiện rồi trả về mark đầu tiên của
- *  từng change, cùng mục danh sách tương ứng. Trả `HTMLElement` chứ không trả
- *  selector vì test click thật vào phần tử. */
+ *  từng change. Trả `HTMLElement` chứ không trả selector vì test click thật
+ *  vào phần tử. */
 async function renderAndWaitForMarks(): Promise<{
   container: HTMLElement;
   markOf: (changeId: string) => HTMLElement;
-  itemOf: (changeId: string) => HTMLElement;
 }> {
   const { container } = render(<DocRedlinePreview projectId="p1" file={FILE} />);
   await waitFor(() => {
@@ -148,11 +136,6 @@ async function renderAndWaitForMarks(): Promise<{
       const mark = container.querySelector<HTMLElement>(`mark[data-change-id="${changeId}"]`);
       if (!mark) throw new Error(`không tìm thấy mark của ${changeId}`);
       return mark;
-    },
-    itemOf: (changeId: string) => {
-      const item = container.querySelector<HTMLElement>(`[data-change-item="${changeId}"]`);
-      if (!item) throw new Error(`không tìm thấy mục danh sách của ${changeId}`);
-      return item;
     },
   };
 }
@@ -199,89 +182,70 @@ describe('DocRedlinePreview', () => {
     );
   });
 
-  it('click một mục trong danh sách sẽ cuộn tài liệu tới vùng bôi của nó', async () => {
-    const { itemOf } = await renderAndWaitForMarks();
+  // wp-redline-no-rail.yaml: rail đã bỏ, "Trước/Sau" ở đầu cột tài liệu vẫn
+  // đi qua CÙNG cơ chế cuộn/nháy (selectFromList) — chỉ khác điểm vào.
+  it('bấm "Sau" cuộn tài liệu tới vùng bôi của chỗ sửa kế tiếp', async () => {
+    const { container } = await renderAndWaitForMarks();
 
-    fireEvent.click(itemOf('c2'));
+    fireEvent.click(container.querySelector('button[aria-label="Thay đổi sau"]')!);
 
     await waitFor(() => {
       expect(scrollCalls.length).toBeGreaterThan(0);
     });
-    // Chỉ assert "được gọi" là chưa đủ: cuộn nhầm sang mark của change khác
-    // vẫn thoả. Phải là <mark> của ĐÚNG c2.
-    const hit = scrollCalls.find(
-      (call) =>
-        call.el.tagName.toLowerCase() === 'mark' &&
-        (call.el as HTMLElement).dataset.changeId === 'c2',
-    );
-    expect(hit, 'phải cuộn tới <mark data-change-id="c2">').toBeTruthy();
+    const hit = scrollCalls.find((call) => call.el.tagName.toLowerCase() === 'mark');
+    expect(hit, 'phải cuộn tới một <mark>').toBeTruthy();
     // `behavior: 'auto'`, KHÔNG 'smooth' — xem docblock trong component.
     expect((hit!.opts as ScrollIntoViewOptions).behavior).toBe('auto');
-    for (const call of scrollCalls) {
-      expect((call.opts as ScrollIntoViewOptions).behavior).toBe('auto');
-    }
   });
 
-  // wp3b.yaml mục E: khuôn thẻ 3-dòng cắt `reason` còn 60 ký tự trên mặt thẻ
-  // (REASON_C4 dài 61 ký tự — xem fixture) và chỉ có nút "Chi tiết" (không
-  // phải action Sửa/Bỏ) trên thẻ chết; mở "Chi tiết" trước khi assert lý do
-  // đầy đủ, giữ nguyên ý gốc "không bị nuốt im lặng".
-  it('chỗ sửa không neo được vẫn hiện trong danh sách và không nhảy tới được', async () => {
-    const { container, itemOf } = await renderAndWaitForMarks();
-
-    const dead = itemOf('c4');
-    // Không phải control thật => không bấm được (nhảy tới vùng bôi).
-    expect(dead.tagName.toLowerCase()).not.toBe('button');
-    // Không có action Sửa/Bỏ nào cho một chỗ sửa không neo được — chỉ còn nút
-    // "Chi tiết" để xem lý do đầy đủ.
-    expect(Array.from(dead.querySelectorAll('button')).some((b) => b.textContent === 'Sửa')).toBe(false);
-
-    // Không bị nuốt im lặng: lý do đầy đủ đọc được sau khi mở "Chi tiết".
-    const detailBtn = Array.from(dead.querySelectorAll('button')).find((b) => b.textContent?.includes('Chi tiết'));
-    expect(detailBtn, 'phải có nút "Chi tiết"').toBeTruthy();
-    fireEvent.click(detailBtn!);
-    expect(dead.textContent).toContain(REASON_C4);
-    expect(container.textContent).toContain(REASON_C4);
-
-    const before = scrollCalls.length;
-    fireEvent.click(dead);
-    expect(scrollCalls.length).toBe(before);
+  // Chỗ sửa không neo được (c4) không có mark nào trong tài liệu — không có
+  // gì để bấm — nhưng KHÔNG bị nuốt im lặng: nó vẫn tồn tại trong
+  // `changes.json`, chỉ đơn giản là không tham gia vòng điều hướng
+  // (`getAnchoredNavigationItems` lọc theo `anchored`, xem redline-navigation.ts).
+  it('chỗ sửa không neo được không có mark, không chen vào vòng điều hướng', async () => {
+    const { container } = await renderAndWaitForMarks();
+    expect(container.querySelector('mark[data-change-id="c4"]')).toBeNull();
+    // 3 chỗ sửa neo được (c1..c3) — tổng điều hướng phải khớp, không đếm dư c4.
+    expect(container.textContent).toContain('/ 3');
   });
 
-  // Chiều ngược lại: click vùng bôi trong tài liệu => chọn change đó, làm nổi
-  // MỌI mark của nó, và cuộn danh sách tới mục tương ứng.
-  it('click vùng bôi chọn đúng change đó và cuộn danh sách tới mục của nó', async () => {
-    const { markOf, itemOf } = await renderAndWaitForMarks();
+  // Bấm vùng bôi mở modal chi tiết đúng change đó và làm nổi mark của nó.
+  it('click vùng bôi mở modal chi tiết đúng change và nháy sáng mark tương ứng', async () => {
+    const { container, markOf } = await renderAndWaitForMarks();
 
     fireEvent.click(markOf('c2'));
     await waitFor(() => {
-      expect(itemOf('c2').className).toMatch(/Active/i);
+      expect(markOf('c2').className).toMatch(/Active/i);
     });
-    expect(
-      scrollCalls.some((call) => call.el === itemOf('c2') || itemOf('c2').contains(call.el)),
-    ).toBe(true);
-    expect(itemOf('c1').className).not.toMatch(/Active/i);
+    expect(container.querySelector('[role="dialog"]')?.textContent).toContain(REASON_C2);
+    expect(markOf('c1').className).not.toMatch(/Active/i);
+
+    fireEvent.click(container.querySelector('[class*="modalClose"]')!);
+    await waitFor(() => {
+      expect(container.querySelector('[role="dialog"]')).toBeNull();
+    });
 
     // Chuỗi click phải lặp được vô hạn, không phải chỉ đúng lần đầu.
     fireEvent.click(markOf('c3'));
     await waitFor(() => {
-      expect(itemOf('c3').className).toMatch(/Active/i);
+      expect(container.querySelector('[role="dialog"]')?.textContent).toContain(REASON_C3);
     });
-    expect(itemOf('c2').className).not.toMatch(/Active/i);
+    expect(markOf('c2').className).not.toMatch(/Active/i);
   });
 
-  // Bấm lại chính vùng bôi đang chọn không được bỏ chọn nó — mark phải giữ
-  // trạng thái nổi, và mục danh sách tương ứng vẫn nổi.
-  it('click lại chính vùng bôi đang chọn vẫn giữ trạng thái chọn', async () => {
-    const { markOf, itemOf } = await renderAndWaitForMarks();
+  // Bấm lại chính vùng bôi đang chọn không được đóng modal — mark phải giữ
+  // trạng thái nổi, modal vẫn mở với đúng nội dung.
+  it('click lại chính vùng bôi đang chọn vẫn giữ modal mở với đúng nội dung', async () => {
+    const { container, markOf } = await renderAndWaitForMarks();
 
     fireEvent.click(markOf('c2'));
     await waitFor(() => {
-      expect(itemOf('c2').className).toMatch(/Active/i);
+      expect(markOf('c2').className).toMatch(/Active/i);
     });
 
     fireEvent.click(markOf('c2'));
-    expect(itemOf('c2').className).toMatch(/Active/i);
+    expect(markOf('c2').className).toMatch(/Active/i);
+    expect(container.querySelector('[role="dialog"]')?.textContent).toContain(REASON_C2);
   });
 });
 

@@ -2,7 +2,16 @@
 //
 // WP3 (.tmp/pipeline/wp3.yaml): change `kind: 'flow-diagram'` (sơ đồ mermaid
 // Gốc/Đề xuất), change `component` không `before` với `rule_id` bắt đầu
-// `comp/` ("Bảng thành phần"), right panel ẩn/hiện, chip lọc mới.
+// `comp/` ("Bảng thành phần"), B1/B2/N1 (wp3b.yaml), khuôn thẻ 3-dòng (F).
+//
+// wp-doc-redline-nondestructive: rail/thẻ bên phải đã bị BỎ HẲN (thay bằng
+// modal chi tiết mở khi bấm vùng bôi — xem AnnotationDetailModal trong
+// component). Enrichment (`flow-diagram`/bảng thành phần `component`) KHÔNG
+// có modal — nó giữ nguyên tương tác riêng (toggle Gốc/Đề xuất, bảng inline).
+// Những test cũ đo RIÊNG rail-card của enrichment (nhãn "Bảng thành phần",
+// đếm N/M/K, chip lọc theo loại, panel ẩn/hiện, phím tắt ']', dòng 2 thẻ sơ
+// đồ, nút "Giữ sơ đồ gốc" trong thẻ) đo một bề mặt UI không còn tồn tại —
+// ĐÃ BỎ, ghi lại lý do ở not_done của báo cáo thực thi thay vì đo áng chừng.
 //
 // Fixture tách khỏi doc-redline-preview.test.tsx (khoá tập id neo được của
 // luồng "sửa" cũ) — cùng lý do các file *.ops/*.refs/*.rule-chip tách riêng.
@@ -10,7 +19,7 @@
 // mermaid không chạy trong jsdom — stub MermaidDiagram để kiểm code truyền
 // vào (cùng cách file-viewer-markdown-mermaid.test.tsx làm với FileViewer).
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, waitFor, within } from '@testing-library/react';
 
 // N6 (wp3b.yaml): MermaidDiagram thật có nút zoom/pan/reset KHÔNG tự
 // stopPropagation (component đó ngoài `touches`, không được sửa) — stub thêm
@@ -30,8 +39,6 @@ vi.mock('../../src/components/Icon', () => ({ Icon: () => null }));
 afterEach(() => {
   cleanup();
   window.localStorage.clear();
-  // Mục 0c/0d (wp4.yaml) stub `fetch` cho từng test riêng lẻ — dọn ở đây để
-  // các bài test khác trong file (không đụng fetch) không thấy stub sót lại.
   vi.unstubAllGlobals();
 });
 
@@ -89,51 +96,6 @@ const DIAGRAM_FILE = {
   mtime: 1,
 } as never;
 
-// ── Fixture 2: bảng thành phần ──────────────────────────────────────────────
-const TABLE_QUOTE = [
-  '**Cấu thành màn hình (Design System) — Đăng nhập**',
-  '',
-  '| # | Thành phần | Component DS | Biến thể | Vai trò / dùng để | Mô tả component | Điều hướng tới | Ghi chú |',
-  '| --- | --- | --- | --- | --- | --- | --- | --- |',
-  '| 1 | Ô nhập số điện thoại | Input | text | Nhập số điện thoại | Ô nhập một dòng | — | — |',
-  '| 2 | Nút Đăng nhập | Button | primary | Xác nhận đăng nhập | Nút chính | Trang chủ | — |',
-  '| 3 | Biểu tượng OTP | — (DS không có) | — | Minh hoạ bước OTP | Icon tự vẽ | — | Chưa có trong DS |',
-  '',
-  '*Nguồn: comp/login.screen.json (rà soát UX)*',
-].join('\n');
-const TABLE_REASON = 'Bổ sung bảng thành phần cho màn Đăng nhập theo rà soát UX.';
-const TABLE_RULE_ID = 'comp/login.screen.json';
-
-const TABLE_EDITED = ['# Đăng nhập', '', TABLE_QUOTE, ''].join('\n');
-const TABLE_CHANGES = JSON.stringify([
-  {
-    id: 'ct1',
-    kind: 'component',
-    severity: 'minor',
-    rule_id: TABLE_RULE_ID,
-    quote: TABLE_QUOTE,
-    reason: TABLE_REASON,
-  },
-]);
-
-function mockTableProject() {
-  vi.doMock('../../src/providers/registry', () => ({
-    fetchProjectFileText: async (_projectId: string, name: string) => {
-      if (name.endsWith('.changes.json')) return TABLE_CHANGES;
-      if (name.endsWith('.notes.json')) return null;
-      return TABLE_EDITED;
-    },
-    projectRawUrl: (projectId: string, filePath: string) => `/api/projects/${projectId}/raw/${filePath}`,
-  }));
-}
-
-const TABLE_FILE = {
-  name: 'docs-review/review/docs/confluence/login.md',
-  kind: 'text',
-  size: TABLE_EDITED.length,
-  mtime: 1,
-} as never;
-
 describe('DocRedlinePreview — sơ đồ mermaid (kind flow-diagram)', () => {
   it('hiện bản Đề xuất mặc định; bấm ○ Gốc đổi qua before, bấm lại ◉ Đề xuất đổi về quote', async () => {
     vi.resetModules();
@@ -188,30 +150,7 @@ describe('DocRedlinePreview — sơ đồ mermaid (kind flow-diagram)', () => {
     }
   });
 
-  it('thẻ 3 dòng: rule_id không hiện ở mặt thẻ, bấm "Chi tiết" mới hiện', async () => {
-    vi.resetModules();
-    mockDiagramProject();
-    const { DocRedlinePreview: Comp } = await import('../../src/components/DocRedlinePreview');
-    const { container } = render(<Comp projectId="p1" file={DIAGRAM_FILE} />);
-
-    await waitFor(() => {
-      expect(container.querySelector('[data-change-item="fd1"]')).not.toBeNull();
-    });
-    const card = container.querySelector('[data-change-item="fd1"]') as HTMLElement;
-    expect(card.textContent).not.toContain(DIAGRAM_RULE_ID);
-    expect(card.textContent).toContain('Thay sơ đồ bằng bản đề xuất');
-
-    const detailBtn = Array.from(card.querySelectorAll('button')).find((b) => b.textContent?.includes('Chi tiết'));
-    expect(detailBtn, 'phải có nút "Chi tiết"').toBeTruthy();
-    expect(detailBtn!.getAttribute('aria-expanded')).toBe('false');
-    fireEvent.click(detailBtn!);
-    await waitFor(() => {
-      expect(card.textContent).toContain(DIAGRAM_RULE_ID);
-    });
-    expect(detailBtn!.getAttribute('aria-expanded')).toBe('true');
-  });
-
-  it('chip lọc "Sơ đồ" xuất hiện trong dải trạng thái khi có change flow-diagram', async () => {
+  it('dải trạng thái đếm "N sơ đồ" khi có change flow-diagram (rail + chip lọc theo loại đã bỏ — xem docblock đầu file)', async () => {
     vi.resetModules();
     mockDiagramProject();
     const { DocRedlinePreview: Comp } = await import('../../src/components/DocRedlinePreview');
@@ -220,98 +159,75 @@ describe('DocRedlinePreview — sơ đồ mermaid (kind flow-diagram)', () => {
     await waitFor(() => {
       expect(container.querySelector('mark[data-change-id]')).not.toBeNull();
     });
-    const chip = Array.from(container.querySelectorAll('label')).find((l) => l.textContent?.includes('Sơ đồ'));
-    expect(chip, 'phải có chip lọc "Sơ đồ"').toBeTruthy();
-    expect(container.textContent).toContain('1 sơ đồ');
-  });
-
-  it('right panel: bấm nút ẩn thì rail hidden + docCol full-width; bấm mark trong tài liệu mở lại', async () => {
-    vi.resetModules();
-    mockDiagramProject();
-    const { DocRedlinePreview: Comp } = await import('../../src/components/DocRedlinePreview');
-    const { container } = render(<Comp projectId="p1" file={DIAGRAM_FILE} />);
-
-    await waitFor(() => {
-      expect(container.querySelector('mark[data-change-id]')).not.toBeNull();
-    });
-    const rail = () => container.querySelector('[class*="rail"]') as HTMLElement;
-    expect(rail().hasAttribute('hidden')).toBe(false);
-
-    const toggleBtn = container.querySelector('button[aria-label="Ẩn/Hiện chú giải"]') as HTMLButtonElement;
-    expect(toggleBtn, 'phải có nút ẩn/hiện panel').toBeTruthy();
-    fireEvent.click(toggleBtn);
-
-    await waitFor(() => {
-      expect(rail().hasAttribute('hidden')).toBe(true);
-      expect(rail().getAttribute('aria-hidden')).toBe('true');
-    });
-    const grid = container.querySelector('[class*="grid"]') as HTMLElement;
-    expect(grid.className).toMatch(/gridFull/i);
-    // Tab dọc mỏng hiện đếm S · D · X khi panel ẩn.
-    const tab = container.querySelector('button[aria-label="Hiện chú giải"]');
-    expect(tab).not.toBeNull();
-
-    const mark = container.querySelector('mark[data-change-id="fd1"]') as HTMLElement;
-    fireEvent.click(mark);
-    await waitFor(() => {
-      expect(rail().hasAttribute('hidden')).toBe(false);
-    });
-  });
-
-  it('phím tắt "]" đổi trạng thái panel khi tiêu điểm không ở trong ô nhập', async () => {
-    vi.resetModules();
-    mockDiagramProject();
-    const { DocRedlinePreview: Comp } = await import('../../src/components/DocRedlinePreview');
-    const { container } = render(<Comp projectId="p1" file={DIAGRAM_FILE} />);
-    await waitFor(() => {
-      expect(container.querySelector('mark[data-change-id]')).not.toBeNull();
-    });
-    const rail = () => container.querySelector('[class*="rail"]') as HTMLElement;
-    expect(rail().hasAttribute('hidden')).toBe(false);
-
-    fireEvent.keyDown(document, { key: ']' });
-    await waitFor(() => {
-      expect(rail().hasAttribute('hidden')).toBe(true);
-    });
+    const strip = container.querySelector('[class*="strip"]');
+    expect((strip?.textContent ?? '').replace(/\s+/g, ' ')).toContain('1 sơ đồ');
   });
 });
 
 describe('DocRedlinePreview — Bảng thành phần (kind component không before, rule_id comp/)', () => {
-  it('nhãn "Bảng thành phần", tiêu đề + đếm N/M/K, Chi tiết dựng lại bảng markdown', async () => {
+  // ── Fixture 2: bảng thành phần ─────────────────────────────────────────────
+  const TABLE_QUOTE = [
+    '**Cấu thành màn hình (Design System) — Đăng nhập**',
+    '',
+    '| # | Thành phần | Component DS | Biến thể | Vai trò / dùng để | Mô tả component | Điều hướng tới | Ghi chú |',
+    '| --- | --- | --- | --- | --- | --- | --- | --- |',
+    '| 1 | Ô nhập số điện thoại | Input | text | Nhập số điện thoại | Ô nhập một dòng | — | — |',
+    '| 2 | Nút Đăng nhập | Button | primary | Xác nhận đăng nhập | Nút chính | Trang chủ | — |',
+    '| 3 | Biểu tượng OTP | — (DS không có) | — | Minh hoạ bước OTP | Icon tự vẽ | — | Chưa có trong DS |',
+    '',
+    '*Nguồn: comp/login.screen.json (rà soát UX)*',
+  ].join('\n');
+  const TABLE_REASON = 'Bổ sung bảng thành phần cho màn Đăng nhập theo rà soát UX.';
+  const TABLE_RULE_ID = 'comp/login.screen.json';
+
+  const TABLE_EDITED = ['# Đăng nhập', '', TABLE_QUOTE, ''].join('\n');
+  const TABLE_CHANGES = JSON.stringify([
+    {
+      id: 'ct1',
+      kind: 'component',
+      severity: 'minor',
+      rule_id: TABLE_RULE_ID,
+      quote: TABLE_QUOTE,
+      reason: TABLE_REASON,
+    },
+  ]);
+
+  function mockTableProject() {
+    vi.doMock('../../src/providers/registry', () => ({
+      fetchProjectFileText: async (_projectId: string, name: string) => {
+        if (name.endsWith('.changes.json')) return TABLE_CHANGES;
+        if (name.endsWith('.notes.json')) return null;
+        return TABLE_EDITED;
+      },
+      projectRawUrl: (projectId: string, filePath: string) => `/api/projects/${projectId}/raw/${filePath}`,
+    }));
+  }
+
+  const TABLE_FILE = {
+    name: 'docs-review/review/docs/confluence/login.md',
+    kind: 'text',
+    size: TABLE_EDITED.length,
+    mtime: 1,
+  } as never;
+
+  it('bảng vẫn hiện nguyên vẹn trong tài liệu (render inline không đổi) và dải trạng thái đếm "N bảng"', async () => {
     vi.resetModules();
     mockTableProject();
     const { DocRedlinePreview: Comp } = await import('../../src/components/DocRedlinePreview');
     const { container } = render(<Comp projectId="p1" file={TABLE_FILE} />);
 
     await waitFor(() => {
-      expect(container.querySelector('[data-change-item="ct1"]')).not.toBeNull();
+      expect(container.querySelector('mark[data-change-id="ct1"]')).not.toBeNull();
     });
-    const card = container.querySelector('[data-change-item="ct1"]') as HTMLElement;
-    const kindLabel = card.querySelector('[class*="cardKind"]');
-    expect(kindLabel?.textContent).toBe('Bảng thành phần');
-    expect(card.textContent).toContain('Chèn bảng 3 thành phần');
-    expect(card.textContent).toContain('3 thành phần · 2 map DS · 1 DS không có');
-    expect(card.textContent).not.toContain(TABLE_RULE_ID);
-
-    const detailBtn = Array.from(card.querySelectorAll('button')).find((b) => b.textContent?.includes('Chi tiết'));
-    fireEvent.click(detailBtn!);
-    await waitFor(() => {
-      expect(card.textContent).toContain(TABLE_RULE_ID);
-      expect(card.querySelector('table')).not.toBeNull();
-    });
-  });
-
-  it('chip lọc "Bảng thành phần" xuất hiện trong dải trạng thái', async () => {
-    vi.resetModules();
-    mockTableProject();
-    const { DocRedlinePreview: Comp } = await import('../../src/components/DocRedlinePreview');
-    const { container } = render(<Comp projectId="p1" file={TABLE_FILE} />);
-    await waitFor(() => {
-      expect(container.querySelector('[data-change-item="ct1"]')).not.toBeNull();
-    });
-    const chip = Array.from(container.querySelectorAll('label')).find((l) => l.textContent?.includes('Bảng thành phần'));
-    expect(chip, 'phải có chip lọc "Bảng thành phần"').toBeTruthy();
-    expect(container.textContent).toContain('1 bảng');
+    // Bảng thật vẫn được daemon render inline trong tài liệu — cơ chế bôi
+    // quote-based cũ cho bảng KHÔNG đổi (xem isComponentTableChange trong
+    // component); chỉ rail card hiển thị lại nội dung bảng là đã bỏ.
+    expect(container.querySelector('table')).not.toBeNull();
+    const strip = container.querySelector('[class*="strip"]');
+    expect((strip?.textContent ?? '').replace(/\s+/g, ' ')).toContain('1 bảng');
+    // Bấm mark bảng KHÔNG mở modal (enrichment không có modal).
+    fireEvent.click(container.querySelector('mark[data-change-id="ct1"]')!);
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
   });
 });
 
@@ -402,14 +318,14 @@ describe('DocRedlinePreview — B1 (wp3b.yaml): host mermaid không owner', () =
 });
 
 describe('DocRedlinePreview — B2 (wp3b.yaml): hai sơ đồ cùng dòng đầu "flowchart TD"', () => {
-  it('mark của change 2 KHÔNG rơi vào block 1; click thẻ 2 cuộn tới đúng host của change 2', async () => {
+  it('mark của change 2 KHÔNG rơi vào block 1; điều hướng "Sau" tới change 2 cuộn đúng host của nó', async () => {
     vi.resetModules();
     mockTwoDiagramProject();
     const { DocRedlinePreview: Comp } = await import('../../src/components/DocRedlinePreview');
     const { container } = render(<Comp projectId="p1" file={TWO_DIAGRAM_FILE} />);
 
     await waitFor(() => {
-      expect(container.querySelector('[data-change-item="fd2"]')).not.toBeNull();
+      expect(container.querySelector('mark[data-change-id="fd2"]')).not.toBeNull();
     });
 
     // Đúng MỘT mark mang data-change-id="fd2" trong toàn cột, và đó phải là
@@ -420,11 +336,14 @@ describe('DocRedlinePreview — B2 (wp3b.yaml): hai sơ đồ cùng dòng đầu
     expect(marksFd2[0]!.className).toMatch(/mermaidHost/);
 
     const scrollSpy = vi.spyOn(Element.prototype, 'scrollIntoView').mockImplementation(function scrollSpyImpl() {});
-    const card = container.querySelector('[data-change-item="fd2"]') as HTMLElement;
-    fireEvent.click(card);
+    // Rail card đã bỏ — dùng điều hướng "Sau" (mục trong nav luôn theo thứ tự
+    // tài liệu: fd1 rồi fd2) thay cho bấm thẳng vào thẻ cũ.
+    const nav = within(container).getByRole('navigation', { name: 'Điều hướng thay đổi' });
+    fireEvent.click(within(nav).getByRole('button', { name: 'Thay đổi sau' }));
+    fireEvent.click(within(nav).getByRole('button', { name: 'Thay đổi sau' }));
 
     await waitFor(() => {
-      expect(scrollSpy).toHaveBeenCalled();
+      expect(nav.textContent).toContain('2 / 2');
     });
     // scrollIntoView phải được gọi TRÊN host của change 2 — không phải một
     // phần tử nằm trong block 1.
@@ -503,13 +422,16 @@ describe('DocRedlinePreview — N1 (wp3b.yaml): changes.json về sau text', () 
   });
 });
 
-// ── Fixture 5: F — khuôn thẻ 3-dòng cho một thẻ agent kiểu SỬA "bình thường"
-// (kind cũ, không phải sơ đồ/bảng) với reason > 60 ký tự ─────────────────────
+// ── Fixture 5: F — một chỗ SỬA kiểu agent "bình thường" (kind cũ, không phải
+// sơ đồ/bảng) với reason > 60 ký tự — modal chi tiết của nó phải hiện đúng
+// EditDiff (word-diff), không còn khuôn thẻ 3 dòng của rail đã bỏ ─────────────
 const F_REASON =
   'Câu này thiếu ngữ cảnh về ai là người thực hiện thao tác đăng nhập vào hệ thống của công ty.'; // 92 ký tự
 const F_BEFORE = 'Người dùng đăng nhập.';
 const F_QUOTE = 'Người dùng đăng nhập vào hệ thống.';
-const F_EDITED = ['# Đăng nhập', '', F_QUOTE, ''].join('\n');
+// Tài liệu hiển thị KHÔNG BAO GIỜ bị sửa (wp-doc-redline-nondestructive) — nó
+// phải chứa F_BEFORE (chữ gốc, nơi mark bôi vàng neo vào), không phải F_QUOTE.
+const F_DOC = ['# Đăng nhập', '', F_BEFORE, ''].join('\n');
 const F_CHANGES = JSON.stringify([
   {
     id: 'f1',
@@ -527,7 +449,7 @@ function mockFCardProject() {
     fetchProjectFileText: async (_projectId: string, name: string) => {
       if (name.endsWith('.changes.json')) return F_CHANGES;
       if (name.endsWith('.notes.json')) return null;
-      return F_EDITED;
+      return F_DOC;
     },
     projectRawUrl: (projectId: string, filePath: string) => `/api/projects/${projectId}/raw/${filePath}`,
   }));
@@ -535,63 +457,55 @@ function mockFCardProject() {
 const F_FILE = {
   name: 'docs-review/review/docs/confluence/login2.md',
   kind: 'text',
-  size: F_EDITED.length,
+  size: F_DOC.length,
   mtime: 1,
 } as never;
 
-describe('DocRedlinePreview — F (wp-redline-card-polish.yaml): khuôn thẻ 3-dòng cho thẻ agent "kiểu sửa" thường', () => {
-  it('mặt thẻ hiện reason ĐẦY ĐỦ (không còn cắt 60 ký tự/dấu "…" — clamp 2 dòng chỉ bằng CSS); mở "Chi tiết" mới hiện EditDiff', async () => {
+describe('DocRedlinePreview — F (wp-redline-card-polish.yaml, chuyển sang modal chi tiết): reason đầy đủ + EditDiff', () => {
+  it('modal chi tiết hiện reason ĐẦY ĐỦ (không cắt 60 ký tự) và EditDiff (word-diff) cho chỗ SỬA agent', async () => {
     vi.resetModules();
     mockFCardProject();
     const { DocRedlinePreview: Comp } = await import('../../src/components/DocRedlinePreview');
     const { container } = render(<Comp projectId="p1" file={F_FILE} />);
 
     await waitFor(() => {
-      expect(container.querySelector('[data-change-item="f1"]')).not.toBeNull();
+      expect(container.querySelector('mark[data-change-id="f1"]')).not.toBeNull();
     });
-    const card = container.querySelector('[data-change-item="f1"]') as HTMLElement;
-    // wp-redline-card-polish.yaml mục 1: cardTitle() thôi cắt 60 ký tự — reason
-    // đầy đủ (92 ký tự) đã có ngay trên mặt thẻ; CSS line-clamp chỉ ẩn phần
-    // thừa BẰNG MẮT, không cắt khỏi DOM, nên không còn dấu "…" của phép cắt cũ.
-    const title = card.querySelector('[class*="cardTitle"]');
-    expect(title?.textContent).toBe(F_REASON);
-    expect(title?.textContent).not.toContain('…');
-    expect(title?.getAttribute('title')).toBe(F_REASON);
-    expect(card.textContent).toContain(F_REASON);
-
-    const detailBtn = Array.from(card.querySelectorAll('button')).find((b) => b.textContent?.includes('Chi tiết'));
-    expect(detailBtn, 'phải có nút "Chi tiết"').toBeTruthy();
-    expect(detailBtn!.getAttribute('aria-expanded')).toBe('false');
-    // Phần "Chi tiết" (EditDiff/RuleChip/RefRow) vẫn gập cho tới khi mở, dù
-    // reason đã hiện đầy đủ trên mặt thẻ.
-    expect(card.querySelector('[class*="diffInline"]')).toBeNull();
-
-    fireEvent.click(detailBtn!);
-    await waitFor(() => {
-      expect(detailBtn!.getAttribute('aria-expanded')).toBe('true');
+    fireEvent.click(container.querySelector('mark[data-change-id="f1"]')!);
+    const dialog = await waitFor(() => {
+      const found = container.querySelector<HTMLElement>('[role="dialog"]');
+      expect(found).not.toBeNull();
+      return found as HTMLElement;
     });
+    // reason đầy đủ (92 ký tự), không dấu "…" của phép cắt cũ.
+    expect(dialog.textContent).toContain(F_REASON);
+    expect(dialog.textContent).not.toContain('…');
     // Cặp before/quote đủ nhỏ để word-diff — EditDiff (không rơi về layout
-    // hai khối cũ).
-    expect(card.querySelector('[class*="diffInline"]')).not.toBeNull();
+    // hai khối "Nguyên bản"/"Đề xuất" cũ).
+    expect(dialog.querySelector('[class*="diffInline"]')).not.toBeNull();
+    const labels = Array.from(dialog.querySelectorAll('[class*="detailLabel"]')).map((el) => el.textContent);
+    expect(labels).not.toContain('Nguyên bản');
+    expect(labels).not.toContain('Đề xuất');
   });
 });
 
 describe('DocRedlinePreview — N6 (wp3b.yaml): nút zoom/pan của MermaidDiagram không chọn nhầm change', () => {
-  it('bấm nút "Zoom in" trong khối sơ đồ KHÔNG chọn change đó (mục trong rail không nổi lên)', async () => {
+  it('bấm nút "Zoom in" trong khối sơ đồ KHÔNG chọn change đó (host không nổi hlActive); bấm thẳng vào host thì có', async () => {
     vi.resetModules();
     mockDiagramProject();
     const { DocRedlinePreview: Comp } = await import('../../src/components/DocRedlinePreview');
     const { container } = render(<Comp projectId="p1" file={DIAGRAM_FILE} />);
 
-    await waitFor(() => {
-      expect(container.querySelector('[data-change-item="fd1"]')).not.toBeNull();
+    const host = await waitFor(() => {
+      const found = container.querySelector<HTMLElement>('mark[data-change-id="fd1"]');
+      expect(found).not.toBeNull();
+      return found as HTMLElement;
     });
-    const item = container.querySelector('[data-change-item="fd1"]') as HTMLElement;
-    expect(item.className).not.toMatch(/itemActive/i);
+    expect(host.className).not.toMatch(/hlActive/i);
 
     // Nút zoom được portal vào host mermaid ở một lượt hiệu ứng RIÊNG
     // (diagramMounts) — chờ nó có mặt thay vì giả định nó đã tới cùng lúc với
-    // mục trong rail (hai thứ được hai effect khác nhau dựng).
+    // host mermaid (hai thứ được hai effect khác nhau dựng).
     const zoomBtn = await waitFor(() => {
       const found = Array.from(container.querySelectorAll('button')).find(
         (b) => b.getAttribute('aria-label') === 'Zoom in',
@@ -601,196 +515,21 @@ describe('DocRedlinePreview — N6 (wp3b.yaml): nút zoom/pan của MermaidDiagr
     });
     fireEvent.click(zoomBtn);
 
-    // Bấm nút zoom KHÔNG được chọn change fd1 — mục trong rail vẫn không nổi.
-    expect(item.className).not.toMatch(/itemActive/i);
+    // Bấm nút zoom KHÔNG được chọn change fd1 — host vẫn không nổi hlActive,
+    // và modal chi tiết KHÔNG mở (enrichment không có modal).
+    expect(host.className).not.toMatch(/hlActive/i);
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
 
     // Đối chứng: bấm THẲNG vào host (ngoài vùng nút) VẪN phải chọn được, để
     // chắc chắn bài test này đo đúng chỗ chặn (không phải toàn bộ khối sơ đồ
     // bị vô hiệu hoá click).
-    const host = container.querySelector('mark[data-change-id="fd1"]') as HTMLElement;
     fireEvent.click(host);
     await waitFor(() => {
-      expect(item.className).toMatch(/itemActive/i);
+      expect(host.className).toMatch(/hlActive/i);
     });
-  });
-});
-
-// ═══════════════════════════════════════════════════════════════════════════
-// wp4.yaml mục 0 — vá tồn đọng từ review WP3b (bắt buộc TRƯỚC mục 1–4).
-// ═══════════════════════════════════════════════════════════════════════════
-
-// ── Fixture 6 (mục 0a): change flow-diagram có `quote` KHÔNG khớp fence nào
-// đang có trong tài liệu (tài liệu đã đổi khác đi từ lúc rà soát) ──────────
-const MISMATCH_QUOTE = [
-  '```mermaid',
-  'flowchart TD',
-  '    A([Bắt đầu]) --> B[Chọn kênh khác]',
-  '```',
-  '*flow-diagram — sơ đồ ĐỀ XUẤT không khớp bản đang có*',
-].join('\n');
-const MISMATCH_DOC_FENCE = [
-  '```mermaid',
-  'flowchart TD',
-  '    Z([Khác hẳn]) --> Y[Không liên quan tới change]',
-  '```',
-].join('\n');
-const MISMATCH_EDITED = ['# Luồng khác', '', MISMATCH_DOC_FENCE, ''].join('\n');
-const MISMATCH_REASON = 'Sơ đồ hiện tại không khớp bản đề xuất do tài liệu đã đổi khác đi.';
-const MISMATCH_RULE_ID = 'flows/f9/ux-review.json';
-const MISMATCH_CHANGES = JSON.stringify([
-  {
-    id: 'fdmiss',
-    kind: 'flow-diagram',
-    origin: 'system',
-    severity: 'major',
-    rule_id: MISMATCH_RULE_ID,
-    quote: MISMATCH_QUOTE,
-    reason: MISMATCH_REASON,
-  },
-]);
-function mockMismatchProject() {
-  vi.doMock('../../src/providers/registry', () => ({
-    fetchProjectFileText: async (_projectId: string, name: string) => {
-      if (name.endsWith('.changes.json')) return MISMATCH_CHANGES;
-      if (name.endsWith('.notes.json')) return null;
-      return MISMATCH_EDITED;
-    },
-    projectRawUrl: (projectId: string, filePath: string) => `/api/projects/${projectId}/raw/${filePath}`,
-  }));
-}
-const MISMATCH_FILE = {
-  name: 'docs-review/review/docs/confluence/flow-mismatch.md',
-  kind: 'text',
-  size: MISMATCH_EDITED.length,
-  mtime: 1,
-} as never;
-
-describe('DocRedlinePreview — 0a (wp4.yaml, vá review WP3b): nút "Chi tiết" ra ngoài gate showActions', () => {
-  it('change flow-diagram không khớp fence nào (không neo được) vẫn có nút "Chi tiết"; mở ra thấy reason + rule_id', async () => {
-    vi.resetModules();
-    mockMismatchProject();
-    const { DocRedlinePreview: Comp } = await import('../../src/components/DocRedlinePreview');
-    const { container } = render(<Comp projectId="p1" file={MISMATCH_FILE} />);
-
-    await waitFor(() => {
-      expect(container.querySelector('[data-change-item="fdmiss"]')).not.toBeNull();
-    });
-    const item = container.querySelector('[data-change-item="fdmiss"]') as HTMLElement;
-    // Không neo được (fence không khớp) — thẻ rơi vào nhóm "không tìm thấy",
-    // nghĩa là showActions=false, KHÔNG có nút Chấp nhận/Giữ sơ đồ gốc.
-    expect(item.textContent).toContain('Không tìm thấy trong tài liệu');
-    expect(Array.from(item.querySelectorAll('button')).some((b) => b.textContent?.includes('Chấp nhận'))).toBe(false);
-
-    const detailBtn = Array.from(item.querySelectorAll('button')).find((b) => b.textContent?.includes('Chi tiết'));
-    expect(detailBtn, 'phải có nút "Chi tiết" dù không neo được').toBeTruthy();
-    expect(detailBtn!.getAttribute('aria-expanded')).toBe('false');
-    fireEvent.click(detailBtn!);
-    await waitFor(() => {
-      expect(item.textContent).toContain(MISMATCH_REASON);
-      expect(item.textContent).toContain(MISMATCH_RULE_ID);
-    });
-  });
-});
-
-// ── Fixture 7 (mục 0b): change flow-diagram KHÔNG có caption (không có dòng
-// `*...*` sau rào ```mermaid```) ─────────────────────────────────────────────
-const NO_CAPTION_BEFORE = ['```mermaid', 'flowchart TD', '    A([Bắt đầu]) --> B[Cũ, không caption]', '```'].join('\n');
-const NO_CAPTION_QUOTE = ['```mermaid', 'flowchart TD', '    A([Bắt đầu]) --> B[Không có caption]', '```'].join('\n');
-const NO_CAPTION_EDITED = ['# Không caption', '', NO_CAPTION_QUOTE, ''].join('\n');
-const NO_CAPTION_CHANGES = JSON.stringify([
-  {
-    id: 'fdnocap',
-    kind: 'flow-diagram',
-    origin: 'system',
-    severity: 'major',
-    rule_id: 'flows/f8/ux-review.json',
-    before: NO_CAPTION_BEFORE,
-    quote: NO_CAPTION_QUOTE,
-    reason: 'Sơ đồ được viết lại nhưng không kèm caption mô tả.',
-  },
-]);
-function mockNoCaptionProject() {
-  vi.doMock('../../src/providers/registry', () => ({
-    fetchProjectFileText: async (_projectId: string, name: string) => {
-      if (name.endsWith('.changes.json')) return NO_CAPTION_CHANGES;
-      if (name.endsWith('.notes.json')) return null;
-      return NO_CAPTION_EDITED;
-    },
-    projectRawUrl: (projectId: string, filePath: string) => `/api/projects/${projectId}/raw/${filePath}`,
-  }));
-}
-const NO_CAPTION_FILE = {
-  name: 'docs-review/review/docs/confluence/flow-no-caption.md',
-  kind: 'text',
-  size: NO_CAPTION_EDITED.length,
-  mtime: 1,
-} as never;
-
-describe('DocRedlinePreview — 0b (wp4.yaml, vá review WP3b): dòng 2 thẻ sơ đồ không in mã mermaid thô', () => {
-  it('không trích được caption → dòng 2 hiện chuỗi cố định, KHÔNG phải mã mermaid thô', async () => {
-    vi.resetModules();
-    mockNoCaptionProject();
-    const { DocRedlinePreview: Comp } = await import('../../src/components/DocRedlinePreview');
-    const { container } = render(<Comp projectId="p1" file={NO_CAPTION_FILE} />);
-
-    await waitFor(() => {
-      expect(container.querySelector('[data-change-item="fdnocap"]')).not.toBeNull();
-    });
-    const card = container.querySelector('[data-change-item="fdnocap"]') as HTMLElement;
-    const line2 = card.querySelector('[class*="diffCompact"]');
-    expect(line2?.textContent).toBe('Sơ đồ đề xuất thay sơ đồ gốc');
-    expect(line2?.textContent).not.toContain('flowchart TD');
-    expect(line2?.textContent).not.toContain('-->');
-  });
-
-  it('có caption (Fixture 1) → dùng class diffPreviewBefore/diffPreviewAfter, KHÔNG dùng diffBefore/diffAfter', async () => {
-    vi.resetModules();
-    mockDiagramProject();
-    const { DocRedlinePreview: Comp } = await import('../../src/components/DocRedlinePreview');
-    const { container } = render(<Comp projectId="p1" file={DIAGRAM_FILE} />);
-
-    await waitFor(() => {
-      expect(container.querySelector('[data-change-item="fd1"]')).not.toBeNull();
-    });
-    const card = container.querySelector('[data-change-item="fd1"]') as HTMLElement;
-    expect(card.querySelector('[class*="diffPreviewBefore"]')).not.toBeNull();
-    expect(card.querySelector('[class*="diffPreviewAfter"]')).not.toBeNull();
-    expect(card.querySelector('[class*="diffBefore"]')).toBeNull();
-    expect(card.querySelector('[class*="diffAfter"]')).toBeNull();
-  });
-});
-
-describe('DocRedlinePreview — 0c (wp4.yaml, vá review WP3b): sidecarJson giữ nguyên origin "system"', () => {
-  it('lưu một change origin "system" (Giữ sơ đồ gốc) không rơi rụng về "agent"', async () => {
-    vi.resetModules();
-    mockDiagramProject();
-    // "Giữ sơ đồ gốc" đi qua cùng `onDismiss` của nhánh mặc định (window.confirm
-    // trước khi bỏ) — jsdom's confirm() mặc định trả `false`, không mock thì
-    // dismissChange không bao giờ chạy.
-    vi.spyOn(window, 'confirm').mockReturnValue(true);
-    const fetchMock = vi.fn().mockResolvedValue({ ok: true } as Response);
-    vi.stubGlobal('fetch', fetchMock);
-    const { DocRedlinePreview: Comp } = await import('../../src/components/DocRedlinePreview');
-    const { container } = render(<Comp projectId="p1" file={DIAGRAM_FILE} />);
-
-    await waitFor(() => {
-      expect(container.querySelector('[data-change-item="fd1"]')).not.toBeNull();
-    });
-    const card = container.querySelector('[data-change-item="fd1"]') as HTMLElement;
-    const dismissBtn = Array.from(card.querySelectorAll('button')).find((b) => b.textContent?.includes('Giữ sơ đồ gốc'));
-    expect(dismissBtn, 'phải có nút "Giữ sơ đồ gốc"').toBeTruthy();
-    fireEvent.click(dismissBtn!);
-
-    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-    const sidecarCall = fetchMock.mock.calls.find((args) => {
-      const init = args[1] as RequestInit | undefined;
-      const body = JSON.parse(String(init?.body ?? '{}')) as { name?: string };
-      return typeof body.name === 'string' && body.name.endsWith('.changes.json');
-    });
-    expect(sidecarCall, 'phải có lệnh ghi *.changes.json').toBeTruthy();
-    const written = JSON.parse(String((sidecarCall![1] as RequestInit).body)) as { content: string };
-    const saved = JSON.parse(written.content) as { annotations: Array<Record<string, unknown>> };
-    expect(saved.annotations[0]).toMatchObject({ id: 'fd1', origin: 'system' });
+    // Nhưng vẫn không có modal — enrichment chỉ được CHỌN (nháy sáng), không
+    // có gì để "xem chi tiết" ngoài chính sơ đồ đang hiện.
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
   });
 });
 
@@ -807,7 +546,7 @@ describe('DocRedlinePreview — 0d (wp4.yaml, vá review WP3b): tắt chip "Sử
     expect(container.querySelector('mark[data-change-id="fd1"]')!.className).not.toMatch(/hlOff/);
 
     const chip = Array.from(container.querySelectorAll('label')).find((l) => l.textContent?.includes('Sửa'));
-    expect(chip, 'phải có chip lọc "Sửa"').toBeTruthy();
+    expect(chip, 'phải có chip lọc "Sửa" (HighlightFilters — nhóm 4 chip màu ở đầu trang, KHÔNG phải chip lọc theo loại đã bỏ)').toBeTruthy();
     const checkbox = chip!.querySelector<HTMLInputElement>('input[type="checkbox"]');
     expect(checkbox).not.toBeNull();
     fireEvent.click(checkbox!);

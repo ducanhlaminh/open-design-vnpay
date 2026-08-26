@@ -332,6 +332,108 @@ test('validateChanges: xoá thuần — change chỉ có `before` (kèm `anchor`
   assert.deepEqual(errors, []);
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// WP-A "đề xuất, không nướng chữ vào file": validateChanges chế độ
+// `opts.proposals` — sửa chữ của agent giờ CHỈ là đề xuất trong changes.json,
+// KHÔNG được áp vào tài liệu ghi ra. `quote` do đó là chữ MỚI không có mặt
+// trong bản đã ghi (baseline == revised, vì không gì được áp), nên khẳng định
+// quote∈revised phải được bỏ ở chế độ này. `before∈original` và `anchor` vẫn
+// khắt khe y hệt — đó là những gì agent phải trích ĐÚNG từ tài liệu thật.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('validateChanges: KHÔNG có opts.proposals — quote không có trong bản đã ghi vẫn là lỗi (pin hành vi cũ)', () => {
+  const original = 'Người dùng nhập OTP.\n';
+  const revised = original; // baseline == revised: mô phỏng "ghi baseline, không áp sửa của agent"
+  const changes: DocChange[] = [
+    {
+      id: 'c1',
+      kind: 'ux-writing',
+      severity: 'minor',
+      before: 'Người dùng nhập OTP.',
+      quote: 'Người dùng nhập mã OTP gồm 6 chữ số.',
+      reason: 'Đề xuất nêu rõ định dạng OTP.',
+    },
+  ];
+  const errors = validateChanges(original, revised, changes);
+  assert.ok(errors.length >= 1);
+  assert.match(errors.join(' '), /quote không tìm thấy trong bản đã sửa/);
+});
+
+test('validateChanges: opts.proposals=true bỏ khẳng định quote∈revised — chữ đề xuất không cần có trong bản đã ghi', () => {
+  const original = 'Người dùng nhập OTP.\n';
+  const revised = original; // daemon ghi baseline, sửa của agent không được áp
+  const changes: DocChange[] = [
+    {
+      id: 'c1',
+      kind: 'ux-writing',
+      severity: 'minor',
+      before: 'Người dùng nhập OTP.',
+      quote: 'Người dùng nhập mã OTP gồm 6 chữ số.',
+      reason: 'Đề xuất nêu rõ định dạng OTP.',
+    },
+  ];
+  const errors = validateChanges(original, revised, changes, { proposals: true });
+  assert.deepEqual(errors, []);
+});
+
+test('validateChanges: opts.proposals=true VẪN đòi before∈original — before phải là nguyên văn thật trong tài liệu gốc', () => {
+  const original = 'Dòng gốc thật.\n';
+  const revised = original;
+  const changes: DocChange[] = [
+    {
+      id: 'c1',
+      kind: 'gap',
+      severity: 'minor',
+      before: 'Câu bịa, không có trong bản gốc.',
+      quote: 'Đề xuất mới hoàn toàn.',
+      reason: 'x',
+    },
+  ];
+  const errors = validateChanges(original, revised, changes, { proposals: true });
+  assert.equal(errors.length, 1);
+  assert.match(errors[0]!, /before không tìm thấy trong bản gốc/);
+});
+
+test('validateChanges: opts.proposals=true VẪN đòi anchor cho xoá thuần đề xuất, và anchor phải nằm trong locateIn', () => {
+  const original = 'Dòng một.\nDòng đề xuất xoá.\nDòng ba.\n';
+  const revised = original;
+  const changes: DocChange[] = [
+    {
+      id: 'c1',
+      kind: 'gap',
+      severity: 'minor',
+      before: 'Dòng đề xuất xoá.',
+      anchor: 'Anchor bịa không tồn tại.',
+      reason: 'Đề xuất xoá dòng dư thừa.',
+    },
+  ];
+  const errors = validateChanges(original, revised, changes, { proposals: true });
+  assert.equal(errors.length, 1);
+  assert.match(errors[0]!, /anchor không tìm thấy trong bản đã sửa/);
+
+  const changesOk: DocChange[] = [
+    {
+      id: 'c2',
+      kind: 'gap',
+      severity: 'minor',
+      before: 'Dòng đề xuất xoá.',
+      anchor: 'Dòng ba.',
+      reason: 'Đề xuất xoá dòng dư thừa.',
+    },
+  ];
+  assert.deepEqual(validateChanges(original, revised, changesOk, { proposals: true }), []);
+});
+
+test('validateChanges: opts.proposals=true không đòi khai báo "đã đổi/thêm" cho phần đề xuất — original/revised là CẶP KHÔNG đổi nên vòng phủ tự pass', () => {
+  const original = 'Dòng một.\nNgười dùng nhập OTP.\nDòng ba.\n';
+  const revised = original;
+  // Không khai báo change nào cả — vì baseline==revised không có dòng thêm/xoá
+  // thật sự để phủ, dù nội dung "đề xuất" (không nằm trong changes ở đây) có
+  // tồn tại hay không trong đầu agent.
+  const errors = validateChanges(original, revised, [], { proposals: true });
+  assert.deepEqual(errors, []);
+});
+
 test('removePageOutputs deletes both the clone and its .changes.json for exactly one page, and is idempotent on a second call', async () => {
   const conf = join(cwd, 'docs', 'confluence');
   await mkdir(join(conf, 'attachments'), { recursive: true });

@@ -17,10 +17,12 @@ description: |
   declaration disagrees with the DS proposal (`docType` ≠ `ds.component`, or
   `ds: null` with a `why`) into a note. Embedded mockups/screenshots are illustrative
   only and must not be opened or used as evidence for flow, gap, edge-case, or
-  component findings. Edit the clone in place with
-  targeted Edit calls, then declare every change made in a
-  `.s<NN>.changes.json` file and every finding that cannot be fixed by editing
-  text in a `.s<NN>.notes.json` file — the daemon validates both.
+  component findings. Do NOT edit the slice text — declare every proposed
+  Thêm/Sửa/Xóa as an entry (before/quote/anchor/reason) in a
+  `.s<NN>.changes.json` file, and every finding that is not a single
+  text-replacement proposal in a `.s<NN>.notes.json` file — the daemon
+  validates both and writes the review page as the enriched ORIGINAL; your
+  proposals never get baked into the file, only surfaced as highlight+modal.
   Activate when the user runs the "Review tài liệu" pipeline or asks to
   review a doc against a set of criteria / audit a spec's writing and flows /
   edit a document per house rules.
@@ -37,7 +39,7 @@ od:
   category: ux-research
 ---
 
-# docs-spec-review — review + sửa một trang tài liệu theo bộ tiêu chí (Terminal, `docs-review`)
+# docs-spec-review — review một trang tài liệu theo bộ tiêu chí, ĐỀ XUẤT chứ không sửa (Terminal, `docs-review`)
 
 Bạn là bước **Review tài liệu** của workflow `docs-review` — độc lập hoàn toàn
 với `docs-to-ui` và `docs-to-prd`. Upstream trong CHÍNH workflow này, `dr-docs`
@@ -47,11 +49,15 @@ TRƯỚC KHI bạn chạy — bạn không cần (và không được) tự tạ
 
 **Bạn chỉ xử lý MỘT SECTION của MỘT trang mỗi lần chạy.** Daemon fan-out stage
 này theo section — kickoff nêu đích danh tên heading và khoảng dòng
-(`startLine-endLine`) bạn phụ trách, kèm đường dẫn gốc, LÁT CẮT bạn được sửa,
-và hai file output của section. Các section của cùng một trang chạy **song
-song**, mỗi lượt trên lát cắt riêng, nên bạn không thể giẫm chân lượt khác —
-miễn là chỉ sửa lát của mình. Daemon ghép mọi lát lại thành trang hoàn chỉnh
-sau khi tất cả chạy xong.
+(`startLine-endLine`) bạn phụ trách, kèm đường dẫn gốc, LÁT CẮT bạn ĐỌC (CHỈ
+ĐỌC, không sửa), và hai file output của section. Các section của cùng một
+trang chạy **song song**, mỗi lượt đọc một lát cắt riêng, nên bạn không thể
+giẫm chân lượt khác. **Bạn KHÔNG còn sửa lát cắt nữa** — mọi Thêm/Sửa/Xóa chỉ
+là ĐỀ XUẤT bạn khai trong `changes.json` (Bước 2/3). Daemon ghép các LÁT GỐC
+(baseline đã enrich bảng "Cấu thành màn hình" + sơ đồ, KHÔNG có bất kỳ sửa chữ
+nào của bạn) thành trang hoàn chỉnh ghi ra cho người đọc; đề xuất của bạn được
+gộp cấp trang riêng để web hiển thị bằng highlight + modal, KHÔNG được áp vào
+tài liệu.
 
 ## Bước 0 — đọc input (từ cwd của dự án)
 
@@ -61,10 +67,12 @@ sau khi tất cả chạy xong.
 
 **Bố cục tài liệu:** review bản gốc theo path kickoff (`docs/…` hoặc `docs-feature/…`) ở chế độ chỉ đọc; `docs-app/` không thuộc phạm vi review.
 
-- **Lát cắt của bạn (ĐỌC TRỌN, và là nơi DUY NHẤT được sửa):**
+- **Lát cắt của bạn (ĐỌC TRỌN, CHỈ ĐỌC — KHÔNG sửa):**
   `review/docs/<page>.s<NN>.slice.md` — daemon đã tách sẵn, chứa ĐÚNG và ĐỦ
-  nội dung section bạn phụ trách. Ref ảnh tương đối vẫn trỏ đúng vì lát nằm
-  cùng thư mục với bản clone (daemon nhân bản NGUYÊN cây `docs/` kể cả
+  nội dung section bạn phụ trách. Đây là NGUỒN để bạn trích nguyên văn
+  `before`/`anchor` cho `changes.json` — bạn không còn sửa lát này bằng bất kỳ
+  công cụ nào (xem Bước 2). Ref ảnh tương đối vẫn trỏ đúng vì lát nằm cùng
+  thư mục với bản clone (daemon nhân bản NGUYÊN cây `docs/` kể cả
   `attachments/`) — đừng đụng vào chúng.
 - **Mục lục trang (CHỈ ĐỌC):** `review/docs/<page>.outline.md` — heading + khoảng
   dòng của MỌI section, cờ "rỗng"/"có ảnh". Đọc để biết section của bạn đứng ở
@@ -75,9 +83,11 @@ sau khi tất cả chạy xong.
   cần ngữ cảnh ngoài section (một thuật ngữ, một luồng được nhắc ở phần khác)
   thì Read đúng khoảng dòng ghi trong mục lục bằng `offset`/`limit`, tối đa
   vài lần.
-- **Bản clone cả trang:** `review/docs/<page>.md` — **KHÔNG đọc, CẤM sửa.** Các
-  section của cùng một trang chạy SONG SONG, và daemon dựng lại file này bằng
-  cách ghép mọi lát sau khi tất cả chạy xong; mọi sửa đổi ghi thẳng vào đây sẽ
+- **Bản clone cả trang:** `review/docs/<page>.md` — **KHÔNG đọc, CẤM sửa.** Đây
+  là bản daemon GHI RA cho người đọc: ghép lại từ các lát BASELINE đã enrich
+  (bảng "Cấu thành màn hình" + sơ đồ inline), KHÔNG áp bất kỳ Thêm/Sửa/Xóa
+  nào của bạn — đề xuất của bạn chỉ tồn tại trong `changes.json`/`notes.json`,
+  web hiển thị chúng bằng highlight + modal. Mọi sửa đổi ghi thẳng vào đây sẽ
   bị ghi đè và mất.
 - **Bộ tiêu chí (tuỳ chọn):** `criteria/*.md` — người dùng có thể tải lên
   (`od files upload <proj> <file> --as docs-review/criteria/<name>.md`). Mỗi
@@ -97,8 +107,11 @@ sau khi tất cả chạy xong.
   daemon TỰ CHÈN bảng này vào lát của bạn TRƯỚC KHI bạn chạy — nguồn là
   `comp/<KEY>.screen.json` cho một màn hình cụ thể nằm trong lát của bạn,
   chèn ngay sau mockup của màn. Kickoff nêu đích danh `<KEY>` và tên màn
-  (dòng tiêu đề đậm «Cấu thành màn hình (Design System) — <tên màn>»). Bạn
-  KHÔNG chèn bảng, chỉ sửa ô của nó — xem Bước 2 và Bước 3.
+  (dòng tiêu đề đậm «Cấu thành màn hình (Design System) — <tên màn>»). Đây là
+  enrichment DO DAEMON DỰNG — bạn KHÔNG chèn, KHÔNG sửa bảng này (kể cả hai
+  cột "Vai trò / dùng để" và "Ghi chú" mà trước đây bạn được sửa trực tiếp);
+  nội dung bảng mâu thuẫn với tài liệu thì ghi **note** (xem Bước 4), không
+  sửa ô và không khai change.
 - **Chỉ đọc file `criteria/` có thật** — liệt kê thư mục `criteria/` trước,
   thiếu file nào (`rules.md`, `components.md`…) thì bỏ qua, đừng thử đọc rồi
   báo lỗi.
@@ -179,9 +192,10 @@ theo đúng 5 nhóm:
    luồng của TRANG đã đổi (xem Bước 0) thì đối chiếu câu mô tả nhánh trong lát
    của bạn với bản mới (`flows/<id>/proposed.mmd`, findings ở
    `flows/<id>/ux-review.json`) — câu nào mô tả một nhánh đã đổi mà không còn
-   khớp thì sửa, `kind: "flow"`, `rule_id: "flows/<id>/ux-review.json"`. Đây
-   là nhóm DUY NHẤT được dùng rule_id dạng `flows/…` — xem Hard rules cho
-   sơ đồ chính nó (bạn không được tự sửa fence/caption, chỉ sửa CHỮ mô tả).
+   khớp thì đề xuất sửa, `kind: "flow"`, `rule_id: "flows/<id>/ux-review.json"`.
+   Đây là nhóm DUY NHẤT được dùng rule_id dạng `flows/…` — xem Hard rules cho
+   sơ đồ chính nó (bạn không được tự sửa fence/caption, chỉ đề xuất sửa CHỮ mô
+   tả).
 3. **gap** — thiếu mô tả cho một tính năng/màn hình đã được nhắc tới.
 4. **edge-case** — thiếu state lỗi/rỗng/loading/giới hạn.
 5. **component** — **ĐỌC KẾT QUẢ CÓ SẴN, KHÔNG SUY LẠI TỪ ĐẦU.** Bước
@@ -207,7 +221,7 @@ theo đúng 5 nhóm:
    - `suggestion` ghi **một lần** cho cả nhóm.
    - **KHÔNG ghi note component chỉ để LẶP LẠI thông tin đã nằm trong bảng
      "Cấu thành màn hình" của cùng màn** (daemon đã tự chèn bảng đó — xem Bước
-     0/2). Note component chỉ tồn tại khi có **MÂU THUẪN thật** (`docType` ≠
+     0). Note component chỉ tồn tại khi có **MÂU THUẪN thật** (`docType` ≠
      `ds.component`, hoặc `ds: null` kèm `why`) mà bảng không chở được, hoặc
      khi cần giải thích dài hơn một ô bảng cho phép.
 
@@ -233,91 +247,68 @@ theo đúng 5 nhóm:
    `component`) — không có gì để đối chiếu thì đừng đoán.
 
 Với mỗi tiêu chí có trong `criteria/*.md`, ghi lại `rule_id` (định danh của
-rule đó trong file criteria — ví dụ heading hoặc số thứ tự) để trace được sửa
-vì rule nào.
+rule đó trong file criteria — ví dụ heading hoặc số thứ tự) để trace được đề
+xuất vì rule nào.
 
-## Bước 2 — sửa vào LÁT CẮT của bạn
+## Bước 2 — KHÔNG sửa lát cắt; mọi Thêm/Sửa/Xóa CHỈ là ĐỀ XUẤT
 
 **LUẬT CỨNG:**
 
-- **Chỉ sửa `review/docs/<page>.s<NN>.slice.md`** — lát cắt kickoff giao cho
-  bạn. Đó là toàn bộ phạm vi bạn được đụng vào.
-- **Dùng Edit để sửa từng chỗ một** — mỗi thay đổi là một lời gọi Edit nhắm
-  đúng đoạn cần sửa.
-- **CẤM dùng Write để ghi đè cả file** — kể cả khi bạn thấy "dễ hơn" viết lại
-  toàn bộ. Ghi đè cả file làm mất khả năng đối chiếu dòng-đã-đổi ở bước
-  validate của daemon (multiset dòng), và làm hỏng mọi phần không liên quan
-  đến review.
-- **CẤM sửa bản clone cả trang `review/docs/<page>.md`** — các section chạy
-  song song và daemon dựng lại file đó từ mọi lát sau khi tất cả xong; ghi vào
-  đó là ghi vào thứ sắp bị thay thế.
+- **TUYỆT ĐỐI KHÔNG sửa `review/docs/<page>.s<NN>.slice.md`** — không dùng
+  Edit, không dùng Write, không dùng lệnh shell (`Set-Content`, `echo`/`cat >`,
+  heredoc…), dù bạn thấy "dễ hơn" hay chắc chắn đúng. Lát cắt là NGUỒN CHỈ-ĐỌC
+  để bạn trích nguyên văn `before`/`anchor`.
+- **Mọi Thêm/Sửa/Xóa là một ĐỀ XUẤT** khai trong `.s<NN>.changes.json` (Bước
+  3) — nội dung `quote` sẽ KHÔNG được áp vào tài liệu ghi ra; người dùng xem
+  đề xuất qua highlight + modal trên web. Chính vì tài liệu không đổi chữ,
+  `before`/`anchor` càng phải chính xác: chúng là toạ độ DUY NHẤT để giao diện
+  đặt highlight vào đúng chỗ trong tài liệu.
+- **CẤM sửa bản clone cả trang `review/docs/<page>.md`** — nó do daemon dựng
+  từ các LÁT BASELINE (đã enrich, KHÔNG có sửa đổi nào của agent) sau khi mọi
+  section chạy xong.
 - **CẤM sửa bất cứ file nào dưới `docs/`** — kể cả bản gốc của chính trang bạn
   đang review. `docs/` là input read-only tuyệt đối của stage này.
-- **Giữ nguyên frontmatter và mọi ref ảnh** có trong lát cắt — chỉ sửa nội dung
-  liên quan đến 5 nhóm ở bước 1.
-- **TUYỆT ĐỐI không đụng fence ` ```mermaid ` hay dòng caption `*flow-diagram
-  — …*`** dù nó nằm trong lát của bạn — daemon đã tự thay bằng sơ đồ đề xuất
-  TRƯỚC KHI bạn chạy (xem Bước 0). Sửa vào đó bị coi là "xoá không khai báo"
-  và đánh hỏng cả trang.
-- **Sửa lát BẰNG công cụ sửa file (Edit/apply_patch) từng chỗ một — KHÔNG
-  dùng lệnh shell** (`Set-Content`, `echo`/`cat >`, heredoc…) để ghi lại lát,
-  và **KHÔNG dán output của một lệnh vào lát**. Daemon quét lát tìm các dòng
-  kiểu `Wall time:`, `Total output lines:`, `Output:`, `---SLICE---` và coi
-  đó là rác lẫn vào tài liệu — phát hiện là huỷ kết quả của section (khôi
-  phục lát về bản gốc, bỏ mọi change/note section đó đã ghi).
-
-**Sửa bảng "Cấu thành màn hình" (chỉ khi kickoff nhắc tên một `<KEY>`):**
-bảng này đã nằm sẵn trong lát của bạn — daemon TỰ CHÈN nó TRƯỚC KHI bạn chạy
-(xem Bước 0), bạn **không chèn/tạo bảng**. Bạn CHỈ được sửa ô của HAI cột
-**"Vai trò / dùng để"** và **"Ghi chú"** — đối chiếu với bảng field ngay bên
-dưới trong tài liệu rồi viết lại ngắn gọn bằng tiếng Việt, Edit từng hàng một.
-**CẤM:**
-
-- thêm hoặc bớt hàng;
-- sửa các cột khác (`#` / `Thành phần` / `Component DS` / `Biến thể` / `Mô tả
-  component` / `Điều hướng tới`);
-- sửa dòng tiêu đề đậm `**Cấu thành màn hình…**` hoặc dòng caption
-  `*Nguồn: comp/…*`;
-- dùng ký tự `|` trong nội dung ô (nó là ký tự phân cách cột — dùng `/` hoặc
-  `;` thay thế).
-
-**KHÔNG khai change cho việc sửa ô này** — daemon tự đối soát bảng bạn sửa
-với bảng gốc và tự ghi nhận (xem Bước 3). Nếu nội dung bảng mâu thuẫn với
-bảng field theo cách không sửa được bằng chữ (ví dụ component DS sai hẳn),
-ghi **note** `kind: "component"`, `rule_id: "comp/<KEY>.screen.json"` (Bước
-4) — đừng tự sửa các cột khoá.
+- **TUYỆT ĐỐI không đụng bảng "Cấu thành màn hình" hay fence ` ```mermaid `/
+  dòng caption `*flow-diagram — …*`** dù bạn thấy chúng sai/thiếu — đây là
+  enrichment do daemon dựng (xem Bước 0). Mâu thuẫn với bảng thì ghi note (Bước
+  4); câu chữ mô tả nhánh luồng lệch với sơ đồ mới thì khai `kind: "flow"`
+  (Bước 1/3) — không tự sửa sơ đồ.
+- **CẤM chèn bất kỳ chuỗi chú giải nào** (ví dụ `[Rà soát …]`) vào bất cứ đâu
+  — nhận xét không diễn đạt được bằng một cặp `before`/`quote` thì đi vào
+  `notes.json` (Bước 4).
 
 ## Bước 3 — ghi `review/docs/<...>.s<NN>.changes.json`
 
-Ghi đúng MỘT file cho phần ĐÃ SỬA của section, tại đường dẫn kickoff đã nêu
+Ghi đúng MỘT file khai báo ĐỀ XUẤT của section, tại đường dẫn kickoff đã nêu
 (bản clone `.md` đổi đuôi thành `.s<NN>.changes.json`, với `NN` là số thứ tự
 section đệm 0 hai chữ số — ví dụ section 3 của `review/docs/confluence/a.md` là
 `review/docs/confluence/a.s03.changes.json`). Nội dung là một mảng `DocChange`.
 Daemon gộp file của mọi section thành `a.changes.json` cấp trang sau khi cả
-trang chạy xong — **bạn không tự ghi file gộp đó**. Mỗi change mang được **cả
-hai phía**:
+trang chạy xong — **bạn không tự ghi file gộp đó**. **File này khai báo ĐỀ
+XUẤT, không phải nhật ký sửa đổi** (bạn không sửa gì cả) — web hiển thị từng
+entry bằng highlight + modal, KHÔNG có gì được áp vào tài liệu. Mỗi change
+mang được **cả hai phía**:
 
-- `before`: đoạn văn bản NGUYÊN VĂN của bản GỐC — lấy từ lát cắt TRƯỚC KHI
-  bạn sửa (lát cắt là bản sao nguyên văn của `docs/<page>.md` trong khoảng
-  dòng của bạn, nên không cần mở bản gốc để chép) — đoạn bị thay hoặc bị xoá.
-- `quote`: đoạn văn bản NGUYÊN VĂN của bản ĐÃ SỬA — lấy từ lát cắt SAU KHI bạn
-  sửa (daemon ghép lát vào `review/docs/<page>.md`) — đoạn thay thế hoặc bổ
-  sung.
+- `before`: đoạn văn bản NGUYÊN VĂN hiện có trong lát cắt của bạn — đoạn bạn
+  đề xuất Sửa hoặc Xóa. Lát cắt là bản sao nguyên văn của `docs/<page>.md`
+  trong khoảng dòng của bạn, nên không cần mở bản gốc để chép.
+- `quote`: đoạn văn bản BẠN ĐỀ XUẤT thay thế/bổ sung — chữ MỚI, KHÔNG có mặt
+  ở đâu trong tài liệu và SẼ KHÔNG được ghi vào tài liệu; nó chỉ là nội dung
+  đề xuất hiển thị trong modal khi người đọc bấm vào highlight.
 
 **Quy ước theo loại thay đổi:**
 
 - **Sửa/thay một đoạn** (trường hợp phổ biến nhất): ghi CẢ HAI — `before` là
-  câu gốc, `quote` là câu đã sửa. Thiếu `before` ở trường hợp này làm daemon
-  coi câu gốc là "xoá không khai báo" và đánh hỏng cả trang.
-- **Bổ sung thuần** (thêm câu/đoạn hoàn toàn mới, không thay thế gì): chỉ ghi
-  `quote`, bỏ trống `before`.
-- **Xoá thuần** (bỏ hẳn một câu/đoạn, không thay bằng gì): chỉ ghi `before`,
-  bỏ trống `quote`, và **BẮT BUỘC ghi `anchor`** — nguyên văn một đoạn trong
-  bản ĐÃ SỬA nằm ngay cạnh chỗ vừa xoá (câu liền trước hoặc liền sau).
-  Vì sao bắt buộc: chỗ xoá không còn chữ nào trong bản đã sửa để neo, nên nếu
-  thiếu `anchor` thì người đọc bản review **không nhìn thấy chỗ xoá ở đâu
-  trong tài liệu** — nó chỉ còn nằm trong danh sách bên lề. Daemon đánh hỏng
-  trang khi thiếu.
+  đoạn hiện có trong lát, `quote` là đoạn bạn ĐỀ XUẤT thay vào đó.
+- **Bổ sung thuần** (đề xuất thêm câu/đoạn hoàn toàn mới, không thay thế gì):
+  chỉ ghi `quote`, bỏ trống `before`.
+- **Xoá thuần** (đề xuất bỏ hẳn một câu/đoạn, không thay bằng gì): chỉ ghi
+  `before`, bỏ trống `quote`, và **BẮT BUỘC ghi `anchor`** — nguyên văn một
+  đoạn trong lát nằm ngay cạnh chỗ bạn đề xuất xoá (câu liền trước hoặc liền
+  sau). Vì sao bắt buộc: tài liệu sẽ không đổi chữ, nên `anchor` là toạ độ
+  DUY NHẤT để giao diện đặt highlight "đề xuất xoá" vào đúng chỗ trong tài
+  liệu — thiếu nó, người đọc không biết đề xuất xoá này nói về đoạn nào. Daemon
+  đánh hỏng trang khi thiếu.
 - Một change mà cả `before` lẫn `quote` đều rỗng là lỗi.
 - `id` chỉ cần duy nhất TRONG section của bạn (ví dụ `c1`, `c2`…); daemon sẽ tự
   namespace thành `s<NN>-<id>` khi gộp cấp trang — trùng `id` trong cùng
@@ -349,13 +340,10 @@ hai phía**:
 
 **`change kind: "component"` với `rule_id: "comp/<KEY>.screen.json"` là CỦA
 DAEMON, không phải của bạn.** Daemon tự chèn bảng "Cấu thành màn hình" (Bước
-0/2) và tự khai change đó (`quote` = cả bảng, không có `before`); sau khi
-section chạy xong, daemon tự đối soát bảng bạn sửa (hai cột "Vai trò / dùng
-để" và "Ghi chú") với bảng gốc rồi cập nhật lại `quote` của đúng change đó.
-Bạn **KHÔNG khai change** cho việc sửa ô của bảng này dù bạn thấy lát của
-mình có bảng đó (xem Bước 2). Bạn vẫn có thể ghi **note**
-`rule_id: "comp/<KEY>.screen.json"` khi nội dung bảng mâu thuẫn với tài liệu
-theo cách không sửa được bằng chữ (Bước 4).
+0) và tự khai change đó (`quote` = cả bảng, không có `before`) — bạn KHÔNG
+sửa bảng này và KHÔNG khai change nào cho nó (xem Bước 2). Nội dung bảng mâu
+thuẫn với tài liệu theo cách không diễn đạt được bằng một cặp `before`/`quote`
+thì ghi **note** `rule_id: "comp/<KEY>.screen.json"` (Bước 4).
 
 **`kind: "flow-diagram"` là CỦA DAEMON, không phải của bạn.** Sơ đồ đề xuất ở
 Bước 0/2 do daemon tự thay và tự khai change — bạn **KHÔNG được tự tạo** một
@@ -371,27 +359,28 @@ cả trang nếu phát hiện. Câu chữ mô tả nhánh luồng đổi theo s�
   vẫn hợp lệ nhưng là lựa chọn kém nhất — một phát hiện không trace được về
   tiêu chí nào thì người đọc không có cách nào phản biện nó.
 - `anchor`: bắt buộc với xoá thuần (xem trên); các loại khác không cần. Khi có
-  mặt phải tìm thấy nguyên văn trong bản ĐÃ SỬA.
-- `doc_refs`: **tối đa 3** đoạn NGUYÊN VĂN lấy từ bản ĐÃ SỬA — mỗi khi `reason`
-  viện dẫn một chỗ KHÁC trong tài liệu ("đoạn trước gọi là…", "trái với luồng
-  F-009", "bảng ở mục 2.1 khai khác") thì đoạn được viện dẫn đó phải nằm ở đây.
-  UI dựng chúng thành nút nhảy thẳng tới chỗ đó. Viện dẫn suông bằng lời buộc
-  người đọc tự đi tìm — đó là lý do trường này tồn tại.
-- Cả `before` và `quote` (khi có mặt) đều phải **đủ dài để duy nhất** trong
-  trang (daemon dùng chúng để xác nhận chỗ sửa thật sự tồn tại — `before`
-  trong bản gốc, `quote` trong bản clone). Một câu ngắn 4–5 từ trùng lặp ở
-  nhiều chỗ trong trang là giá trị KHÔNG hợp lệ cho cả hai trường. `anchor` và
-  mỗi phần tử `doc_refs` chịu cùng đòi hỏi đó, đối chiếu với bản ĐÃ SỬA.
+  mặt phải tìm thấy nguyên văn trong tài liệu (lát cắt của bạn).
+- `doc_refs`: **tối đa 3** đoạn NGUYÊN VĂN lấy từ tài liệu (lát cắt của bạn)
+  — mỗi khi `reason` viện dẫn một chỗ KHÁC trong tài liệu ("đoạn trước gọi
+  là…", "trái với luồng F-009", "bảng ở mục 2.1 khai khác") thì đoạn được
+  viện dẫn đó phải nằm ở đây. UI dựng chúng thành nút nhảy thẳng tới chỗ đó.
+  Viện dẫn suông bằng lời buộc người đọc tự đi tìm — đó là lý do trường này
+  tồn tại.
+- `before` (khi có mặt) phải đủ dài để duy nhất trong trang — daemon dùng nó
+  để xác nhận đoạn bạn định thay/xoá thật sự tồn tại trong bản gốc. `anchor`
+  và mỗi phần tử `doc_refs` chịu cùng đòi hỏi đó, đối chiếu với tài liệu (lát
+  cắt của bạn). `quote` KHÔNG chịu đòi hỏi này — nó là chữ ĐỀ XUẤT, không cần
+  (và sẽ không) tồn tại ở đâu trong tài liệu.
 
 ### Viết `reason`: đúng MỘT câu, nói VẤN ĐỀ — không tả cách sửa
 
 `reason` trả lời đúng một câu hỏi: **đoạn gốc sai ở chỗ nào, đối chiếu với
 tiêu chí nào.** Nhắm dưới 160 ký tự.
 
-- **CẤM tả lại việc bạn đã làm.** Không "đã sửa thành…", "thay bằng…", "bổ
+- **CẤM tả lại đề xuất của bạn.** Không "nên sửa thành…", "thay bằng…", "bổ
   sung…", "gộp lại…", "nêu rõ…". Người đọc thấy `before → quote` cạnh nhau
-  trong giao diện, tô màu từng chữ đổi — họ đã biết bạn làm gì rồi. Kể lại
-  chính là thứ làm câu lý do dài ra và loãng đi.
+  trong giao diện, tô màu từng chữ khác biệt — họ đã biết bạn đề xuất gì rồi.
+  Kể lại chính là thứ làm câu lý do dài ra và loãng đi.
 - **Một câu, một vấn đề.** Cần nói hai vấn đề thì tách thành hai change.
 - **Viện dẫn thì phải kèm `doc_refs`** (xem trên). Không có ngoại lệ.
 
@@ -400,11 +389,12 @@ tiêu chí nào.** Nhắm dưới 160 ký tự.
 | "Mô tả cũ không nói rõ ai làm gì và thiếu hành vi sau khi nhấn: tác nhân, quy ước tên file, trạng thái loading khi Server kết xuất và thời điểm đóng popup. Gộp các thông tin này (vốn nằm rải ở dòng trùng lặp cuối bảng) vào đúng dòng của nút." | "Dòng mô tả nút không cho biết ai bấm và chuyện gì xảy ra sau khi bấm." |
 | "Thống nhất gọi là 'Xác nhận' thay vì 'OK' như đoạn trước đó dùng." | "Cùng một nút được gọi bằng hai tên khác nhau trong cùng trang." + `doc_refs` trỏ tới đoạn dùng tên kia |
 
-## Bước 4 — ghi `review/docs/<...>.s<NN>.notes.json` (nhận xét không sửa được)
+## Bước 4 — ghi `review/docs/<...>.s<NN>.notes.json` (nhận xét không phải một đề xuất sửa chữ)
 
-Đây là đường ra cho **mọi phát hiện không sửa được bằng cách sửa chữ**. Trước
-đây chúng không có chỗ nào để đi, nên hoặc bị bỏ qua hoàn toàn, hoặc bị nhét
-vào tài liệu dưới dạng chú giải — cả hai đều sai. Ghi note khi bạn thấy:
+Đây là đường ra cho **mọi phát hiện không diễn đạt được bằng một cặp
+`before`/`quote`**. Trước đây chúng không có chỗ nào để đi, nên hoặc bị bỏ qua
+hoàn toàn, hoặc bị nhét vào tài liệu dưới dạng chú giải — cả hai đều sai. Ghi
+note khi bạn thấy:
 
 - văn bản yêu cầu dùng overlay/Modal/Drawer sai ngữ cảnh (sai `R-OVERLAY`);
 - mỗi NHÓM element (cùng đích đề xuất DS) trong `comp/<SCREEN-KEY>.screen.json`
@@ -462,35 +452,36 @@ là mảng rỗng, không phải lỗi.
 
 ## Hard rules
 
-- **CẤM tạo change chỉ để sửa chính tả.** Lỗi gõ, thiếu/thừa dấu tiếng Việt,
-  viết hoa/thường không đều, khoảng trắng thừa, sai dấu câu — không cái nào
-  được thành một entry trong `changes.json`, dù bạn có nhìn thấy. Nếu một câu
-  vừa sai chính tả vừa có vấn đề thật (mơ hồ, sai thuật ngữ), hãy sửa và khai
-  báo theo vấn đề thật, đừng lấy chính tả làm lý do.
+- **CẤM tạo change chỉ để đề xuất sửa chính tả.** Lỗi gõ, thiếu/thừa dấu tiếng
+  Việt, viết hoa/thường không đều, khoảng trắng thừa, sai dấu câu — không cái
+  nào được thành một entry trong `changes.json`, dù bạn có nhìn thấy. Nếu một
+  câu vừa sai chính tả vừa có vấn đề thật (mơ hồ, sai thuật ngữ), hãy đề xuất
+  và khai báo theo vấn đề thật, đừng lấy chính tả làm lý do.
 
   Vì sao: người đọc bản review cần biết chỗ nào **mơ hồ, sai luồng, hay thiếu
   mô tả** — đó là thứ tốn tiền nếu lọt xuống khâu làm sản phẩm. Một bản soát
   lỗi gõ họ không cần, và vì lỗi gõ thì trang nào cũng có nên nó áp đảo danh
   sách về mặt số lượng, đẩy những phát hiện đáng giá xuống dưới. Thà trả về ít
   change mà mỗi cái đều đáng đọc.
-- **Mọi chỗ đã sửa trong bản clone đều phải có một entry tương ứng trong
-  `changes.json`, khai đúng phía.** Daemon đối chiếu dòng đã THÊM/ĐỔI (phía
-  bản đã sửa) với `quote`, và dòng đã BỊ XOÁ (phía bản gốc) với `before` của
-  từng change (chịu được khác biệt khoảng trắng/xuống dòng) — dòng nào không
-  được phủ đúng phía sẽ bị daemon đánh hỏng CẢ TRANG (xoá luôn bản clone lẫn
-  `changes.json` của trang đó, không phải lỗi có thể sửa tay sau). Với một
-  lần sửa chữ bình thường, thiếu `before` là lỗi phổ biến nhất — luôn ghi cả
-  hai khi bạn thay một câu bằng câu khác.
-- `before` phải thực sự xuất hiện trong bản GỐC, `quote` phải thực sự xuất
-  hiện trong bản ĐÃ SỬA — giá trị sai/không tồn tại cũng làm hỏng trang.
-  `anchor` và mọi phần tử `doc_refs` của một change cũng phải xuất hiện trong
-  bản ĐÃ SỬA; với note, `doc_refs` đối chiếu bản GỐC. Trích sai một chữ là
-  hỏng trang, nên hãy COPY nguyên văn thay vì gõ lại.
+- **Chỉ khai change cho những chỗ bạn THỰC SỰ có ý kiến theo 5 nhóm ở Bước 1**
+  — không có cơ chế đối chiếu dòng-đã-đổi nào chạy nữa (bạn không sửa gì trên
+  đĩa để đối chiếu), nên daemon tin vào chính danh sách bạn khai. Bỏ sót một
+  vấn đề thật là mất phát hiện đó, không phải lỗi kỹ thuật — nhưng khai bừa để
+  "cho chắc" cũng không được: xem luật chính tả ở trên và Bước 1 cho phạm vi
+  đúng của mỗi nhóm.
+- `before` phải thực sự xuất hiện trong bản GỐC/lát cắt — giá trị sai/không
+  tồn tại làm hỏng trang. `quote` KHÔNG chịu đòi hỏi này: nó là chữ ĐỀ XUẤT,
+  không cần (và sẽ không) tồn tại ở đâu trong tài liệu. `anchor` và mọi phần
+  tử `doc_refs` của một change cũng phải xuất hiện trong tài liệu (lát cắt của
+  bạn); với note, `doc_refs` đối chiếu bản GỐC. Trích sai một chữ ở
+  `before`/`anchor`/`doc_refs` là hỏng trang, nên hãy COPY nguyên văn thay vì
+  gõ lại.
 - **Xoá thuần bắt buộc có `anchor`.** Không có `quote` thì `anchor` là toạ độ
-  duy nhất để giao diện đặt đoạn chữ bị xoá vào đúng chỗ của nó trong tài
-  liệu; thiếu nó, chỗ xoá biến mất khỏi thứ người đọc nhìn thấy.
-- **`reason` là MỘT câu nêu vấn đề, không phải bản tường thuật việc bạn đã
-  làm.** Cấm "đã sửa thành…", "thay bằng…", "bổ sung…". Diff `before → quote`
+  duy nhất để giao diện đặt highlight "đề xuất xoá" vào đúng chỗ của nó trong
+  tài liệu; thiếu nó, đề xuất xoá không neo được vào đâu trong thứ người đọc
+  nhìn thấy.
+- **`reason` là MỘT câu nêu vấn đề, không phải bản tường thuật đề xuất của
+  bạn.** Cấm "nên sửa thành…", "thay bằng…", "bổ sung…". Diff `before → quote`
   đã hiển thị nguyên vẹn cạnh câu lý do, tô màu tới từng chữ — kể lại nó chỉ
   làm câu dài ra và đẩy phần "sai ở đâu" xuống cuối.
 - **Viện dẫn thì phải kèm `doc_refs`.** Mọi câu lý do nhắc tới một chỗ khác
@@ -500,15 +491,12 @@ là mảng rỗng, không phải lỗi.
 - **KHÔNG tự ghi `review/index.json` hay `review/summary.md`** — daemon gộp
   kết quả của mọi trang vào hai file đó sau khi tất cả các lượt chạy xong.
   Bạn chỉ ghi hai file của đúng section mình được giao.
-- **CẤM chèn bất kỳ chuỗi chú giải nào vào bản clone** — đặc biệt là
-  `[Rà soát …]`. Daemon quét bản clone và **đánh hỏng CẢ TRANG** nếu phát hiện
-  (xoá luôn bản clone lẫn mọi file changes/notes của trang đó).
-
-  Vì sao: chú giải chèn vào giữa một ô bảng markdown **làm vỡ bảng** của tài
-  liệu gốc — bản review trở thành thứ không dùng lại được. Và động cơ chèn nó
-  luôn là để có chỗ gắn `quote` cho một nhận xét vốn không sửa được bằng chữ;
-  loại nhận xét đó giờ đã có đường ra hợp lệ là `notes.json` (Bước 4). Cần bàn
-  thì ghi note, đừng viết vào tài liệu.
+- **CẤM chèn bất kỳ chuỗi chú giải nào vào bất cứ đâu** — đặc biệt là
+  `[Rà soát …]`. Bạn không sửa lát/bản clone (Bước 2) nên việc này không nên
+  xảy ra; nếu daemon vẫn phát hiện chú giải kiểu này trong bản clone, nó
+  **đánh hỏng CẢ TRANG** (xoá luôn bản clone lẫn mọi file changes/notes của
+  trang đó). Nhận xét không diễn đạt được bằng `before`/`quote` thì ghi note
+  (Bước 4), đừng tìm cách viết vào tài liệu.
 - **`rule_id` chỉ được dùng anchor CÓ THẬT trong `criteria/`.** Daemon đối
   chiếu với danh sách anchor trích từ heading của các file `criteria/*.md`;
   `rule_id` bịa ra làm hỏng cả trang.
@@ -525,20 +513,19 @@ là mảng rỗng, không phải lỗi.
     khi dự án KHÔNG có `criteria/` (bộ mặc định nằm trong chính skill này, nó
     không phụ thuộc thư mục criteria), nên một `default#` bịa ra làm hỏng
     trang y như một anchor bịa.
-- **CẤM tự vẽ/sửa sơ đồ mermaid hay dòng caption của nó** (fence
+- **CẤM tự vẽ/sửa/đề xuất sửa sơ đồ mermaid hay dòng caption của nó** (fence
   ` ```mermaid ` và `*flow-diagram — …*` ngay dưới) — kể cả khi bạn thấy sơ đồ
   sai hoặc thiếu nhánh. Đó là việc của bước Đánh giá luồng UX (`dr-flow`),
-  daemon đã tự thay bằng bản đề xuất trước khi bạn chạy (xem Bước 0). Bạn chỉ
-  được sửa CHỮ mô tả luồng ở nơi khác trong lát, không phải sơ đồ.
-- **Bảng "Cấu thành màn hình" — chỉ được sửa ô của HAI cột "Vai trò / dùng
-  để" và "Ghi chú".** Daemon tự chèn bảng này vào lát (Bước 0/2) với đúng một
-  hàng cho mỗi element của `comp/<KEY>.screen.json`. CẤM thêm/bớt hàng, sửa
-  các cột khác, sửa dòng tiêu đề đậm hoặc dòng caption `*Nguồn: comp/…*`,
-  hoặc dùng ký tự `|` trong nội dung ô. Không khai change cho việc sửa ô này
-  (xem Bước 2/3) — daemon tự đối soát bảng sau khi section chạy xong; sửa sai
-  luật này bị coi là bảng hỏng cấu trúc và đánh hỏng section.
+  daemon đã tự thay bằng bản đề xuất trước khi bạn chạy (xem Bước 0). Câu chữ
+  mô tả luồng lệch với sơ đồ mới thì khai `kind: "flow"` (Bước 1/3, đây cũng
+  chỉ là đề xuất, không sửa gì trên đĩa).
+- **Bảng "Cấu thành màn hình" — daemon tự chèn (Bước 0) và TỰ QUẢN LÝ toàn bộ
+  nội dung của nó, kể cả hai cột "Vai trò / dùng để" và "Ghi chú".** Bạn KHÔNG
+  sửa bảng này và KHÔNG khai change nào cho nó (xem Bước 2/3). Nội dung mâu
+  thuẫn với tài liệu theo cách không diễn đạt được bằng `before`/`quote` thì
+  ghi note `rule_id: "comp/<KEY>.screen.json"` (Bước 4).
   - Cột "Mô tả component" mang hậu tố **"(AI sinh)"** nghĩa là mô tả đó lấy
     từ `criteria/components-guide.md` chứ không phải mô tả gốc trong Figma —
-    giữ nguyên hậu tố khi đối chiếu bảng, KHÔNG được coi là lỗi và KHÔNG được
-    tự xoá.
+    đây là điều bình thường khi bạn đọc bảng để viết note, KHÔNG phải một
+    lỗi.
 - File-only: không đẩy bất cứ gì lên KGS.

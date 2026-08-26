@@ -3,7 +3,9 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, waitFor, within } from '@testing-library/react';
 
 const DOC = ['# Mục lục', '', '- Nội dung lặp', '', '# Chi tiết', '', 'Nội dung lặp', '', 'Nội dung thay đổi'].join('\n');
-const CHANGES = JSON.stringify([{ id: 'c1', kind: 'ux-writing', severity: 'minor', quote: 'Nội dung thay đổi', reason: 'Sửa rõ hơn', sectionIndex: 2, sectionHeading: '# Chi tiết' }]);
+// wp-doc-redline-nondestructive: 'add' neo trên `anchor` (chữ gốc còn nguyên
+// trong tài liệu) — `quote` chỉ là đề xuất, không cần khớp gì trong DOC nữa.
+const CHANGES = JSON.stringify([{ id: 'c1', kind: 'ux-writing', severity: 'minor', anchor: 'Chi tiết', quote: 'Nội dung thay đổi', reason: 'Sửa rõ hơn', sectionIndex: 2, sectionHeading: '# Chi tiết' }]);
 const NOTES = JSON.stringify([{ id: 'n1', kind: 'gap', severity: 'major', anchor: 'Nội dung lặp', finding: 'Thiếu mô tả', suggestion: 'Bổ sung', sectionIndex: 2, sectionHeading: '# Chi tiết' }]);
 
 let sourceDoc = DOC;
@@ -28,73 +30,24 @@ afterEach(() => {
 });
 
 describe('DocRedlinePreview mode integration', () => {
-  it('đồng bộ hai mode controls và cô lập DOM theo mode', async () => {
+  it('đồng bộ mode control và cô lập DOM theo mode', async () => {
     const { container } = render(<DocRedlinePreview projectId="p" file={FILE} />);
     await waitFor(() => expect(container.querySelector('mark[data-change-id="c1"]')).not.toBeNull());
     expect(container.querySelector('mark[data-change-id="note:n1"]')).toBeNull();
-    expect(container.querySelector('[data-change-item="c1"]')).not.toBeNull();
-    expect(container.querySelector('[data-change-item="note:n1"]')).toBeNull();
 
+    // Rail đã bỏ: chỉ còn MỘT mode control (ở đầu cột tài liệu).
     const tablists = within(container).getAllByRole('tablist', { name: 'Chế độ xem tài liệu' });
-    expect(tablists).toHaveLength(2);
-    fireEvent.click(within(tablists[1]!).getByRole('tab', { name: 'Nhận xét (1)' }));
+    expect(tablists).toHaveLength(1);
+    fireEvent.click(within(tablists[0]!).getByRole('tab', { name: 'Nhận xét (1)' }));
     await waitFor(() => expect(container.querySelector('mark[data-change-id="note:n1"]')).not.toBeNull());
     expect(container.querySelector('mark[data-change-id="c1"]')).toBeNull();
-    expect(container.querySelector('[data-change-item="note:n1"]')).not.toBeNull();
-    expect(container.querySelector('[data-change-item="c1"]')).toBeNull();
-    for (const list of tablists) expect(within(list).getByRole('tab', { name: 'Nhận xét (1)' }).getAttribute('aria-selected')).toBe('true');
+    expect(within(tablists[0]!).getByRole('tab', { name: 'Nhận xét (1)' }).getAttribute('aria-selected')).toBe('true');
   });
 
-  it('bật tắt highlight từng item, giữ card trong rail và nhớ trạng thái riêng khi đổi tab', async () => {
-    const { container } = render(<DocRedlinePreview projectId="p" file={FILE} />);
-    await waitFor(() => expect(container.querySelector('mark[data-change-id="c1"]')).not.toBeNull());
-
-    const hideChange = within(container).getByRole('button', { name: 'Ẩn highlight thay đổi 1' });
-    expect(hideChange.getAttribute('aria-pressed')).toBe('true');
-    fireEvent.click(hideChange);
-
-    await waitFor(() => expect(container.querySelector('mark[data-change-id="c1"]')).toBeNull());
-    expect(container.querySelector('[data-change-item="c1"]')).not.toBeNull();
-    expect(within(container).getByText('0/1 đang hiện')).toBeTruthy();
-    expect(within(container).getByRole('button', { name: 'Hiện highlight thay đổi 1' }).getAttribute('aria-pressed')).toBe('false');
-
-    fireEvent.click(within(container).getAllByRole('tab', { name: 'Nhận xét (1)' })[0]!);
-    await waitFor(() => expect(container.querySelector('mark[data-change-id="note:n1"]')).not.toBeNull());
-    expect(within(container).getByText('1/1 đang hiện')).toBeTruthy();
-
-    fireEvent.click(within(container).getAllByRole('tab', { name: 'Thay đổi (1)' })[0]!);
-    await waitFor(() => expect(container.querySelector('[data-change-item="c1"]')).not.toBeNull());
-    expect(container.querySelector('mark[data-change-id="c1"]')).toBeNull();
-
-    fireEvent.click(within(container).getByRole('button', { name: 'Hiện highlight thay đổi 1' }));
-    await waitFor(() => expect(container.querySelector('mark[data-change-id="c1"]')).not.toBeNull());
-  });
-
-  it('ẩn tất cả chỉ tác động tab hiện tại và navigation bỏ qua item đã tắt', async () => {
-    sourceDoc = ['# A', '', 'Đổi một', '', 'Đổi hai', '', 'Ghi chú'].join('\n');
-    sourceChanges = JSON.stringify([
-      { id: 'c1', kind: 'ux-writing', severity: 'minor', quote: 'Đổi một', reason: 'x' },
-      { id: 'c2', kind: 'ux-writing', severity: 'minor', quote: 'Đổi hai', reason: 'y' },
-    ]);
-    sourceNotes = JSON.stringify([{ id: 'n1', kind: 'gap', severity: 'minor', anchor: 'Ghi chú', finding: 'x', suggestion: 'y' }]);
-
-    const { container } = render(<DocRedlinePreview projectId="p" file={FILE} />);
-    await waitFor(() => expect(container.querySelectorAll('mark[data-change-id^="c"]')).toHaveLength(2));
-
-    fireEvent.click(within(container).getByRole('button', { name: 'Ẩn highlight thay đổi 1' }));
-    await waitFor(() => expect(container.querySelector('mark[data-change-id="c1"]')).toBeNull());
-    expect(within(container).getByText('1/2 đang hiện')).toBeTruthy();
-    expect(within(container).getByLabelText('Điều hướng thay đổi').textContent).toContain('/ 1');
-
-    fireEvent.click(within(container).getByRole('button', { name: 'Ẩn tất cả' }));
-    await waitFor(() => expect(container.querySelectorAll('mark[data-change-id^="c"]')).toHaveLength(0));
-    expect(within(container).getByText('0/2 đang hiện')).toBeTruthy();
-    expect(within(container).getByLabelText('Điều hướng thay đổi').textContent).toContain('/ 0');
-
-    fireEvent.click(within(container).getAllByRole('tab', { name: 'Nhận xét (1)' })[0]!);
-    await waitFor(() => expect(container.querySelector('mark[data-change-id="note:n1"]')).not.toBeNull());
-    expect(within(container).getByText('1/1 đang hiện')).toBeTruthy();
-  });
+  // wp-redline-no-rail.yaml: nút "Ẩn/Hiện highlight" từng mục + "Ẩn/Hiện tất
+  // cả" sống trong rail đã bỏ — không có chỗ thay thế (top toolbar chỉ giữ
+  // mode-switch + bốn công tắc MÀU add/edit/del/note dùng chung cho mọi mục,
+  // xem HighlightFilters), nên tính năng ẩn/hiện TỪNG chỗ sửa không còn nữa.
 
   it('scope metadata tránh neo vào nội dung trùng trong mục lục, file cũ vẫn fallback', async () => {
     const parsedChange = parseDocChanges(CHANGES)![0]!;
@@ -153,7 +106,7 @@ describe('DocRedlinePreview mode integration', () => {
   it('không giới hạn doc_refs theo section của owner', async () => {
     sourceDoc = ['# Một', '', 'Anchor owner', '', '# Hai', '', 'Bằng chứng chéo section'].join('\n');
     sourceChanges = JSON.stringify([{
-      id: 'cross-ref', kind: 'gap', severity: 'minor', quote: 'Anchor owner', reason: 'x',
+      id: 'cross-ref', kind: 'gap', severity: 'minor', anchor: 'Anchor owner', quote: 'Đề xuất mới', reason: 'x',
       doc_refs: ['Bằng chứng chéo section'], sectionStartHeadingOrdinal: 0,
       sectionEndHeadingOrdinalExclusive: 1,
     }]);
@@ -165,10 +118,10 @@ describe('DocRedlinePreview mode integration', () => {
   });
 
   it('gắn full-block tint theo màu add/edit/note cho table row và list item', async () => {
-    sourceDoc = ['# A', '', '| Cột |', '| --- |', '| Giá trị sửa |', '', '- Giá trị thêm', '- Nhận xét list'].join('\n');
+    sourceDoc = ['# A', '', '| Cột |', '| --- |', '| Giá trị cũ |', '', '- Giá trị thêm', '- Nhận xét list'].join('\n');
     sourceChanges = JSON.stringify([
-      { id: 'table-edit', kind: 'ux-writing', severity: 'minor', before: 'Cũ', quote: 'Giá trị sửa', reason: 'x' },
-      { id: 'list-add', kind: 'gap', severity: 'minor', quote: 'Giá trị thêm', reason: 'x', operation: 'add' },
+      { id: 'table-edit', kind: 'ux-writing', severity: 'minor', before: 'Giá trị cũ', quote: 'Giá trị sửa', reason: 'x' },
+      { id: 'list-add', kind: 'gap', severity: 'minor', anchor: 'Giá trị thêm', quote: 'Giá trị thêm', reason: 'x', operation: 'add' },
     ]);
     sourceNotes = JSON.stringify([
       { id: 'list-note', kind: 'gap', severity: 'minor', anchor: 'Nhận xét list', finding: 'x', suggestion: 'y' },
@@ -201,8 +154,8 @@ describe('DocRedlinePreview mode integration', () => {
       '| Row mục tiêu cần sửa | Dùng chung |',
     ].join('\n');
     sourceChanges = JSON.stringify([{
-      id: 'row-target', kind: 'ux-writing', severity: 'minor', before: '| Cũ | Dùng chung |',
-      quote: '| Row mục tiêu cần sửa | Dùng chung |', reason: 'x',
+      id: 'row-target', kind: 'ux-writing', severity: 'minor', before: '| Row mục tiêu cần sửa | Dùng chung |',
+      quote: '| Row mục tiêu đã sửa | Dùng chung |', reason: 'x',
     }]);
     sourceNotes = '[]';
 
@@ -219,8 +172,9 @@ describe('DocRedlinePreview mode integration', () => {
   it('bôi và tint mọi paragraph của một quote nhiều dòng, click toàn block chọn đúng thẻ', async () => {
     sourceDoc = ['# A', '', 'Đoạn thay đổi thứ nhất.', '', 'Đoạn thay đổi thứ hai.'].join('\n');
     sourceChanges = JSON.stringify([{
-      id: 'multi-paragraph', kind: 'ux-writing', severity: 'minor', before: 'Nội dung cũ',
-      quote: 'Đoạn thay đổi thứ nhất.\n\nĐoạn thay đổi thứ hai.', reason: 'x',
+      id: 'multi-paragraph', kind: 'ux-writing', severity: 'minor',
+      before: 'Đoạn thay đổi thứ nhất.\n\nĐoạn thay đổi thứ hai.',
+      quote: 'Đoạn đề xuất gộp lại thành một câu.', reason: 'x',
     }]);
     sourceNotes = '[]';
 
@@ -231,10 +185,14 @@ describe('DocRedlinePreview mode integration', () => {
     expect(Array.from(ownedBlocks).map((block) => block.tagName)).toEqual(['P', 'P']);
     for (const block of ownedBlocks) expect(block.className).toContain('blockTintFull');
 
+    // Bấm toàn block (không chỉ đúng <mark>) mở modal chi tiết và nháy sáng
+    // MỌI mark của change đó (rail đã bỏ — không còn "thẻ" riêng để active).
     fireEvent.click(ownedBlocks[1]!);
     await waitFor(() => {
-      expect(container.querySelector('[data-change-item="multi-paragraph"]')?.className).toContain('itemActive');
+      expect(container.querySelector('[role="dialog"]')).not.toBeNull();
     });
+    const marks = container.querySelectorAll<HTMLElement>('mark[data-change-id="multi-paragraph"]');
+    for (const mark of marks) expect(mark.className).toMatch(/Active/i);
   });
 
   it('không biến doc_ref trong list/table thành full-block tint', async () => {
@@ -253,7 +211,7 @@ describe('DocRedlinePreview mode integration', () => {
       '| Ref note trong table |',
     ].join('\n');
     sourceChanges = JSON.stringify([{
-      id: 'change-owner', kind: 'ux-writing', severity: 'minor', before: 'Owner cũ', quote: 'Owner change', reason: 'x',
+      id: 'change-owner', kind: 'ux-writing', severity: 'minor', before: 'Owner change', quote: 'Owner change (đề xuất)', reason: 'x',
       doc_refs: ['Ref change trong list'],
     }]);
     sourceNotes = JSON.stringify([{
@@ -272,11 +230,6 @@ describe('DocRedlinePreview mode integration', () => {
     expect(changeRef?.style.borderBottomStyle).toBe('dotted');
     expect(changeRef?.closest('li')?.dataset.redlineBlock).toBeUndefined();
     expect(changeRef?.closest('li')?.className).not.toContain('blockTintFull');
-
-    fireEvent.click(within(container).getByRole('button', { name: 'Ẩn highlight thay đổi 1' }));
-    await waitFor(() => expect(container.querySelector('mark[data-change-id="change-owner"]')).toBeNull());
-    expect(container.querySelector('mark[data-change-id="ref:change-owner:0"]')).toBeNull();
-    expect(container.querySelector('[data-redline-owner="change-owner"]')).toBeNull();
 
     fireEvent.click(within(container).getAllByRole('tab', { name: 'Nhận xét (1)' })[0]!);
     await waitFor(() => expect(container.querySelector('[data-redline-block="note"]')).not.toBeNull());
@@ -305,9 +258,9 @@ describe('DocRedlinePreview mode integration', () => {
     expect(document.body.dataset.odPrint).toBe('redline');
   });
 
-  /* ── WP-redline-id-namespace: marksFor query DOM trực tiếp, bỏ map stale ── */
+  /* ── WP-redline-id-namespace: marksFor query DOM trực tiếp, không map stale ── */
 
-  it('hai note id đã namespace theo section (s01-n1, s04-n1) ra hai card riêng, click card thứ hai cuộn đúng mark của NÓ', async () => {
+  it('hai note id đã namespace theo section (s01-n1, s04-n1) — "Sau" cuộn đúng mark của TỪNG note', async () => {
     sourceDoc = ['# Một', '', 'Nội dung neo một', '', '# Bốn', '', 'Nội dung neo hai'].join('\n');
     sourceChanges = '[]';
     sourceNotes = JSON.stringify([
@@ -322,40 +275,16 @@ describe('DocRedlinePreview mode integration', () => {
       const { container } = render(<DocRedlinePreview projectId="p" file={FILE} />);
       const noteTab = (await within(container).findAllByRole('tab', { name: 'Nhận xét (2)' }))[0]!;
       fireEvent.click(noteTab);
-      await waitFor(() => expect(container.querySelector('[data-change-item="note:s01-n1"]')).not.toBeNull());
-      expect(container.querySelector('[data-change-item="note:s04-n1"]')).not.toBeNull();
+      await waitFor(() => expect(container.querySelector('mark[data-change-id="note:s01-n1"]')).not.toBeNull());
+      expect(container.querySelector('mark[data-change-id="note:s04-n1"]')).not.toBeNull();
 
-      fireEvent.click(container.querySelector('[data-change-item="note:s04-n1"]')!);
+      const nav = within(container).getByRole('navigation', { name: 'Điều hướng nhận xét' });
+      fireEvent.click(within(nav).getByRole('button', { name: 'Nhận xét sau' }));
       await waitFor(() => expect(scrolled.length).toBeGreaterThan(0));
-      expect(scrolled[scrolled.length - 1]!.getAttribute('data-change-id')).toBe('note:s04-n1');
-    } finally {
-      Element.prototype.scrollIntoView = original;
-    }
-  });
+      expect(scrolled[scrolled.length - 1]!.getAttribute('data-change-id')).toBe('note:s01-n1');
 
-  it('click card ngay sau khi đổi mode (mark vừa render lại) vẫn cuộn đúng — không đi qua map stale', async () => {
-    sourceDoc = ['# A', '', 'Đổi một', '', 'Ghi chú một'].join('\n');
-    sourceChanges = JSON.stringify([{ id: 'c1', kind: 'ux-writing', severity: 'minor', quote: 'Đổi một', reason: 'x' }]);
-    sourceNotes = JSON.stringify([{ id: 'n1', kind: 'gap', severity: 'minor', anchor: 'Ghi chú một', finding: 'x', suggestion: 'y' }]);
-
-    const scrolled: HTMLElement[] = [];
-    const original = Element.prototype.scrollIntoView;
-    Element.prototype.scrollIntoView = vi.fn(function (this: HTMLElement) { scrolled.push(this); });
-    try {
-      const { container } = render(<DocRedlinePreview projectId="p" file={FILE} />);
-      await waitFor(() => expect(container.querySelector('mark[data-change-id="c1"]')).not.toBeNull());
-
-      const noteTab = within(container).getAllByRole('tab', { name: 'Nhận xét (1)' })[0]!;
-      fireEvent.click(noteTab);
-      // KHÔNG await waitFor trước khi bấm card — bấm ngay lập tức, đúng cửa sổ
-      // mà một bản đồ mark gom-sẵn-trong-effect có thể chưa kịp cập nhật theo
-      // DOM vừa đổi (docHtml đổi mode).
-      const item = container.querySelector('[data-change-item="note:n1"]');
-      expect(item).not.toBeNull();
-      fireEvent.click(item!);
-
-      await waitFor(() => expect(scrolled.length).toBeGreaterThan(0));
-      expect(scrolled[scrolled.length - 1]!.getAttribute('data-change-id')).toBe('note:n1');
+      fireEvent.click(within(nav).getByRole('button', { name: 'Nhận xét sau' }));
+      await waitFor(() => expect(scrolled[scrolled.length - 1]!.getAttribute('data-change-id')).toBe('note:s04-n1'));
     } finally {
       Element.prototype.scrollIntoView = original;
     }

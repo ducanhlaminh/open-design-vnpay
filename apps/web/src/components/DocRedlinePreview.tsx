@@ -1,19 +1,24 @@
 // DocRedlinePreview — docs-review's redline view for a page the `dr-review`
 // stage edited (`docs-review/review/docs/**/*.md`).
 //
-// The stage writes TWO files per page: the edited copy itself, and a sibling
-// `<name>.changes.json` array of annotations (apps/daemon/src/docs-review.ts's
-// `DocChange` shape) explaining WHY each spot changed. This renders ONE column —
-// the EDITED doc — with every change highlighted (`quote` anchors the mark), and
-// a rail of change cards beside it. Bản GỐC không còn được dựng thành cột riêng:
-// khi review người dùng đọc bản mới, còn "đã đổi từ gì" chỉ cần ở mức từng chỗ
-// sửa (`before → quote` trong thẻ lý do), không cần cả một tài liệu để đối
-// chiếu — nửa màn hình làm bảng của tài liệu URD bị bó và xuống dòng liên tục.
+// wp-doc-redline-nondestructive: tài liệu hiển thị ở đây là bản GỐC ĐÃ-ENRICH
+// (bảng "Cấu thành màn hình" + sơ đồ vẫn nhúng inline — daemon dựng thẳng vào
+// `file.name`), KHÔNG còn có chữ sửa nướng sẵn của agent hay của người dùng.
+// Mọi Thêm/Sửa/Xóa (agent lẫn người dùng) chỉ là HIGHLIGHT MÀU neo trên chữ
+// GỐC còn nguyên trong tài liệu:
+//   - Sửa/Xóa neo theo `before` (đoạn gốc bị đề xuất đổi/bỏ, còn nguyên).
+//   - Thêm neo theo `anchor` (điểm chèn, cũng là chữ gốc).
+//   - `quote` (nội dung MỚI được đề xuất) không còn tồn tại trong tài liệu nên
+//     KHÔNG neo được vào đâu — nó chỉ hiện trong modal chi tiết khi bấm vào
+//     vùng bôi (xem `changeHighlightSource`/`AnnotationDetailModal`).
+// Bảng/sơ đồ do một bước enrichment tự động sinh (`kind: 'flow-diagram'`, hoặc
+// `component` không `before` với `rule_id` bắt đầu `comp/`) là nội dung THẬT
+// sự đã nằm trong tài liệu — không thuộc cơ chế đề xuất trên, nên vẫn neo theo
+// `quote` (chữ đã render thật) như trước và KHÔNG mở modal khi bấm vào.
 //
-// Điều hướng hai chiều: click một mục trong rail thì tài liệu cuộn tới vùng bôi
-// của nó; click một vùng bôi thì rail cuộn tới mục tương ứng. Không còn panel
-// đáy trượt lên — rail hiện sẵn nhóm/mức độ/rule_id/lý do/diff của MỌI chỗ sửa,
-// nên panel chỉ là hiển thị cùng một thông tin ở nơi thứ hai.
+// KHÔNG còn thẻ rail bên phải: bấm một vùng bôi (hoặc một note) mở MODAL hiện
+// nội dung (Thêm=chữ mới; Sửa=gốc→mới; Xóa=đoạn bị đề xuất bỏ; note=phát hiện)
+// kèm lý do — thay cho panel cuộn-nhảy hai chiều trước đây.
 //
 // `<mark>` được chèn vào CHUỖI HTML đã render, trước khi React nhận (xem
 // injectHighlights trong runtime/doc-highlight.ts). Không chèn vào mã nguồn
@@ -21,7 +26,7 @@
 // chỉ hiện ra thành chữ. Cũng KHÔNG mổ DOM sau khi render như bản trước: cách
 // đó phụ thuộc ref đã gắn chưa và React có dựng lại nút hay không, cả hai đều
 // đã thực sự làm vùng bôi biến mất.
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
 import { createPortal } from 'react-dom';
 import type {
@@ -34,7 +39,7 @@ import { renderMarkdownToSafeHtml } from '../artifacts/markdown';
 // KHÔNG import từ './FileViewer' — FileViewer đã import component này để route
 // file redline, nên chiều ngược lại tạo import vòng (xem markdown-images.ts).
 import { inlineMarkdownImages } from '../runtime/markdown-images';
-import { injectDeletedRuns, injectHighlights, quoteSegments, type HighlightBlockTarget } from '../runtime/doc-highlight';
+import { injectHighlights, quoteSegments, type HighlightBlockTarget } from '../runtime/doc-highlight';
 import { wordDiff } from '../runtime/word-diff';
 import { Icon } from './Icon';
 import { MermaidDiagram } from './MermaidDiagram';
@@ -42,7 +47,7 @@ import { DrawioViewer } from './DrawioViewer';
 import { DocRedlineModeControls } from './DocRedlineModeControls';
 import { DocRedlineNavigation } from './DocRedlineNavigation';
 import { createRedlineDocumentIndex } from './redline-document';
-import { annotationMode, modeLabel, type PreviewMode } from './redline-mode';
+import { modeLabel, type PreviewMode } from './redline-mode';
 import { getAdjacentNavigationId, getNavigationPosition, type RedlineNavigationItem } from './redline-navigation';
 import styles from './DocRedlinePreview.module.css';
 
@@ -57,15 +62,20 @@ export interface DocRedlineChange {
   kind: DocRedlineChangeKind;
   severity: DocRedlineSeverity;
   rule_id?: string;
-  /** Nguyên văn đoạn trong bản GỐC bị thay hoặc bị xoá — chỉ hiện trong thẻ lý
-   *  do ("chữ cũ → chữ mới"), không còn neo cột nào. */
+  /** Nguyên văn đoạn trong bản GỐC bị đề xuất thay hoặc bị đề xuất bỏ — với
+   *  phép Sửa/Xóa, đây LÀ nguồn neo vùng bôi (chữ còn nguyên trong tài liệu,
+   *  xem `changeHighlightSource`), không phải chỉ hiện trong modal. */
   before?: string;
-  /** Nguyên văn đoạn trong bản ĐÃ SỬA — neo vùng bôi trong cột tài liệu. */
+  /** Nguyên văn đoạn NỘI DUNG MỚI được đề xuất. KHÔNG tồn tại trong tài liệu
+   *  (daemon không còn nướng nó vào `.md`), nên KHÔNG neo được vùng bôi nào —
+   *  chỉ hiện trong modal chi tiết khi bấm vào vùng bôi của chỗ sửa/thêm đó.
+   *  NGOẠI LỆ: change enrichment (`kind: 'flow-diagram'`, hoặc `component`
+   *  không `before` với `rule_id` bắt đầu `comp/`) là nội dung THẬT đã nằm
+   *  trong tài liệu — với hai loại đó, `quote` vẫn là nguồn neo như cũ. */
   quote?: string;
-  /** Nguyên văn một đoạn trong bản ĐÃ SỬA nằm CẠNH chỗ xoá. Chỉ có nghĩa với
-   *  chỗ xoá thuần (`before` mà không `quote`): đoạn bị xoá không còn tồn tại
-   *  trong bản đã sửa nên tự nó không neo được vào đâu, phải nhờ một đoạn còn
-   *  sống bên cạnh (xem injectDeletedRuns). */
+  /** Với phép Thêm: nguyên văn đoạn GỐC làm MỐC chèn (điểm sẽ chèn `quote`
+   *  vào ngay sau) — đây LÀ nguồn neo vùng bôi của phép Thêm (chữ còn nguyên
+   *  trong tài liệu, xem `changeHighlightSource`). */
   anchor?: string;
   /** Các mục tài liệu/quy tắc mà chỗ sửa này dẫn ra. CHƯA render — giữ trong
    *  shape để không phải parse lại khi màn hình có chỗ hiển thị. */
@@ -120,16 +130,6 @@ export interface DocRedlineNote {
   sectionEndHeadingOrdinalExclusive?: number;
 }
 
-/** Nội dung một rule đang hiện trong popover. `html` đã qua
- *  renderMarkdownToSafeHtml (an toàn theo hợp đồng của hàm đó); `text` là
- *  đường dành cho bộ mặc định — nó là một câu trơn, dựng markdown cho nó chỉ
- *  thêm bước mà không thêm gì. */
-type RuleBody =
-  | { status: 'loading' }
-  | { status: 'missing' }
-  | { status: 'text'; text: string }
-  | { status: 'html'; html: string };
-
 type ChangesState =
   | { status: 'loading' }
   /** `<page>.changes.json` fetch returned nothing (404/network) — no sidecar
@@ -149,13 +149,6 @@ interface DraftAnnotation {
    *  select) cho Sửa/Thêm; Xoá không có "nội dung mới" để phân loại nên giữ
    *  mặc định cũ (xem `defaultUserKind`). */
   kind: DocRedlineChangeKind;
-  /** wp4.yaml mục 2, vá N1 (review attempt2): `true` khi `selected` đến từ
-   *  một heading chọn trong danh sách (`startHeadingAnnotation`) thay vì bôi
-   *  đen (`startUserAnnotation`) — `createUserAnnotation` cần biết để chèn
-   *  bằng `insertAfterHeadingLine` (line-anchored) thay vì
-   *  `insertAfterUniqueAnchor` (substring, đúng cho đoạn bôi đen nhưng SAI
-   *  cho một dòng heading có thể là tiền tố của heading con). */
-  viaHeading?: boolean;
 }
 
 /** wp-table-highlight.yaml (Q2): nháp của một note "tô ô bảng" — ĐƯỜNG MỚI,
@@ -407,30 +400,6 @@ export function parseDocNotes(raw: string): DocRedlineNote[] | null {
  *  thứ hai field kia đã nói là mở đường cho dữ liệu tự mâu thuẫn.
  *  Có cả hai = viết lại (`edit`); chỉ `quote` = chữ mới xuất hiện (`add`); chỉ
  *  `before` = chữ cũ bị bỏ (`del`). */
-/** Thay đúng lần xuất hiện đầu tiên, không đụng các đoạn trùng phía sau. */
-export function replaceOneOccurrence(source: string, quote: string, replacement: string): string | null {
-  const index = source.indexOf(quote);
-  return index < 0 ? null : `${source.slice(0, index)}${replacement}${source.slice(index + quote.length)}`;
-}
-
-export function editDocText(source: string, quote: string, next: string): string | null {
-  return replaceOneOccurrence(source, quote, next);
-}
-
-export function revertDocText(source: string, change: Pick<DocRedlineChange, 'before' | 'quote' | 'anchor'>): string | null {
-  if (change.before && change.quote) return replaceOneOccurrence(source, change.quote, change.before);
-  if (change.quote) return replaceOneOccurrence(source, change.quote, '');
-  if (change.before && change.anchor) return insertAfterUniqueAnchor(source, change.anchor, change.before);
-  return null;
-}
-
-export function insertAfterUniqueAnchor(source: string, anchor: string, insertion: string): string | null {
-  const first = source.indexOf(anchor);
-  if (first < 0 || source.indexOf(anchor, first + anchor.length) >= 0) return null;
-  const end = first + anchor.length;
-  return `${source.slice(0, end)}${insertion}${source.slice(end)}`;
-}
-
 function uniqueOccurrenceIndex(source: string, value: string): number | null {
   const first = source.indexOf(value);
   if (first < 0 || source.indexOf(value, first + value.length) >= 0) return null;
@@ -477,30 +446,6 @@ function uniqueHeadingLineOffset(source: string, headingLine: string): number | 
   return offset + headingLine.length;
 }
 
-/** Chèn `insertion` ngay sau dòng heading duy nhất khớp `headingLine` (xem
- *  `uniqueHeadingLineOffset`) — dùng cho "Thêm sau mục…" (wp4.yaml mục 2)
- *  thay vì `insertAfterUniqueAnchor` (substring), giữ nguyên hành vi cũ của
- *  "Thêm sau đoạn chọn" (bôi đen) không đổi. */
-function insertAfterHeadingLine(source: string, headingLine: string, insertion: string): string | null {
-  const offset = uniqueHeadingLineOffset(source, headingLine);
-  if (offset == null) return null;
-  return `${source.slice(0, offset)}${insertion}${source.slice(offset)}`;
-}
-
-/** Pick a surviving, unique piece of text immediately before a deletion. It is
- * kept as the tombstone anchor so the deleted annotation remains visible. */
-export function deletionAnchor(source: string, selected: string): string | null {
-  const index = uniqueOccurrenceIndex(source, selected);
-  if (index == null || index === 0) return null;
-  const prefix = source.slice(0, index).trimEnd();
-  for (const length of [120, 80, 48, 24]) {
-    const candidate = prefix.slice(-length).trim();
-    if (candidate && uniqueOccurrenceIndex(source, candidate) != null) return candidate;
-  }
-  const line = prefix.split(/\r?\n/).filter(Boolean).at(-1)?.trim();
-  return line && uniqueOccurrenceIndex(source, line) != null ? line : null;
-}
-
 function uid(prefix: string): string {
   const uuid = globalThis.crypto?.randomUUID?.();
   return `${prefix}-${uuid ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`}`;
@@ -539,10 +484,27 @@ function sidecarJson(changes: DocRedlineChange[], events: DocReviewAnnotationEve
   return `${JSON.stringify(envelope, null, 2)}\n`;
 }
 
-function changeOp(c: DocRedlineChange): 'add' | 'del' | 'edit' {
+function changeOp(c: Pick<DocRedlineChange, 'before' | 'quote'>): 'add' | 'del' | 'edit' {
   if (c.before && c.quote) return 'edit';
   if (c.quote) return 'add';
   return 'del';
+}
+
+/** wp-doc-redline-nondestructive: nguồn CHỮ GỐC để neo vùng bôi của một change
+ *  THƯỜNG (không phải enrichment — xem docblock đầu file) theo đúng phép sửa —
+ *  `quote` (nội dung mới) không còn tồn tại trong tài liệu nên không bao giờ
+ *  được dùng làm nguồn neo nữa:
+ *    - 'add'          → `anchor` (điểm chèn, chữ gốc).
+ *    - 'edit' / 'del' → `before` (đoạn gốc, chữ gốc).
+ *  Trả `null` khi phép sửa tương ứng không có chữ để neo (trắng/rỗng) — chỗ
+ *  gọi bỏ qua, không tạo mark. Tách thành hàm thuần để test không cần dựng
+ *  DOM (xem apps/web/tests/components/doc-redline-preview.nondestructive.test.tsx). */
+export function changeHighlightSource(
+  c: Pick<DocRedlineChange, 'before' | 'quote' | 'anchor'>,
+): { op: 'add' | 'edit' | 'del'; text: string } | null {
+  const op = changeOp(c);
+  const raw = (op === 'add' ? c.anchor : c.before)?.trim();
+  return raw ? { op, text: raw } : null;
 }
 
 /** Một "Bảng thành phần" là change `kind: 'component'` KHÔNG có `before` (chỉ
@@ -550,28 +512,6 @@ function changeOp(c: DocRedlineChange): 'add' | 'del' | 'edit' {
  *  `component` "thường" (một chỗ sửa chữ nói về component, có `before`). */
 function isComponentTableChange(c: Pick<DocRedlineChange, 'kind' | 'before' | 'rule_id'>): boolean {
   return c.kind === 'component' && !c.before && !!c.rule_id?.startsWith('comp/');
-}
-
-/** Cắt `text` còn tối đa `max` ký tự, thêm "…" khi có cắt — dùng cho caption
- *  sơ đồ (~40 ký tự, xem `diagramCaption`). Cắt đúng ranh giới ký tự, KHÔNG
- *  lùi về ranh giới từ — caption mermaid ngắn, ranh giới từ không đáng để lo. */
-function truncateText(text: string, max: number): string {
-  const flat = text.trim();
-  return flat.length > max ? `${flat.slice(0, max)}…` : flat;
-}
-
-/** Như `truncateText` nhưng lùi điểm cắt về khoảng trắng gần nhất trước `max`
- *  ký tự, thay vì chặt đứt giữa một từ — dùng cho dòng diff rút gọn (wp-redline
- *  -card-polish.yaml mục 2): cắt giữa từ ("ngư…") khó đọc hơn cắt sau một từ
- *  trọn vẹn ("người dùng…"). Không tìm được khoảng trắng nào (một từ dài hơn
- *  `max`) thì rơi về cắt cứng như `truncateText`. */
-function truncateTextAtWord(text: string, max: number): string {
-  const flat = text.trim();
-  if (flat.length <= max) return flat;
-  const cut = flat.slice(0, max);
-  const lastSpace = cut.lastIndexOf(' ');
-  const boundary = lastSpace > 0 ? lastSpace : max;
-  return `${flat.slice(0, boundary).trim()}…`;
 }
 
 /** Trích nội dung GIỮA cặp rào ```` ```mermaid ``` ```` của một change sơ đồ.
@@ -713,138 +653,6 @@ function printableArticleHtml(
   return clone.innerHTML;
 }
 
-/** Một vế của khối diff mono (op 'edit'/'add'/'del' — xem `ChangeDetail`): với
- *  sơ đồ mermaid, chữ mermaid thô (`flowchart TD`, `A --> B`…) không đọc được
- *  ở dạng cắt, nên ưu tiên dòng caption ("Gốc"/"Đề xuất …") nếu `text` có rào
- *  mermaid; còn lại thì cắt thẳng, gộp khoảng trắng/xuống dòng thành một dòng.
- *  Trần nâng 40 → 72 ký tự và cắt ở RANH GIỚI TỪ (`truncateTextAtWord`, xem
- *  wp-redline-card-polish.yaml mục 2) — 40 ký tự/cắt-giữa-từ là đúng nguyên
- *  nhân người dùng đọc không nổi dòng diff cũ. */
-function diffPreviewSide(text: string | undefined, max = 72): string {
-  if (!text) return '';
-  const withoutFence = text.replace(/```mermaid\r?\n[\s\S]*?```/, '').trim();
-  const flat = (withoutFence || text).replace(/\s+/g, ' ').replace(/^\*+|\*+$/g, '').trim();
-  return truncateTextAtWord(flat, max);
-}
-
-/** Vế caption RIÊNG cho thẻ sơ đồ (khác `diffPreviewSide` ở TRÊN, dùng cho mọi
- *  thẻ khác): khi không trích được caption (không có gì SAU rào ```mermaid```,
- *  xem docblock đầu file WP3) trả về `null` thay vì rơi về in nguyên mã mermaid
- *  thô — chỗ gọi (FlowDiagramCardBody) tự thay bằng chuỗi cố định (mục 0b, vá
- *  review WP3b: mã thô không đọc được ở dạng cắt 40 ký tự). */
-function diagramCaption(text: string | undefined, max = 40): string | null {
-  if (!text) return null;
-  const withoutFence = text.replace(/```mermaid\r?\n[\s\S]*?```/, '').trim();
-  if (!withoutFence) return null;
-  const flat = withoutFence.replace(/\s+/g, ' ').replace(/^\*+|\*+$/g, '').trim();
-  return flat ? truncateText(flat, max) : null;
-}
-
-/** Đúng 8 cột theo khuôn của bảng thành phần (xem docblock đầu file WP3):
- *  `# | Thành phần | Component DS | Biến thể | Vai trò / dùng để | Mô tả
- *  component | Điều hướng tới | Ghi chú`. Bỏ dòng heading và dòng gạch `---`,
- *  chỉ giữ các hàng DỮ LIỆU.
- *
- *  Vá B1 (review attempt2): tách theo dấu `|` CHƯA escape (lookbehind loại
- *  `\|`) rồi unescape `\|`→`|` trong từng ô — `buildComponentTableQuote` ghi
- *  `\|` khi một ô chứa dấu `|` thật (kể cả bảng do daemon sinh, xem
- *  `docs-review-enrich.ts`); tách thẳng theo `|` như trước sẽ xé một ô có
- *  `\|` thành hai, làm lệch cột và vỡ bảng khi lưu lại lần hai. */
-function parseMarkdownTableDataRows(md: string): string[][] {
-  const lines = md
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line.startsWith('|'));
-  if (lines.length < 2) return [];
-  return lines.slice(2).map((line) =>
-    line
-      .split(/(?<!\\)\|/)
-      .slice(1, -1)
-      .map((cell) => cell.trim().replace(/\\\|/g, '|')),
-  );
-}
-
-/** Đếm N/M/K của một bảng thành phần từ nguyên văn `quote` (rào bảng nằm
- *  trong đó — xem docblock đầu file WP3): N = tổng hàng dữ liệu, K = hàng có
- *  cột "Component DS" đọc "— (DS không có)", M = N − K. */
-function componentTableCounts(quote: string | undefined): { total: number; mapped: number; noDs: number } {
-  const rows = parseMarkdownTableDataRows(quote ?? '');
-  const noDs = rows.filter((row) => (row[2] ?? '').includes('DS không có')).length;
-  return { total: rows.length, mapped: rows.length - noDs, noDs };
-}
-
-/** wp4.yaml mục 1: mọi PHẦN của một "Bảng thành phần" cần để sửa theo hàng rồi
- *  dựng lại nguyên văn — tiêu đề đậm, header, dòng gạch ngăn, các hàng dữ liệu
- *  (dùng lại `parseMarkdownTableDataRows`), và caption. `null` khi `quote`
- *  không đủ header+separator để coi là một bảng hợp lệ (không có gì sửa theo
- *  hàng được). */
-interface ComponentTableParts {
-  title: string;
-  header: string;
-  separator: string;
-  rows: string[][];
-  caption: string;
-}
-function parseComponentTableQuote(quote: string): ComponentTableParts | null {
-  const trimmedLines = quote.split(/\r?\n/).map((line) => line.trim());
-  const tableLines = trimmedLines.filter((line) => line.startsWith('|'));
-  if (tableLines.length < 2) return null;
-  const title = trimmedLines.find((line) => line.startsWith('**') && line.endsWith('**')) ?? '';
-  // Caption: dòng nghiêng đơn `*...*` — KHÔNG phải tiêu đề đậm `**...**`. Lấy
-  // dòng CUỐI khớp vì caption luôn đứng sau bảng (xem khuôn bảng ở docblock
-  // đầu file WP3).
-  const caption = [...trimmedLines].reverse().find((line) => line.startsWith('*') && !line.startsWith('**')) ?? '';
-  return {
-    title,
-    header: tableLines[0]!,
-    separator: tableLines[1]!,
-    rows: parseMarkdownTableDataRows(quote),
-    caption,
-  };
-}
-
-/** Dựng lại nguyên văn `quote` từ các phần đã parse ở trên + danh sách hàng
- *  MỚI (đã sửa ô / gỡ hàng) — giữ nguyên tiêu đề đậm, header, dòng gạch ngăn,
- *  caption; escape `|` trong từng ô để không phá cú pháp bảng markdown khi
- *  người dùng gõ dấu `|` vào một ô. */
-function buildComponentTableQuote(parts: ComponentTableParts, rows: string[][]): string {
-  const escapeCell = (cell: string) => cell.replace(/\|/g, '\\|');
-  const rowLines = rows.map((row) => `| ${row.map(escapeCell).join(' | ')} |`);
-  const lines = [parts.title, '', parts.header, parts.separator, ...rowLines];
-  if (parts.caption) lines.push('', parts.caption);
-  return lines.join('\n');
-}
-
-/** N4 (non-blocking, review attempt2): tra chỉ số cột theo NHÃN header thay vì
- *  hard-code 4/7 — form "Sửa bảng" chỉ sửa được hai cột "Vai trò / dùng để" và
- *  "Ghi chú"; nếu bảng lệch thứ tự cột so với khuôn chuẩn thì vẫn tìm đúng cột
- *  qua tên thay vì đọc nhầm cột khác. `fallback` (4/7) giữ nguyên hành vi cũ
- *  khi header không khớp nhãn nào (dữ liệu không đúng khuôn). */
-function tableColumnIndex(header: string | null, label: string, fallback: number): number {
-  if (!header) return fallback;
-  const cells = header
-    .split(/(?<!\\)\|/)
-    .slice(1, -1)
-    .map((cell) => cell.trim().replace(/\\\|/g, '|'));
-  const idx = cells.indexOf(label);
-  return idx >= 0 ? idx : fallback;
-}
-
-/** Tiêu đề dòng 1 của thẻ (mặt thẻ, không phải Chi tiết): hai loại thẻ MỚI có
- *  tiêu đề CỐ ĐỊNH tả đúng hành động ("Thay sơ đồ…", "Chèn bảng N…") thay vì
- *  cắt `reason` — `reason` của chúng nói vì sao rà soát lại sơ đồ/bảng, không
- *  tả chỗ sửa này LÀM GÌ, nên cắt nó vào tiêu đề sẽ khó hiểu hơn câu cố định.
- *
- *  wp-redline-card-polish.yaml mục 1: nhánh mặc định (reason) THÔI cắt 60 ký
- *  tự — trả `reason` đầy đủ, để CSS `.cardTitle` (line-clamp 2 dòng) lo việc
- *  gọn mặt thẻ; cắt bằng JS từng cắt đứt giữa từ ("…") mà CSS clamp không có
- *  nhược điểm đó. */
-function cardTitle(c: DocRedlineChange): string {
-  if (c.kind === 'flow-diagram') return 'Thay sơ đồ bằng bản đề xuất';
-  if (isComponentTableChange(c)) return `Chèn bảng ${componentTableCounts(c.quote).total} thành phần`;
-  return c.reason.trim();
-}
-
 /** Nền vùng bôi đặt thẳng trong thuộc tính style thay vì chỉ dựa vào class:
  *  vùng bôi là thông tin chính của màn hình này, không nên phụ thuộc vào việc
  *  CSS Module có tới nơi hay không. Class vẫn giữ để lo bo góc/con trỏ/trạng
@@ -859,10 +667,11 @@ const NOTE_HL_INLINE_STYLE = 'background-color:rgba(139,92,246,.30);outline:1px 
  *  bỏ ra khác nhau. Class + style nội tuyến song song, cùng lý do như
  *  HL_INLINE_STYLE ngay trên. */
 const HL_ADD_INLINE_STYLE = 'background-color:rgba(34,197,94,.28);outline:1px solid rgba(34,197,94,.85);border-radius:3px;cursor:pointer';
-/** Chỗ XOÁ bôi đỏ nhạt. Nhạt hơn hai loại trên vì đây là chữ CHÈN THÊM vào bản
- *  đã sửa (nó không còn trong tài liệu) — nó phải đọc được nhưng không được
- *  tranh chỗ với bản mới. Gạch ngang do `<del>` bên trong lo (xem .hlDel). */
-const HL_DEL_INLINE_STYLE = 'background-color:rgba(239,68,68,.18);outline:1px solid rgba(239,68,68,.7);border-radius:3px;cursor:pointer';
+/** Chỗ XOÁ bôi đỏ nhạt TẠI CHỖ trên chữ gốc (nó còn nguyên trong tài liệu —
+ *  wp-doc-redline-nondestructive: không còn injectDeletedRuns chèn lại chữ
+ *  cũ). Gạch ngang đặt thẳng trong style nội tuyến (không còn nhờ `<del>` lồng
+ *  bên trong, vì mark bọc thẳng chữ gốc chứ không sinh node mới). */
+const HL_DEL_INLINE_STYLE = 'background-color:rgba(239,68,68,.18);outline:1px solid rgba(239,68,68,.7);border-radius:3px;cursor:pointer;text-decoration:line-through';
 /** Bốn loại vùng bôi người dùng bật/tắt được, đúng bốn màu trên màn hình.
  *  `ref` (đoạn được viện dẫn) CỐ Ý không nằm ở đây: nó là phương tiện điều
  *  hướng chứ không phải một loại sửa đổi, và cửa sổ tham chiếu dựa vào nó để
@@ -887,9 +696,10 @@ const PAINT_ITEMS: ReadonlyArray<{ kind: PaintKind; label: string; swatch: strin
 // Cùng lý do reset nền như HL_REF_INLINE_STYLE bên dưới: mark "tắt màu" mà
 // không reset thì lại ăn nền vàng chói mặc định — tắt hoá ra bật.
 const HL_OFF_INLINE_STYLE = 'background-color:transparent;color:inherit;cursor:pointer';
-/** Chỗ xoá khi tắt tô màu: bỏ nền đỏ nhưng GIỮ gạch ngang (do `<del>` lo), vì
- *  gạch ngang là thứ duy nhất phân biệt chữ đã bị bỏ với chữ đang có thật. */
-const HL_DEL_OFF_INLINE_STYLE = 'cursor:pointer;opacity:.65';
+/** Chỗ xoá khi tắt tô màu: bỏ nền đỏ nhưng GIỮ gạch ngang (nội tuyến, xem
+ *  HL_DEL_INLINE_STYLE ở trên), vì gạch ngang là thứ duy nhất phân biệt chữ đã
+ *  bị bỏ với chữ đang có thật. */
+const HL_DEL_OFF_INLINE_STYLE = 'cursor:pointer;opacity:.65;text-decoration:line-through';
 const NO_CHANGES: DocRedlineChange[] = [];
 const NO_NOTES: DocRedlineNote[] = [];
 /** Change và note dùng chung `data-change-id` (chung cơ chế click/cuộn/nháy
@@ -908,11 +718,39 @@ const REF_ID_PREFIX = 'ref:';
 const HL_REF_INLINE_STYLE = 'background-color:transparent;color:inherit;border-bottom:1px dotted rgba(59,130,246,.85);cursor:pointer';
 const EMPTY_SET: ReadonlySet<string> = new Set<string>();
 
+/** Kết quả tra cứu một id mark (`data-change-id`) về đúng change/note nó
+ *  thuộc về, để mở modal chi tiết (xem `AnnotationDetailModal`). */
+export type AnnotationDetailTarget =
+  | { kind: 'change'; change: DocRedlineChange }
+  | { kind: 'note'; note: DocRedlineNote };
+
+/** wp-doc-redline-nondestructive: tra id mark → change/note tương ứng, THUẦN
+ *  (nhận `changes`/`notes` làm tham số thay vì đọc state, để test được không
+ *  cần dựng React) — id tiền tố `ref:` (vùng viện dẫn) trả `null`: nó không
+ *  có modal riêng, click vào nó mở LẠI `refModal` sẵn có (xem
+ *  `openAnnotationDetail` trong component). */
+export function resolveAnnotationDetail(
+  id: string,
+  changes: readonly DocRedlineChange[],
+  notes: readonly DocRedlineNote[],
+): AnnotationDetailTarget | null {
+  if (id.startsWith(REF_ID_PREFIX)) return null;
+  if (id.startsWith(NOTE_ID_PREFIX)) {
+    const note = notes.find((n) => n.id === id.slice(NOTE_ID_PREFIX.length));
+    return note ? { kind: 'note', note } : null;
+  }
+  const change = changes.find((c) => c.id === id);
+  return change ? { kind: 'change', change } : null;
+}
+
 /** Một quote nhiều dòng mang ý nghĩa vùng, không chỉ một token. Table row và
  * list item được nhận diện từ block HTML; helper này bổ sung paragraph/heading
  * nhiều dòng để mọi block mà quote đi qua đều được tint. */
-function annotationWantsFullBlock(annotation: Pick<DocRedlineChange, 'quote' | 'anchor'>): boolean {
-  const raw = annotation.quote?.trim() || annotation.anchor?.trim() || '';
+function annotationWantsFullBlock(annotation: Pick<DocRedlineChange, 'before' | 'quote' | 'anchor'>): boolean {
+  // Ưu tiên đúng thứ tự nguồn chữ THẬT SỰ được bôi (xem changeHighlightSource):
+  // sửa/xoá → `before`; thêm → `anchor`; bảng thành phần (không before/anchor)
+  // → `quote` (đường cũ, không đổi).
+  const raw = annotation.before?.trim() || annotation.anchor?.trim() || annotation.quote?.trim() || '';
   return raw.split(/\r?\n/).filter((line) => line.trim()).length > 1;
 }
 
@@ -946,107 +784,13 @@ function tableAnchorPlainText(anchorLine: string): string {
   return normalizeTableAnchorText(inner.split('|').map((cell) => cell.trim()).join(' '));
 }
 
-/** Nhãn dễ hiểu + lời giải thích của một tiêu chí. Chip hiện `label`, rê chuột
- *  hiện `summary`, bấm vào mở popover hiện `detail`. Ba mức dài dần cho cùng
- *  một ý: liếc qua → hiểu đại khái → đọc đủ. */
-interface RuleMeta {
-  /** 2–4 chữ hiện trên chip — người không đọc tài liệu kỹ thuật vẫn hiểu. */
-  label: string;
-  /** MỘT câu cho tooltip khi rê chuột. */
-  summary: string;
-  /** Đoạn giải thích đầy đủ trong popover, viết theo giọng nói-cho-người-thường. */
-  detail: string;
-}
-
-/** Bảy tiêu chí MẶC ĐỊNH của skill (khi dự án không có `criteria/`).
- *  Chép ý từ mục "Bộ tiêu chí mặc định" trong
- *  `skills/docs-spec-review/SKILL.md` — sửa bên đó thì sửa cả ở đây.
- *
- *  Vì sao chép chứ không đọc file skill: skill nằm trong repo, không nằm trong
- *  project của người dùng, nên trình duyệt không có đường nào lấy được nó. Bảy
- *  mục này ngắn và gần như không đổi; đánh đổi đó rẻ hơn việc thêm một endpoint
- *  chỉ để phục vụ một popover.
- *
- *  Chữ ở đây CỐ Ý không dùng từ nghề (state, validation, edge case): người đọc
- *  màn hình review là người viết tài liệu nghiệp vụ, không phải người viết mã.
- *  Nguyên văn rule kỹ thuật vẫn còn — nó nằm trong mã `rule_id` hiện ở popover. */
-const DEFAULT_RULE_META: Record<string, RuleMeta> = {
-  'ux-writing-chu-ngu': {
-    label: 'Câu thiếu chủ ngữ',
-    summary: 'Câu không nói rõ ai là người làm việc này.',
-    detail:
-      'Câu không cho biết ai thực hiện hành động — chủ ngữ bị lược đi, hoặc câu viết theo lối bị động nên không rõ người dùng, nhân viên hay hệ thống mới là bên làm. Người đọc phải tự đoán, và mỗi người đoán một kiểu.',
-  },
-  'ux-writing-thuat-ngu': {
-    label: 'Thuật ngữ không nhất quán',
-    summary: 'Cùng một thứ nhưng mỗi chỗ gọi một tên khác nhau.',
-    detail:
-      'Cùng một khái niệm được gọi bằng nhiều tên khác nhau trong cùng một trang — chỗ này "khách hàng", chỗ kia "người dùng", chỗ nữa "tài khoản". Người đọc không biết đó là ba thứ khác nhau hay chỉ là một thứ được gọi ba kiểu.',
-  },
-  'ux-writing-viet-tat': {
-    label: 'Viết tắt không giải nghĩa',
-    summary: 'Chữ viết tắt xuất hiện mà không nói nó là gì.',
-    detail:
-      'Một cụm viết tắt xuất hiện lần đầu mà không có chỗ nào nói nó là gì. Người mới đọc tài liệu không đoán ra, còn người quen việc thì mỗi người hiểu một nghĩa.',
-  },
-  'ux-writing-nhan-nut': {
-    label: 'Nhãn nút mơ hồ',
-    summary: 'Chữ trên nút hoặc thông báo không nói rõ chuyện gì xảy ra.',
-    detail:
-      'Chữ trên nút hoặc trong thông báo không cho biết bấm vào thì điều gì xảy ra, hoặc vừa có chuyện gì và bây giờ phải làm sao — ví dụ nút chỉ ghi "OK", hay báo "Thao tác thất bại" mà không nói hỏng ở đâu và cần làm gì tiếp.',
-  },
-  flow: {
-    label: 'Luồng thiếu đầu/cuối',
-    summary: 'Luồng không rõ bắt đầu từ đâu hoặc kết thúc thế nào.',
-    detail:
-      'Một luồng người dùng không nói rõ nó bắt đầu từ đâu và kết thúc ở đâu, hoặc có bước chỉ tả thao tác mà không cho biết sau đó màn hình hiện gì, người dùng đi tiếp tới đâu. Ai làm theo tài liệu sẽ dừng giữa chừng vì không biết bước sau là gì.',
-  },
-  gap: {
-    label: 'Mô tả chưa đầy đủ',
-    summary: 'Có nhắc tới nhưng không tả nó hoạt động ra sao.',
-    detail:
-      'Tài liệu có nhắc tới một tính năng, một màn hình hay một chỗ nối với hệ thống khác, nhưng không tả nó chạy thế nào — hoặc gọi tên rồi để đó, không có mục nào mô tả tiếp. Người đọc biết là có thứ đó, nhưng không đủ để làm ra nó.',
-  },
-  'edge-case': {
-    label: 'Thiếu trường hợp biên',
-    summary: 'Chưa nói điều gì xảy ra khi thao tác không suôn sẻ.',
-    detail:
-      'Tài liệu chưa nói điều gì xảy ra khi thao tác không suôn sẻ: gặp lỗi thì hiện gì, danh sách rỗng thì sao, đang tải hiển thị thế nào, và dữ liệu nhập có giới hạn gì (độ dài, số lượng, định dạng).',
-  },
-};
-
-/** Nhãn + lời tóm tắt hiện trên CHIP của một `rule_id`.
- *
- *  Chip từng hiện nguyên mã (`default#edge-case`, `criteria/rules.md#R-OVERLAY`):
- *  đúng nhưng phải biết trước mã đó nghĩa gì mới đọc được, mà người review tài
- *  liệu thì không. Mã đầy đủ không mất đi — nó xuống dòng nhỏ trong popover để
- *  còn trace ngược về file criteria.
- *
- *  Rule của dự án chỉ hiện phần sau dấu `#`: tên file criteria là chuyện của
- *  người viết bộ tiêu chí, còn thứ nhận dạng được một rule là cái anchor. */
-function ruleChipMeta(ruleId: string): { label: string; summary: string } {
-  if (ruleId.startsWith('default#')) {
-    const meta = DEFAULT_RULE_META[ruleId.slice('default#'.length)];
-    if (meta) return { label: meta.label, summary: meta.summary };
-  }
-  const anchor = /^criteria\/[^#]+#(.+)$/.exec(ruleId)?.[1];
-  if (anchor) return { label: anchor, summary: 'Tiêu chí riêng của dự án — bấm để xem nội dung' };
-  // Sơ đồ mermaid được viết lại sau rà soát UX (WP1/WP2 ghi `rule_id` dạng
-  // này, không có dấu `#`) — cùng lý do như hai nhánh trên: chip hiện nhãn dễ
-  // hiểu, đường dẫn kỹ thuật đầy đủ chỉ còn trong popover.
-  if (/^flows\/[^/]+\/ux-review\.json$/.test(ruleId)) {
-    return { label: 'Đánh giá luồng', summary: 'Sơ đồ được cập nhật theo bản đề xuất sau rà soát UX' };
-  }
-  // Bảng thành phần đối chiếu Design System cho một màn hình.
-  if (/^comp\/[^/]+\.screen\.json$/.test(ruleId)) {
-    return { label: 'Màn hình → Component', summary: 'Bảng thành phần đối chiếu với Design System của màn hình' };
-  }
-  // Mã lạ (dữ liệu cũ, hoặc một skill khác ghi ra): hiện nguyên văn còn hơn
-  // gán cho nó một nhãn bịa ra không ứng với gì.
-  return { label: ruleId, summary: 'Bấm để xem nội dung tiêu chí' };
-}
-
 /** Cắt đúng phần văn bản của một rule ra khỏi một file `criteria/*.md`.
+ *
+ *  wp-doc-redline-nondestructive: chip/popover rule_id (RuleChip) từng dùng
+ *  hàm này SỐNG trong thẻ rail — rail đã bị bỏ (xem docblock đầu file) nên
+ *  UI đó không còn, nhưng hàm cắt đoạn thuần này vẫn giữ export vì có bộ test
+ *  riêng khoá đúng quy ước anchor với daemon (xem test đi kèm) và không phụ
+ *  thuộc gì vào rail.
  *
  *  Quy ước anchor PHẢI trùng với `collectCriteriaAnchors` phía daemon
  *  (apps/daemon/src/docs-review.ts): mọi token trong dấu backtick trên một dòng
@@ -1106,28 +850,6 @@ function refLabel(ref: string): string {
 function setClass(el: HTMLElement, className: string, on: boolean): void {
   if (!className) return;
   el.classList.toggle(className, on);
-}
-
-/** Key localStorage nhớ trạng thái right panel giữa các phiên (mục 6 WP3). */
-const PANEL_STORAGE_KEY = 'od.docRedline.panel';
-function readStoredPanelOpen(fallback: boolean): boolean {
-  try {
-    const saved = window.localStorage.getItem(PANEL_STORAGE_KEY);
-    if (saved === 'open') return true;
-    if (saved === 'closed') return false;
-  } catch {
-    // localStorage có thể bị chặn (chế độ riêng tư, iframe sandbox) — rơi về
-    // mặc định thay vì vỡ màn hình.
-  }
-  return fallback;
-}
-function writeStoredPanelOpen(open: boolean): void {
-  try {
-    window.localStorage.setItem(PANEL_STORAGE_KEY, open ? 'open' : 'closed');
-  } catch {
-    // Cùng lý do như readStoredPanelOpen — ghi thất bại thì panel vẫn đổi
-    // trong phiên này, chỉ không nhớ được qua lần tải lại.
-  }
 }
 
 // ── WP-drreview-drawio-preview mục D — sơ đồ draw.io trong cột tài liệu ─────
@@ -1247,16 +969,7 @@ function DrawioDiagramHost({
 export function DocRedlinePreview({
   projectId,
   file,
-  // Spec (wp3.yaml): "Quick result mặc định ẩn, workspace mặc định hiện — nếu
-  // không xác định được nơi gọi thì mặc định hiện và ghi report." `FileViewer`
-  // (nơi DUY NHẤT dựng component này) không mang prop nào phân biệt được nó
-  // đang ở trong khung Quick result hay workspace — phân biệt được đòi dò
-  // ngược MỌI nơi gọi `<FileViewer>` trong app, ngoài phạm vi `touches` của WP
-  // này (chỉ được sửa bảng DocsSpecReviewIndex). Rơi về nhánh "không xác định
-  // được": mặc định `true` (hiện) cho MỌI ngữ cảnh — xem `not_done` trong báo
-  // cáo WP3.
-  defaultPanelOpen = true,
-}: { projectId: string; file: ProjectFile; defaultPanelOpen?: boolean }) {
+}: { projectId: string; file: ProjectFile }) {
   // `file.name` có dạng `<stage>/review/docs/…/x.md` (xem popover rule ở
   // dưới) — phần trước `/review/` là thư mục stage, dùng để dựng đường dẫn
   // `flows/<flowId>/proposed.drawio` cho host sơ đồ draw.io (mục D
@@ -1268,8 +981,6 @@ export function DocRedlinePreview({
   const [notesRaw, setNotesRaw] = useState<string | null>(null);
   const [changesRaw, setChangesRaw] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [editText, setEditText] = useState('');
   const [errorById, setErrorById] = useState<Record<string, string>>({});
   const [draft, setDraft] = useState<DraftAnnotation | null>(null);
   const [draftError, setDraftError] = useState('');
@@ -1293,17 +1004,12 @@ export function DocRedlinePreview({
   // composer (composer mở SAU khi đã chọn xong, dùng lại y hệt `draft`).
   const [headingPickerOpen, setHeadingPickerOpen] = useState(false);
   const [headingPickerValue, setHeadingPickerValue] = useState('');
-  // Snapshot markdown trước khi bỏ cho phép hoàn tác an toàn trong phiên này;
-  // reload sẽ xoá snapshot, tránh áp lại một bản tài liệu đã cũ.
+  // Session-only: các id đã "Bỏ" mà còn hoàn tác được TRONG PHIÊN NÀY. Không
+  // còn snapshot text để hoàn tác (wp-doc-redline-nondestructive: dismiss chỉ
+  // đổi `status`, không sửa `.md`) — hoàn tác chỉ cần set lại `status: 'active'`.
   const [undoableIds, setUndoableIds] = useState<Set<string>>(new Set());
-  const undoTextRef = useRef<Map<string, string>>(new Map());
   const [previewMode, setPreviewMode] = useState<PreviewMode>('changes');
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  // Trạng thái hiển thị chỉ sống trong phiên xem. Tab vẫn độc quyền; set này
-  // chỉ cho phép người review ẩn/hiện từng annotation BÊN TRONG tab hiện tại,
-  // hoàn toàn không ghi vào sidecar và không đồng nghĩa với "Bỏ".
-  const [hiddenAnnotationIds, setHiddenAnnotationIds] = useState<Set<string>>(new Set());
-  const pendingSelectionRef = useRef<{ id: string; source: 'document' | 'rail' } | null>(null);
   const docColRef = useRef<HTMLDivElement | null>(null);
   // Bám thẳng vào <article> chứa `dangerouslySetInnerHTML`, không bám vào cột
   // cha. Ref của cột có thể commit trước subtree HTML; ở runtime production đã
@@ -1312,43 +1018,22 @@ export function DocRedlinePreview({
   // được giao sau khi node đích đã commit, nên đây là lifecycle đáng tin cậy để
   // dựng Mermaid/Draw.io hosts.
   const [docArticleNode, setDocArticleNode] = useState<HTMLElement | null>(null);
-  // Phần tử mục trong rail, theo change id — dùng để cuộn rail tới mục tương
-  // ứng khi người dùng bấm một vùng bôi trong tài liệu.
-  const itemsByChangeRef = useRef<Map<string, HTMLElement>>(new Map());
-  // Popover nội dung rule: mở tối đa MỘT cái, khoá theo id thẻ đang mở.
-  const [openRule, setOpenRule] = useState<{ ownerId: string; ruleId: string } | null>(null);
-  const [ruleBody, setRuleBody] = useState<RuleBody>({ status: 'loading' });
-  // Một file criteria được nhiều rule dùng chung; đọc lại mỗi lần mở popover là
-  // lãng phí và làm popover chớp. `null` trong cache = đã hỏi và không có file.
-  const criteriaCacheRef = useRef<Map<string, string | null>>(new Map());
   // Cửa sổ xem đoạn được viện dẫn: `markId` là mark cần cuộn tới trong BẢN SAO
   // tài liệu dựng riêng cho modal, `label` là nguyên văn đoạn đó (hiện ở đầu
   // cửa sổ để người đọc biết mình đang được chỉ tới cái gì).
   const [refModal, setRefModal] = useState<{ markId: string; label: string } | null>(null);
   const modalDocRef = useRef<HTMLDivElement | null>(null);
+  // wp-doc-redline-nondestructive: modal chi tiết một CHANGE/NOTE (id mark) —
+  // thay cho panel/thẻ rail đã bỏ. Xem `openAnnotationDetail`/
+  // `AnnotationDetailModal`.
+  const [detailModal, setDetailModal] = useState<{ id: string } | null>(null);
   const printArticleRef = useRef<HTMLElement | null>(null);
   const [printBusy, setPrintBusy] = useState(false);
 
   function changePreviewMode(mode: PreviewMode) {
     if (mode === previewMode) return;
-    pendingSelectionRef.current = null;
     setSelectedId(null);
     setPreviewMode(mode);
-  }
-  function annotationVisible(id: string): boolean {
-    return !hiddenAnnotationIds.has(id);
-  }
-  function setAnnotationVisible(id: string, visible: boolean) {
-    setHiddenAnnotationIds((prev) => {
-      const next = new Set(prev);
-      if (visible) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-    if (!visible) {
-      pendingSelectionRef.current = null;
-      setSelectedId((current) => current === id ? null : current);
-    }
   }
   // Bật/tắt tô màu THEO TỪNG LOẠI. Một công tắc chung là chưa đủ: việc thật của
   // người review là "cho tôi xem riêng chỗ bị xoá" hay "ẩn mấy chỗ thêm chữ đi",
@@ -1356,84 +1041,6 @@ export function DocRedlinePreview({
   // này tồn tại.
   const [paint, setPaint] = useState<PaintFlags>(ALL_PAINTED);
   const setPaintKind = (kind: PaintKind, on: boolean) => setPaint((prev) => ({ ...prev, [kind]: on }));
-  // Chip lọc RIÊNG cho "Sơ đồ"/"Bảng thành phần" (mục 7 WP3) — khác PaintFlags
-  // ngay trên: đây là lọc THEO KIND (ẩn/hiện MỤC trong rail), không phải lọc
-  // theo màu vùng bôi trong tài liệu (marks vẫn tô đúng theo add/edit như cũ,
-  // xem docRender) — cách đơn giản nhất không phải mở rộng PaintKind/pipeline
-  // bôi màu để phục vụ đúng hai chip mới.
-  const [kindFilter, setKindFilterState] = useState<{ diagram: boolean; compTable: boolean }>({
-    diagram: true,
-    compTable: true,
-  });
-  // Trạng thái "mở Chi tiết" của thẻ sơ đồ / bảng thành phần (kiểu 3-dòng mới
-  // — xem FlowDiagramCardBody/ComponentTableCardBody). Không tồn tại cho các
-  // loại thẻ CŨ (chúng giữ nguyên hiển thị đầy đủ như trước WP này, xem
-  // ChangeDetail), nên chỉ hai loại thẻ đó đọc map này.
-  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
-  function toggleExpanded(id: string) {
-    setExpandedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }
-  // "Chấp nhận" của thẻ sơ đồ/bảng thành phần: đánh dấu TRONG PHIÊN NÀY, không
-  // ghi ra `*.changes.json` — `DocReviewAnnotationStatus` (packages/contracts,
-  // KHÔNG được sửa ở WP này) chỉ biết 'active'|'edited'|'dismissed', không có
-  // 'accepted'. "Không đổi text tài liệu" theo đúng yêu cầu; mất khi tải lại
-  // trang là đánh đổi đã biết, ghi trong report.
-  const [acceptedIds, setAcceptedIds] = useState<Set<string>>(new Set());
-  function acceptChange(id: string) {
-    setAcceptedIds((prev) => new Set(prev).add(id));
-  }
-
-  // ── Right panel ẩn/hiện (mục 6 WP3) ───────────────────────────────────────
-  // localStorage NHỚ giữa các phiên; `defaultPanelOpen` (prop) chỉ có tác dụng
-  // khi localStorage CHƯA có key này — người dùng đã tự chọn một lần thì nhớ
-  // lựa chọn đó, kể cả khi trang gọi lại với default khác.
-  const [panelOpen, setPanelOpenState] = useState<boolean>(() => readStoredPanelOpen(defaultPanelOpen));
-  // `selectFromDoc` (đọc panelOpen để quyết định có tự mở panel không) được
-  // GỌI TỪ MỘT CLOSURE CŨ: effect uỷ quyền click trên cột tài liệu chỉ đăng ký
-  // MỘT lần (deps `[loading]`, xem effect đó) nên hàm `fn` nó giữ mãi bản
-  // `selectFromDoc` của đúng LƯỢT RENDER lúc đăng ký — đọc thẳng biến
-  // `panelOpen` ở đó sẽ luôn thấy giá trị CŨ dù panel đã đổi sau đó. Ref luôn
-  // đọc được giá trị MỚI NHẤT bất kể closure nào giữ nó, cùng lý do
-  // `itemsByChangeRef` ở trên là ref chứ không phải state.
-  const panelOpenRef = useRef(panelOpen);
-  useEffect(() => {
-    panelOpenRef.current = panelOpen;
-  }, [panelOpen]);
-  function togglePanel() {
-    setPanelOpenState((prev) => {
-      const next = !prev;
-      writeStoredPanelOpen(next);
-      return next;
-    });
-  }
-  function openPanel() {
-    setPanelOpenState((prev) => {
-      if (prev) return prev;
-      writeStoredPanelOpen(true);
-      return true;
-    });
-  }
-  // Phím tắt `]` — CHỈ khi tiêu điểm không nằm trong ô nhập, để không nuốt mất
-  // dấu `]` người dùng gõ trong textarea lý do/nội dung sửa. Đăng ký MỘT lần
-  // (deps rỗng) và dùng cập nhật hàm (setPanelOpenState(prev => …)) để không
-  // phải đăng ký lại mỗi lần panelOpen đổi.
-  useEffect(() => {
-    const onKey = (ev: KeyboardEvent) => {
-      if (ev.key !== ']') return;
-      const active = document.activeElement as HTMLElement | null;
-      const tag = active?.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || active?.isContentEditable) return;
-      togglePanel();
-    };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -1445,12 +1052,6 @@ export function DocRedlinePreview({
       cancelled = true;
     };
   }, [projectId, file.name, file.mtime]);
-
-  // Không mang lựa chọn ẩn/hiện của tài liệu trước sang tài liệu mới. Mỗi
-  // tài liệu mở lần đầu luôn bắt đầu với toàn bộ annotation đang hiện.
-  useEffect(() => {
-    setHiddenAnnotationIds(new Set());
-  }, [projectId, file.name]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1507,57 +1108,6 @@ export function DocRedlinePreview({
     };
   }, [projectId, file.name, file.mtime]);
 
-  // Nạp nội dung rule cho popover đang mở. Bộ mặc định (`default#…`) trả lời
-  // ngay từ hằng trong file này; rule của dự án phải đọc file `criteria/…` nằm
-  // cạnh thư mục `review/` — `file.name` có dạng
-  // `<stage>/review/docs/…/x.md` nên phần trước `/review/` chính là thư mục
-  // stage, không cần dựng lại đường dẫn từ đâu khác.
-  useEffect(() => {
-    if (!openRule) return;
-    let cancelled = false;
-    const { ruleId } = openRule;
-    setRuleBody({ status: 'loading' });
-
-    if (ruleId.startsWith('default#')) {
-      const meta = DEFAULT_RULE_META[ruleId.slice('default#'.length)];
-      setRuleBody(meta ? { status: 'text', text: meta.detail } : { status: 'missing' });
-      return;
-    }
-    const m = /^criteria\/([^#]+)#(.+)$/.exec(ruleId);
-    if (!m) {
-      setRuleBody({ status: 'missing' });
-      return;
-    }
-    const [, criteriaFile, anchor] = m as unknown as [string, string, string];
-    const stagePrefix = file.name.split('/review/')[0] ?? '';
-    const criteriaPath = `${stagePrefix}/criteria/${criteriaFile}`;
-
-    const apply = (raw: string | null) => {
-      if (cancelled) return;
-      const section = raw == null ? null : extractRuleSection(raw, anchor);
-      setRuleBody(section ? { status: 'html', html: renderMarkdownToSafeHtml(section) } : { status: 'missing' });
-    };
-
-    const cached = criteriaCacheRef.current;
-    if (cached.has(criteriaPath)) {
-      apply(cached.get(criteriaPath) ?? null);
-      return;
-    }
-    void fetchProjectFileText(projectId, criteriaPath).then((raw) => {
-      cached.set(criteriaPath, raw ?? null);
-      apply(raw ?? null);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [openRule, projectId, file.name]);
-
-  /** Mở/đóng popover của một thẻ. Bấm lại đúng thẻ đang mở là đóng — không cần
-   *  nút đóng riêng cho một khối chữ ngắn. */
-  function toggleRule(ownerId: string, ruleId: string) {
-    setOpenRule((prev) => (prev && prev.ownerId === ownerId ? null : { ownerId, ruleId }));
-  }
-
   // Bôi highlight NGAY TRONG chuỗi HTML, trước khi React nhận. Trước đây bước
   // này là một useEffect mổ DOM sau khi render; cách đó phụ thuộc ref đã gắn
   // chưa, thứ tự effect, và việc React có dựng lại nút hay không — ba đường
@@ -1576,23 +1126,42 @@ export function DocRedlinePreview({
     const requests = changes.flatMap((c) => {
       if (previewMode !== 'changes') return [];
       if (c.status === 'dismissed') return [];
-      if (!annotationVisible(c.id)) return [];
       // B2 (wp3b.yaml): sơ đồ mermaid đã được neo bằng HOST MARK riêng (xem
       // effect chèn host bên dưới — khớp theo NGUYÊN VĂN mã mermaid, không
-      // theo đoạn chữ), nên KHÔNG đưa segment chữ của `quote` vào injectHighlights
-      // nữa. Dòng đầu của mọi flowchart thường giống hệt nhau ("flowchart
-      // TD") — injectHighlights luôn dò lại từ ĐẦU tài liệu cho mỗi request
-      // (không nhớ đã dùng tới đâu), nên hai sơ đồ cùng dòng đầu từng khiến
-      // mark chữ của sơ đồ thứ hai khớp NHẦM vào khối của sơ đồ thứ nhất.
-      // `isAnchored`/`selectFromList` phía dưới coi sơ đồ có host là neo được,
-      // không cần dựa vào `matched` của lượt bôi này nữa.
+      // theo đoạn chữ), nên KHÔNG đưa segment chữ của change này vào
+      // injectHighlights nữa. `isAnchored`/`selectFromList` phía dưới coi sơ
+      // đồ có host là neo được, không cần dựa vào `matched` của lượt bôi này.
       if (c.kind === 'flow-diagram') return [];
-      const raw = (c.quote ?? '').trim();
-      if (!raw) return [];
-      const add = changeOp(c) === 'add';
+      // Bảng thành phần: enrichment daemon sinh, KHÔNG đi qua hệ đề xuất
+      // người dùng — vẫn neo trên `quote` như trước (bảng đã CÓ SẴN trong tài
+      // liệu gốc, không phải một đề xuất chờ duyệt).
+      if (isComponentTableChange(c)) {
+        const raw = (c.quote ?? '').trim();
+        if (!raw) return [];
+        const on = paint.edit;
+        const className = !on ? styles.hlOff ?? '' : styles.hl ?? '';
+        const inlineStyle = !on ? HL_OFF_INLINE_STYLE : HL_INLINE_STYLE;
+        return annotationHighlightSegments(raw).map((text) => ({ id: c.id, text, className, inlineStyle, scope: documentIndex.scopeFor(c) }));
+      }
+      // Mọi change khác (agent lẫn user): tài liệu KHÔNG BAO GIỜ bị sửa, nên
+      // vùng bôi luôn neo trên CHỮ GỐC còn nguyên trong tài liệu —
+      // `changeHighlightSource` chọn `anchor` (thêm) hay `before` (sửa/xoá).
+      const source = changeHighlightSource(c);
+      if (!source) return [];
+      const { op, text: raw } = source;
+      if (op === 'del') {
+        // Tắt tô màu vẫn giữ gạch ngang: đó là thứ DUY NHẤT phân biệt "chữ đề
+        // xuất xoá" với chữ thật đang có trong tài liệu (xem
+        // HL_DEL_OFF_INLINE_STYLE).
+        const on = paint.del;
+        const className = on ? styles.hlDel ?? '' : styles.hlDelOff ?? '';
+        const inlineStyle = on ? HL_DEL_INLINE_STYLE : HL_DEL_OFF_INLINE_STYLE;
+        return annotationHighlightSegments(raw).map((text) => ({ id: c.id, text, className, inlineStyle, scope: documentIndex.scopeFor(c) }));
+      }
+      const add = op === 'add';
       // Tắt tô màu KHÔNG có nghĩa là bỏ chèn mark: mark vẫn phải nằm trong DOM
-      // thì thẻ bên phải mới còn neo được (bấm để nhảy) và mới không bị tụt
-      // xuống nhóm "không tìm thấy trong tài liệu". Chỉ phần SƠN bị gỡ.
+      // thì modal mới còn neo được (bấm để mở) và mới không bị tụt xuống nhóm
+      // "không tìm thấy trong tài liệu". Chỉ phần SƠN bị gỡ.
       const on = add ? paint.add : paint.edit;
       const className = !on ? styles.hlOff ?? '' : add ? styles.hlAdd ?? '' : styles.hl ?? '';
       const inlineStyle = !on ? HL_OFF_INLINE_STYLE : add ? HL_ADD_INLINE_STYLE : HL_INLINE_STYLE;
@@ -1603,11 +1172,10 @@ export function DocRedlinePreview({
     // Lượt thứ hai cho NOTE, trên HTML đã bôi change: `anchor` lấy từ bản GỐC
     // nên thường vẫn còn nguyên trong bản đã sửa (note không sửa gì). Id mang
     // tiền tố `note:` để không đụng id của change — cả hai loại mark dùng
-    // chung `data-change-id`, chung cơ chế click/cuộn.
+    // chung `data-change-id`, chung cơ chế click/mở modal.
     const noteRequests = notes.flatMap((n) => {
       if (previewMode !== 'notes') return [];
       if (n.status === 'dismissed') return [];
-      if (!annotationVisible(`${NOTE_ID_PREFIX}${n.id}`)) return [];
       // wp-table-highlight.yaml (Q2): note có `tableCells` được định vị bằng
       // toạ độ ô qua `useTableCellTint` — `anchor` của nó chỉ là dòng nguồn
       // dùng để TÌM LẠI <table>, không phải chữ cần bọc <mark>. Bọc mark ở
@@ -1625,38 +1193,13 @@ export function DocRedlinePreview({
     });
     const notePass = injectHighlights(changePass.html, noteRequests, styles.hlNote ?? '', NOTE_HL_INLINE_STYLE);
 
-    // Lượt thứ BA: chỗ xoá thuần. Chạy CUỐI cùng vì nó thêm chữ mới vào tài
-    // liệu (đoạn đã bị xoá) — chạy trước thì hai lượt kia phải dò qua chữ không
-    // thuộc bản đã sửa và có thể khớp bừa vào đó.
-    const delRequests = changes.flatMap((c) => {
-      if (previewMode !== 'changes') return [];
-      if (c.status === 'dismissed') return [];
-      if (!annotationVisible(c.id)) return [];
-      if (changeOp(c) !== 'del') return [];
-      // `anchor` là nguyên văn mã nguồn markdown, y như `quote`, nên phải cắt
-      // qua quoteSegments. Lấy segment ĐẦU: một chỗ xoá chỉ cần một điểm neo,
-      // và segment đầu là chỗ gần nhất với vị trí đoạn bị xoá.
-      const seg = quoteSegments((c.anchor ?? '').trim())[0];
-      if (!seg || !c.before) return [];
-      return [{ id: c.id, anchor: seg, text: c.before, scope: documentIndex.scopeFor(c) }];
-    });
-    // Chỗ XOÁ giữ nguyên gạch ngang kể cả khi tắt tô màu: gạch ngang không
-    // phải trang trí mà là thứ DUY NHẤT phân biệt "chữ đã bị bỏ" với "chữ đang
-    // có trong tài liệu" — bỏ nó đi thì đoạn đã xoá đọc như nội dung thật.
-    const delPass = injectDeletedRuns(
-      notePass.html,
-      delRequests,
-      paint.del ? styles.hlDel ?? '' : styles.hlDelOff ?? '',
-      paint.del ? HL_DEL_INLINE_STYLE : HL_DEL_OFF_INLINE_STYLE,
-    );
-
-    // Lượt thứ TƯ: các đoạn được `reason`/`finding` VIỆN DẪN. Chạy sau cùng để
-    // không tranh chỗ với ba loại trên — một đoạn vừa là chỗ sửa vừa được viện
-    // dẫn thì nó phải hiện là chỗ sửa, vì đó mới là thông tin người đọc cần
-    // trước. injectHighlights bỏ qua occurrence đã nằm trong mark, nên thứ tự
-    // các pass này cũng là thứ tự ưu tiên.
+    // Lượt thứ BA: các đoạn được `reason`/`finding` VIỆN DẪN. Chạy sau cùng để
+    // không tranh chỗ với hai loại trên — một đoạn vừa là chỗ sửa vừa được
+    // viện dẫn thì nó phải hiện là chỗ sửa, vì đó mới là thông tin người đọc
+    // cần trước. injectHighlights bỏ qua occurrence đã nằm trong mark, nên thứ
+    // tự các pass này cũng là thứ tự ưu tiên.
     const refRequests = [
-      ...(previewMode === 'changes' ? changes.filter((c) => c.status !== 'dismissed' && annotationVisible(c.id)) : []).flatMap((c) =>
+      ...(previewMode === 'changes' ? changes.filter((c) => c.status !== 'dismissed') : []).flatMap((c) =>
         (c.doc_refs ?? []).flatMap((ref, i) =>
           quoteSegments(ref.trim()).slice(0, 1).map((text) => ({
             id: `${REF_ID_PREFIX}${c.id}:${i}`,
@@ -1666,7 +1209,7 @@ export function DocRedlinePreview({
           })),
         ),
       ),
-      ...(previewMode === 'notes' ? notes.filter((n) => n.status !== 'dismissed' && annotationVisible(`${NOTE_ID_PREFIX}${n.id}`)) : []).flatMap((n) =>
+      ...(previewMode === 'notes' ? notes.filter((n) => n.status !== 'dismissed') : []).flatMap((n) =>
         (n.doc_refs ?? []).flatMap((ref, i) =>
           quoteSegments(ref.trim()).slice(0, 1).map((text) => ({
             id: `${REF_ID_PREFIX}${NOTE_ID_PREFIX}${n.id}:${i}`,
@@ -1677,22 +1220,21 @@ export function DocRedlinePreview({
         ),
       ),
     ];
-    const refPass = injectHighlights(delPass.html, refRequests, styles.hlRef ?? '', HL_REF_INLINE_STYLE);
+    const refPass = injectHighlights(notePass.html, refRequests, styles.hlRef ?? '', HL_REF_INLINE_STYLE);
 
     return {
       html: refPass.html,
       matched: new Set<string>([
         ...changePass.matched,
         ...notePass.matched,
-        ...delPass.matched,
         ...refPass.matched,
       ]),
       // `doc_refs` are evidence links, not changed/commented content. Keep
       // their inline dotted marks (and matched ids for jump/modal behavior),
       // but never promote their containing list item/table to a tinted block.
-      blocks: [...changePass.blocks, ...notePass.blocks, ...delPass.blocks],
+      blocks: [...changePass.blocks, ...notePass.blocks],
     };
-  }, [editedText, projectId, file.name, changes, notes, paint, previewMode, documentIndex, hiddenAnnotationIds]);
+  }, [editedText, projectId, file.name, changes, notes, paint, previewMode, documentIndex]);
 
   const docHtml = docRender?.html ?? null;
   const anchored = docRender?.matched ?? EMPTY_SET;
@@ -1700,10 +1242,10 @@ export function DocRedlinePreview({
     () => splitMermaidDocumentHtml(
       docHtml ?? '',
       previewMode === 'changes'
-        ? changes.filter((change) => change.kind === 'flow-diagram' && change.status !== 'dismissed' && !hiddenAnnotationIds.has(change.id))
+        ? changes.filter((change) => change.kind === 'flow-diagram' && change.status !== 'dismissed')
         : [],
     ),
-    [docHtml, previewMode, changes, hiddenAnnotationIds],
+    [docHtml, previewMode, changes],
   );
   const anchoredMermaidIds = useMemo(
     () => new Set(mermaidDocumentParts.flatMap((part) => part.kind === 'mermaid' && part.changeId ? [part.changeId] : [])),
@@ -1732,35 +1274,8 @@ export function DocRedlinePreview({
     () => changes.filter((c) => isComponentTableChange(c) && c.status !== 'dismissed').length,
     [changes],
   );
-  // S · D · X của tab dọc khi panel ẩn (mục 6 WP3): S = change còn hiệu lực, D
-  // = đã bỏ (change + note gộp — cùng định nghĩa "đã bỏ" của dải trạng thái
-  // phía trên), X = nhận xét còn hiệu lực.
   const activeChangeCount = changes.filter((c) => c.status !== 'dismissed').length;
-  const dismissedTotalCount =
-    changes.filter((c) => c.status === 'dismissed').length + notes.filter((n) => n.status === 'dismissed').length;
   const activeNoteCount = notes.filter((n) => n.status !== 'dismissed').length;
-  const visibleChangeCount = changes.filter((c) => c.status !== 'dismissed' && annotationVisible(c.id)).length;
-  const visibleNoteCount = notes.filter((n) => n.status !== 'dismissed' && annotationVisible(`${NOTE_ID_PREFIX}${n.id}`)).length;
-  const currentVisibleCount = previewMode === 'changes' ? visibleChangeCount : visibleNoteCount;
-  const currentActiveCount = previewMode === 'changes' ? activeChangeCount : activeNoteCount;
-
-  function setCurrentModeVisible(visible: boolean) {
-    const ids = previewMode === 'changes'
-      ? changes.filter((c) => c.status !== 'dismissed').map((c) => c.id)
-      : notes.filter((n) => n.status !== 'dismissed').map((n) => `${NOTE_ID_PREFIX}${n.id}`);
-    setHiddenAnnotationIds((prev) => {
-      const next = new Set(prev);
-      for (const id of ids) {
-        if (visible) next.delete(id);
-        else next.add(id);
-      }
-      return next;
-    });
-    if (!visible && selectedId && ids.includes(selectedId)) {
-      pendingSelectionRef.current = null;
-      setSelectedId(null);
-    }
-  }
 
   // ── Sơ đồ mermaid trong cột tài liệu (mục 4 WP3) ──────────────────────────
   // `renderMarkdownToSafeHtml` (dùng chung với FileViewer) đã dựng fence
@@ -1904,7 +1419,6 @@ export function DocRedlinePreview({
         if (!note.tableCells || note.tableCells.cells.length === 0) continue;
         if (note.status === 'dismissed') continue;
         const markId = `${NOTE_ID_PREFIX}${note.id}`;
-        if (!annotationVisible(markId)) continue;
         const wanted = tableAnchorPlainText(note.anchor ?? '');
         if (!wanted) continue;
         // Định vị bằng cách dựng lại text từng HÀNG từ DOM (ô ghép bằng dấu
@@ -1944,7 +1458,7 @@ export function DocRedlinePreview({
         delete cell.dataset.redlineOwner;
       }
     };
-  }, [docHtml, docRender, notes, previewMode, hiddenAnnotationIds]);
+  }, [docHtml, docRender, notes, previewMode]);
 
   // MỘT listener trên CỘT tài liệu, không phải một listener trên mỗi <mark>.
   //
@@ -1973,7 +1487,7 @@ export function DocRedlinePreview({
       if (target?.closest?.('button')) return;
       const id = mark?.dataset.changeId ?? ownerBlock?.dataset.redlineOwner;
       if (!id) return;
-      selectFromDoc(id);
+      openAnnotationDetail(id);
     };
     container.addEventListener('click', fn);
     return () => container.removeEventListener('click', fn);
@@ -2014,16 +1528,11 @@ export function DocRedlinePreview({
     );
   }
 
-  /** Bấm một mục trong rail: cuộn tài liệu tới vùng bôi đầu tiên của change đó
-   *  và nháy sáng mọi mark của nó. */
+  /** Bấm nút điều hướng (mục trước/sau) hoặc chọn từ `navigationItems`: cuộn
+   *  tài liệu tới vùng bôi đầu tiên của change/note đó và nháy sáng mọi mark
+   *  của nó. `navigationItems` luôn lấy từ CHÍNH `previewMode` hiện tại (xem
+   *  khai báo phía trên), nên không còn tình huống lệch mode cần chờ. */
   function selectFromList(id: string) {
-    const ownerMode = annotationMode(id);
-    if (ownerMode !== previewMode) {
-      pendingSelectionRef.current = { id, source: 'rail' };
-      setSelectedId(null);
-      setPreviewMode(ownerMode);
-      return;
-    }
     setSelectedId(id);
     // Sơ đồ mermaid: cuộn tới HOST (hostOnly — đúng vế (2) của B2 trong
     // wp3b.yaml, xem docblock marksFor ngay trên).
@@ -2044,62 +1553,6 @@ export function DocRedlinePreview({
     }, 1600);
   }
 
-  /** Bấm một vùng bôi trong tài liệu: chọn change đó và cuộn rail tới mục
-   *  tương ứng (chiều ngược của selectFromList). Vùng VIỆN DẪN
-   *  (`ref:<ownerId>:<i>`) quy về chính thẻ đã viện dẫn nó — người đọc bấm vào
-   *  một đoạn gạch chấm là đang hỏi "ai nhắc tới chỗ này?", nên câu trả lời là
-   *  thẻ chủ, không phải một mục riêng cho tham chiếu. */
-  function selectFromDoc(id: string) {
-    const ownerId = id.startsWith(REF_ID_PREFIX)
-      ? // bỏ tiền tố rồi cắt hậu tố `:<số>`. KHÔNG dùng split(':') — ownerId của
-        // note tự nó đã chứa dấu hai chấm (`note:n1`).
-        id.slice(REF_ID_PREFIX.length).replace(/:\d+$/, '')
-      : id;
-    const ownerMode = annotationMode(ownerId);
-    if (ownerMode !== previewMode) {
-      pendingSelectionRef.current = { id: ownerId, source: 'document' };
-      setSelectedId(null);
-      setPreviewMode(ownerMode);
-      return;
-    }
-    setSelectedId(ownerId);
-    if (!panelOpenRef.current) {
-      // Panel đang ẩn: mở ra rồi mới cuộn. Rail VẪN Ở TRONG DOM khi ẩn (chỉ
-      // `hidden`/`aria-hidden`, xem docblock panelOpen) nên mục đã có ref sẵn
-      // — chỉ cần đợi một khung hình để `hidden` được gỡ trước khi
-      // `scrollIntoView` có chỗ để cuộn tới (gọi ngay trong cùng lượt thì phần
-      // tử vẫn `display: none`, trình duyệt không cuộn được).
-      openPanel();
-      window.requestAnimationFrame(() => {
-        itemsByChangeRef.current.get(ownerId)?.scrollIntoView({ block: 'nearest', behavior: 'auto' });
-      });
-      return;
-    }
-    const item = itemsByChangeRef.current.get(ownerId);
-    // `block: 'nearest'` để rail chỉ trượt tối thiểu — mục đã ở trong tầm nhìn
-    // thì không nhảy. `behavior: 'auto'` cùng lý do như trên.
-    item?.scrollIntoView({ block: 'nearest', behavior: 'auto' });
-  }
-
-  // Cross-mode selection is deliberately two-phase: switching mode rebuilds
-  // docHtml and the card map (`itemsByChangeRef`). Marks themselves are read
-  // live via `marksFor` (no map to go stale), but the RAIL ITEM ref is still
-  // gathered in an effect — so this gate still waits for `docHtml`/`previewMode`
-  // to settle before consuming the pending id, ensuring the destination
-  // card/mark already exists in the DOM this render produced.
-  useEffect(() => {
-    const pending = pendingSelectionRef.current;
-    if (!pending || annotationMode(pending.id) !== previewMode) return;
-    const marks = marksFor(pending.id);
-    const item = itemsByChangeRef.current.get(pending.id);
-    if (marks.length === 0 && !item) return;
-    pendingSelectionRef.current = null;
-    if (pending.source === 'rail') selectFromList(pending.id);
-    else selectFromDoc(pending.id);
-    // docHtml is the commit boundary for the mode-specific mark tree.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [docHtml, previewMode]);
-
   /** Mở cửa sổ xem đoạn được VIỆN DẪN.
    *
    *  Vì sao là modal chứ không cuộn cột chính: đoạn được viện dẫn thường nằm
@@ -2108,6 +1561,28 @@ export function DocRedlinePreview({
    *  tìm đường quay lại. Modal cho họ liếc sang rồi đóng lại là về đúng chỗ cũ. */
   function openRefModal(markId: string, label: string) {
     setRefModal({ markId, label });
+  }
+
+  /** Bấm một vùng bôi trong tài liệu: mở modal chi tiết của change/note chủ.
+   *  Vùng VIỆN DẪN (`ref:<ownerId>:<i>`) quy về chính thẻ đã viện dẫn nó —
+   *  người đọc bấm vào một đoạn gạch chấm là đang hỏi "ai nhắc tới chỗ này?",
+   *  nên câu trả lời là thẻ chủ, không phải một cửa sổ riêng cho tham chiếu.
+   *  Enrichment (sơ đồ/bảng thành phần) không có modal — bấm vào đó không làm
+   *  gì, vì nó không thuộc hệ đề xuất/duyệt. */
+  function openAnnotationDetail(id: string) {
+    const ownerId = id.startsWith(REF_ID_PREFIX)
+      ? // bỏ tiền tố rồi cắt hậu tố `:<số>`. KHÔNG dùng split(':') — ownerId của
+        // note tự nó đã chứa dấu hai chấm (`note:n1`).
+        id.slice(REF_ID_PREFIX.length).replace(/:\d+$/, '')
+      : id;
+    const target = resolveAnnotationDetail(ownerId, changes, notes);
+    if (!target) return;
+    // Luôn CHỌN (nháy sáng/cuộn tới) mark được bấm, kể cả sơ đồ/bảng — chỉ
+    // riêng MODAL chi tiết là không mở cho hai loại nội dung làm giàu này
+    // (chúng đã có tương tác riêng: toggle Gốc/Đề xuất, bảng inline).
+    setSelectedId(ownerId);
+    if (target.kind === 'change' && (target.change.kind === 'flow-diagram' || isComponentTableChange(target.change))) return;
+    setDetailModal({ id: ownerId });
   }
 
   // Modal vừa mở: cuộn tới đoạn được viện dẫn trong BẢN SAO tài liệu của modal
@@ -2133,16 +1608,19 @@ export function DocRedlinePreview({
     for (const mark of marks) setClass(mark, activeClass, true);
   }, [refModal]);
 
-  // Escape đóng modal. Gắn ở `document` chứ không ở phần tử modal: tiêu điểm có
-  // thể đang nằm ở nút Đóng, ở vùng cuộn, hay chưa ở đâu cả.
+  // Escape đóng modal (tham chiếu lẫn chi tiết). Gắn ở `document` chứ không ở
+  // phần tử modal: tiêu điểm có thể đang nằm ở nút Đóng, ở vùng cuộn, hay chưa
+  // ở đâu cả.
   useEffect(() => {
-    if (!refModal) return;
+    if (!refModal && !detailModal) return;
     const onKey = (ev: KeyboardEvent) => {
-      if (ev.key === 'Escape') setRefModal(null);
+      if (ev.key !== 'Escape') return;
+      setRefModal(null);
+      setDetailModal(null);
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [refModal]);
+  }, [refModal, detailModal]);
 
   // Làm nổi tất cả mark của change đang được chọn. Chạy lại theo `docHtml` vì
   // HTML mới nghĩa là mark mới, chưa mang class nào.
@@ -2156,24 +1634,17 @@ export function DocRedlinePreview({
   }, [selectedId, docHtml]);
 
   // Một change là "không neo được" khi id của nó không có trong `matched` — hợp
-  // của cả ba lượt bôi. Chỗ xoá thuần CÓ `anchor` neo được qua lượt thứ ba
-  // (injectDeletedRuns), nên thẻ của nó là button nhảy tới được như mọi thẻ
-  // khác; chỗ xoá KHÔNG có `anchor` (dữ liệu từ trước khi có field này) thì
-  // không có gì để neo vào — đó là đúng chứ không phải lỗi.
-  /** Trả `true` khi lưu thành công, `false` khi bị chặn (đang bận) hoặc lỗi —
-   *  chỗ gọi (`saveComponentTableEdit`, vá N2 review attempt2) cần biết kết
-   *  quả để quyết định có đóng form nháp hay không: đóng SAU khi lưu xong,
-   *  không đóng trước rồi mất nháp nếu lưu hỏng. Các chỗ gọi cũ (editChange,
-   *  dismissChange…) không đọc giá trị trả về — thêm giá trị này không đổi
-   *  hành vi của chúng. */
-  async function saveAction(id: string, action: () => { text?: string; changes?: DocRedlineChange[]; events?: DocReviewAnnotationEvent[]; notes?: DocRedlineNote[]; changedMd: boolean }): Promise<boolean> {
+  // của các lượt bôi. Tài liệu hiển thị LUÔN là bản gốc đã enrich: mọi thao
+  // tác change/note giờ chỉ sửa `changes.json`/`notes.json`, KHÔNG BAO GIỜ ghi
+  // lại `file.name` — đây là bất biến bắt buộc của toàn bộ component.
+  /** Trả `true` khi lưu thành công, `false` khi bị chặn (đang bận) hoặc lỗi. */
+  async function saveAction(id: string, action: () => { changes?: DocRedlineChange[]; events?: DocReviewAnnotationEvent[]; notes?: DocRedlineNote[] }): Promise<boolean> {
     if (busyId) return false;
     setBusyId(id); setErrorById((prev) => ({ ...prev, [id]: '' }));
-    const beforeChanges = changesState; const beforeNotes = notes; const beforeText = editedText;
+    const beforeChanges = changesState; const beforeNotes = notes;
     try {
       const result = action();
       const writes: Array<[string, string]> = [];
-      if (result.changedMd && result.text != null) writes.push([file.name, result.text]);
       if (result.changes) writes.push([
         file.name.replace(/\.md$/i, '.changes.json'),
         sidecarJson(result.changes, result.events ?? events),
@@ -2183,74 +1654,35 @@ export function DocRedlinePreview({
         const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/files`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, content }) });
         if (!response.ok) throw new Error('Không ghi được file');
       }
-      if (result.text != null) setEditedText(result.text);
       if (result.changes) {
         const nextEvents = result.events ?? events;
         setChangesRaw(sidecarJson(result.changes, nextEvents));
         setChangesState({ status: 'ok', changes: result.changes, events: nextEvents });
       }
       if (result.notes) { setNotesRaw(JSON.stringify(result.notes)); setNotes(result.notes); }
-      setEditingId(null);
       setDraft(null);
       return true;
-    } catch (error) { setChangesState(beforeChanges); setNotes(beforeNotes); setEditedText(beforeText); setErrorById((prev) => ({ ...prev, [id]: error instanceof Error ? error.message : 'Lỗi ghi file' })); return false; }
+    } catch (error) { setChangesState(beforeChanges); setNotes(beforeNotes); setErrorById((prev) => ({ ...prev, [id]: error instanceof Error ? error.message : 'Lỗi ghi file' })); return false; }
     finally { setBusyId(null); }
   }
 
-  function updateChange(c: DocRedlineChange, next: Partial<DocRedlineChange>, changedMd: boolean, text?: string, eventType?: DocReviewAnnotationEvent['type']) {
+  function updateChange(c: DocRedlineChange, next: Partial<DocRedlineChange>, eventType?: DocReviewAnnotationEvent['type']) {
     const list = changes.map((item) => item.id === c.id ? { ...item, ...next } : item);
     const changed = list.find((item) => item.id === c.id) ?? c;
     return {
       changes: list,
       events: eventType ? [...events, eventFor(c.id, eventType, changed)] : events,
-      changedMd,
-      text,
     };
-  }
-
-  async function editChange(c: DocRedlineChange) {
-    const next = editDocText(editedText ?? '', c.quote ?? '', editText);
-    if (next == null) throw new Error('Không tìm thấy vùng sửa trong tài liệu');
-    await saveAction(c.id, () => updateChange(c, { quote: editText, status: 'edited' }, true, next, 'edit'));
-  }
-
-  /** wp4.yaml mục 1: "Sửa bảng" của một Bảng thành phần — cùng khuôn
-   *  `editChange` ngay trên (thay-một-lần bằng `replaceOneOccurrence`,
-   *  `updateChange(status 'edited')` + event 'edit', qua `saveAction` hiện
-   *  có), chỉ khác nguồn văn bản mới đến từ form theo hàng
-   *  (`ComponentTableCardBody`) thay vì ô `editText` chung.
-   *
-   *  Trả `true`/`false` (vá N2 review attempt2) — `ComponentTableCardBody`
-   *  chỉ đóng form khi lưu thành công, giữ nguyên nháp + hiện lỗi khi hỏng. */
-  async function saveComponentTableEdit(c: DocRedlineChange, newQuote: string): Promise<boolean> {
-    const next = replaceOneOccurrence(editedText ?? '', c.quote ?? '', newQuote);
-    if (next == null) {
-      setErrorById((prev) => ({ ...prev, [c.id]: 'Không tìm thấy vùng sửa trong tài liệu' }));
-      return false;
-    }
-    return saveAction(c.id, () => updateChange(c, { quote: newQuote, status: 'edited' }, true, next, 'edit'));
   }
 
   async function dismissChange(c: DocRedlineChange) {
     if (c.status === 'dismissed') {
       if (!undoableIds.has(c.id)) return;
-      const restoreText = undoTextRef.current.get(c.id);
-      await saveAction(c.id, () => updateChange(
-        c,
-        { status: 'active' },
-        restoreText != null,
-        restoreText ?? editedText ?? undefined,
-        'restore',
-      ));
+      await saveAction(c.id, () => updateChange(c, { status: 'active' }, 'restore'));
       setUndoableIds((prev) => { const next = new Set(prev); next.delete(c.id); return next; });
-      undoTextRef.current.delete(c.id);
       return;
     }
-    const changedMd = Boolean(c.quote || c.before);
-    const next = changedMd ? revertDocText(editedText ?? '', c) : editedText;
-    if (changedMd && next == null) throw new Error(c.before && !c.quote ? 'Không tìm thấy anchor duy nhất để chèn lại.' : 'Không tìm thấy vùng sửa trong tài liệu');
-    if (editedText != null) undoTextRef.current.set(c.id, editedText);
-    await saveAction(c.id, () => updateChange(c, { status: 'dismissed' }, changedMd, next ?? undefined, 'dismiss'));
+    await saveAction(c.id, () => updateChange(c, { status: 'dismissed' }, 'dismiss'));
     setUndoableIds((prev) => new Set(prev).add(c.id));
   }
 
@@ -2258,11 +1690,11 @@ export function DocRedlinePreview({
     const id = `${NOTE_ID_PREFIX}${n.id}`;
     if (n.status === 'dismissed') {
       if (!undoableIds.has(id)) return;
-      await saveAction(id, () => ({ notes: notes.map((item) => item.id === n.id ? { ...item, status: undefined } : item), changedMd: false }));
+      await saveAction(id, () => ({ notes: notes.map((item) => item.id === n.id ? { ...item, status: undefined } : item) }));
       setUndoableIds((prev) => { const next = new Set(prev); next.delete(id); return next; });
       return;
     }
-    await saveAction(id, () => ({ notes: notes.map((item) => item.id === n.id ? { ...item, status: 'dismissed' } : item), changedMd: false }));
+    await saveAction(id, () => ({ notes: notes.map((item) => item.id === n.id ? { ...item, status: 'dismissed' } : item) }));
     setUndoableIds((prev) => new Set(prev).add(id));
   }
 
@@ -2356,12 +1788,11 @@ export function DocRedlinePreview({
       setDraftError('Hãy bôi đen một đoạn trong tài liệu trước.');
       return;
     }
-    if (uniqueOccurrenceIndex(editedText ?? '', selected) == null) {
-      setDraftError('Đoạn đã chọn phải xuất hiện đúng một lần trong mã nguồn tài liệu.');
-      return;
-    }
-    if (operation === 'delete' && !deletionAnchor(editedText ?? '', selected)) {
-      setDraftError('Không tìm được đoạn neo duy nhất ngay trước phần cần xoá.');
+    // Tài liệu không còn bị sửa: chỗ neo chỉ cần đủ để `injectHighlights` dò
+    // lại được (fuzzy, không cần xuất hiện đúng một lần) — cùng ngưỡng với
+    // `startTextHighlight` ngay dưới.
+    if (annotationHighlightSegments(selected).length === 0) {
+      setDraftError('Đoạn quá ngắn để đánh dấu (chọn ít nhất 2 từ).');
       return;
     }
     setDraftError('');
@@ -2370,57 +1801,40 @@ export function DocRedlinePreview({
 
   /** wp4.yaml mục 2: "Thêm sau mục…" — cùng composer với "Thêm sau đoạn
    *  chọn" (`startUserAnnotation('add')`), chỉ khác nguồn `selected`: một dòng
-   *  heading do người dùng CHỌN từ danh sách thay vì bôi đen. Cùng thông báo
-   *  lỗi ("Đoạn đã chọn phải xuất hiện đúng một lần…") nhưng kiểm duy nhất
-   *  theo DÒNG (`uniqueHeadingLineOffset`, vá N1 review attempt2) — không
-   *  dùng `uniqueOccurrenceIndex` (substring): một heading cấp cha là
-   *  substring của heading cấp con cùng tiền tố (`# Đăng ký` trong `##
-   *  Đăng ký thành công`) nên sẽ báo trùng giả. `viaHeading: true` để
-   *  `createUserAnnotation` chèn đúng bằng `insertAfterHeadingLine`. */
+   *  heading do người dùng CHỌN từ danh sách thay vì bôi đen. */
   function startHeadingAnnotation(heading: DocHeading) {
     if (uniqueHeadingLineOffset(editedText ?? '', heading.line) == null) {
       setDraftError('Đoạn đã chọn phải xuất hiện đúng một lần trong mã nguồn tài liệu.');
       return;
     }
     setDraftError('');
-    setDraft({ operation: 'add', selected: heading.line, replacement: '', reason: '', kind: defaultUserKind('add'), viaHeading: true });
+    setDraft({ operation: 'add', selected: heading.line, replacement: '', reason: '', kind: defaultUserKind('add') });
     setHeadingPickerOpen(false);
     setHeadingPickerValue('');
   }
 
+  /** Non-destructive: tài liệu KHÔNG BAO GIỜ bị ghi lại. Mọi annotation người
+   *  dùng tạo (add/edit/delete) chỉ neo trên chữ GỐC còn nguyên trong tài
+   *  liệu — `before`/`anchor` giữ nguyên đoạn đã chọn, `quote` chỉ là nội dung
+   *  ĐỀ XUẤT (hiện trong modal chi tiết), không đi vào tài liệu. */
   async function createUserAnnotation() {
-    if (!draft || editedText == null) return;
+    if (!draft) return;
     const replacement = draft.replacement.trim();
     if (draft.operation !== 'delete' && !replacement) {
       setDraftError('Nội dung mới không được để trống.');
       return;
     }
-    let nextText: string | null = null;
     let before: string | undefined;
     let quote: string | undefined;
     let anchor: string | undefined;
     if (draft.operation === 'edited') {
       before = draft.selected;
       quote = replacement;
-      nextText = replaceOneOccurrence(editedText, draft.selected, replacement);
     } else if (draft.operation === 'delete') {
       before = draft.selected;
-      anchor = deletionAnchor(editedText, draft.selected) ?? undefined;
-      nextText = replaceOneOccurrence(editedText, draft.selected, '');
     } else {
       quote = replacement;
       anchor = draft.selected;
-      // Vá N1 (review attempt2): nguồn từ "Thêm sau mục…" chèn theo DÒNG
-      // heading (`insertAfterHeadingLine`), không theo substring
-      // (`insertAfterUniqueAnchor`) — nguồn từ bôi đen ("Thêm sau đoạn
-      // chọn") giữ nguyên hành vi cũ, không đổi.
-      nextText = draft.viaHeading
-        ? insertAfterHeadingLine(editedText, draft.selected, `\n\n${replacement}`)
-        : insertAfterUniqueAnchor(editedText, draft.selected, `\n\n${replacement}`);
-    }
-    if (nextText == null) {
-      setDraftError('Tài liệu đã thay đổi. Hãy chọn lại đoạn cần thao tác.');
-      return;
     }
     const id = uid('user');
     const change: DocRedlineChange = {
@@ -2439,10 +1853,8 @@ export function DocRedlinePreview({
       ...(anchor ? { anchor } : {}),
     };
     await saveAction(id, () => ({
-      text: nextText,
       changes: [...changes, change],
       events: [...events, eventFor(id, 'create', change)],
-      changedMd: true,
     }));
   }
 
@@ -2462,7 +1874,7 @@ export function DocRedlinePreview({
       finding: tableCellDraft.reason.trim() || 'Người dùng tự đánh dấu ô trong bảng.',
       suggestion: '',
     };
-    const ok = await saveAction(id, () => ({ notes: [...notes, note], changedMd: false }));
+    const ok = await saveAction(id, () => ({ notes: [...notes, note] }));
     if (ok) setTableCellDraft(null);
   }
 
@@ -2530,7 +1942,7 @@ export function DocRedlinePreview({
       suggestion: '',
       ...(textHighlightDraft.sectionHeading ? { sectionHeading: textHighlightDraft.sectionHeading } : {}),
     };
-    const ok = await saveAction(id, () => ({ notes: [...notes, note], changedMd: false }));
+    const ok = await saveAction(id, () => ({ notes: [...notes, note] }));
     if (ok) setTextHighlightDraft(null);
   }
 
@@ -2554,18 +1966,14 @@ export function DocRedlinePreview({
 
   const navigationItems = useMemo<RedlineNavigationItem[]>(() => {
     if (previewMode === 'notes') {
-      return notes.filter((note) => annotationVisible(`${NOTE_ID_PREFIX}${note.id}`)).map((note) => ({
+      return notes.map((note) => ({
         id: `${NOTE_ID_PREFIX}${note.id}`,
         anchored: isNoteAnchored(note),
         dismissed: note.status === 'dismissed',
       }));
     }
-    return changes
-      .filter((change) => annotationVisible(change.id))
-      .filter((change) => change.kind !== 'flow-diagram' || kindFilter.diagram)
-      .filter((change) => !isComponentTableChange(change) || kindFilter.compTable)
-      .map((change) => ({ id: change.id, anchored: isAnchored(change), dismissed: change.status === 'dismissed' }));
-  }, [previewMode, notes, changes, anchored, anchoredMermaidIds, drawioMounts, kindFilter, hiddenAnnotationIds, tableCellAnchoredIds]);
+    return changes.map((change) => ({ id: change.id, anchored: isAnchored(change), dismissed: change.status === 'dismissed' }));
+  }, [previewMode, notes, changes, anchored, anchoredMermaidIds, drawioMounts, tableCellAnchoredIds]);
   const navigationPosition = getNavigationPosition(navigationItems, selectedId);
   function navigate(direction: 'previous' | 'next') {
     const id = getAdjacentNavigationId(navigationItems, selectedId, direction);
@@ -2661,36 +2069,6 @@ export function DocRedlinePreview({
                     counts={{ add: opCounts.add, edit: opCounts.edit, del: opCounts.del, note: 0 }}
                     includeNote={notes.length === 0}
                   />
-                ) : null}
-                {/* Hai chip lọc MỚI của WP3 — chỉ hiện khi có ÍT NHẤT một
-                    change tương ứng, cùng khuôn .chip/.chipSwatch với bốn chip
-                    màu ở trên nhưng lọc THEO KIND (ẩn/hiện mục rail), không
-                    lọc màu vùng bôi (xem kindFilter). */}
-                {previewMode === 'changes' && (diagramCount > 0 || compTableCount > 0) ? (
-                  <div className={styles.filters} role="group" aria-label="Lọc theo loại">
-                    {diagramCount > 0 ? (
-                      <label className={`${styles.chip} ${kindFilter.diagram ? '' : styles.chipOff ?? ''}`}>
-                        <input
-                          type="checkbox"
-                          className={styles.chipInput}
-                          checked={kindFilter.diagram}
-                          onChange={(ev) => setKindFilterState((prev) => ({ ...prev, diagram: ev.target.checked }))}
-                        />
-                        Sơ đồ<span className={styles.chipCount}>{diagramCount}</span>
-                      </label>
-                    ) : null}
-                    {compTableCount > 0 ? (
-                      <label className={`${styles.chip} ${kindFilter.compTable ? '' : styles.chipOff ?? ''}`}>
-                        <input
-                          type="checkbox"
-                          className={styles.chipInput}
-                          checked={kindFilter.compTable}
-                          onChange={(ev) => setKindFilterState((prev) => ({ ...prev, compTable: ev.target.checked }))}
-                        />
-                        Bảng thành phần<span className={styles.chipCount}>{compTableCount}</span>
-                      </label>
-                    ) : null}
-                  </div>
                 ) : null}
               </div>
             ) : (
@@ -2867,8 +2245,7 @@ export function DocRedlinePreview({
                 </div>
               </div>
             ) : null}
-            <div className={`${styles.grid} ${panelOpen ? '' : styles.gridFull ?? ''}`}>
-              <div className={styles.docCol} ref={docColRef}>
+            <div className={styles.docCol} ref={docColRef}>
                 <div className={`${styles.docToolbarWp3 ?? ''} ${styles.modeToolbar ?? ''}`}>
                   <DocRedlineModeControls
                     mode={previewMode}
@@ -2884,15 +2261,6 @@ export function DocRedlinePreview({
                     onPrevious={() => navigate('previous')}
                     onNext={() => navigate('next')}
                   />
-                  <button
-                    type="button"
-                    className={styles.panelToggleBtn ?? ''}
-                    aria-label="Ẩn/Hiện chú giải"
-                    aria-pressed={panelOpen}
-                    onClick={togglePanel}
-                  >
-                    {panelOpen ? 'Ẩn chú giải ]' : 'Hiện chú giải ]'}
-                  </button>
                 </div>
                 {/* Safe by contract: renderMarkdownToSafeHtml escapes raw HTML
                     and rejects unsafe link protocols. */}
@@ -3006,235 +2374,6 @@ export function DocRedlinePreview({
                   ),
                 )}
               </div>
-              {/* Panel ẩn: rail giữ NGUYÊN trong DOM (mục vẫn ref được để cuộn
-                  khi mở lại — xem selectFromDoc) nhưng `hidden` + aria-hidden,
-                  cùng lúc `.gridFull` ở trên trả hết bề rộng cho tài liệu. */}
-              <div
-                className={`${styles.rail} ${panelOpen ? '' : styles.railHidden ?? ''}`}
-                hidden={!panelOpen}
-                aria-hidden={!panelOpen}
-              >
-                <div className={styles.railToolbar ?? ''}>
-                  <DocRedlineModeControls
-                    mode={previewMode}
-                    changeCount={activeChangeCount}
-                    noteCount={activeNoteCount}
-                    onModeChange={changePreviewMode}
-                    placement="rail"
-                  />
-                  <div className={styles.visibilityToolbar ?? ''} role="group" aria-label={`Hiển thị highlight ${modeLabel(previewMode).toLocaleLowerCase('vi')}`}>
-                    <span className={styles.visibilityCount ?? ''} aria-live="polite">
-                      {currentVisibleCount}/{currentActiveCount} đang hiện
-                    </span>
-                    <button
-                      type="button"
-                      disabled={currentActiveCount === 0 || currentVisibleCount === currentActiveCount}
-                      onClick={() => setCurrentModeVisible(true)}
-                    >
-                      Hiện tất cả
-                    </button>
-                    <button
-                      type="button"
-                      disabled={currentVisibleCount === 0}
-                      onClick={() => setCurrentModeVisible(false)}
-                    >
-                      Ẩn tất cả
-                    </button>
-                  </div>
-                </div>
-                <div
-                  id="doc-redline-rail-tabpanel"
-                  role="tabpanel"
-                  aria-labelledby={`doc-redline-rail-${previewMode}-tab`}
-                  className={styles.railPanel ?? ''}
-                >
-                {(previewMode === 'changes' ? changes.length : notes.length) === 0 ? (
-                  <p className={styles.empty}>{previewMode === 'changes' ? 'Không có thay đổi nào.' : 'Không có nhận xét nào.'}</p>
-                ) : (
-                  <>
-                    {previewMode === 'changes' ? changes.map((c, changeIdx) => {
-                    // Chip "Sơ đồ"/"Bảng thành phần" tắt: ẩn MỤC khỏi rail
-                    // nhưng KHÔNG bỏ khỏi mảng `changes` — giữ số thứ tự
-                    // (STT/idxById) ổn định khi bật lại, đúng như bốn chip màu
-                    // (add/edit/del/note) ẩn mark chứ không xoá mark.
-                    if (c.kind === 'flow-diagram' && !kindFilter.diagram) return null;
-                    if (isComponentTableChange(c) && !kindFilter.compTable) return null;
-                    const setItemRef = (el: HTMLElement | null) => {
-                      if (el) itemsByChangeRef.current.set(c.id, el);
-                      else itemsByChangeRef.current.delete(c.id);
-                    };
-                    const visible = annotationVisible(c.id);
-                    const activeClass = selectedId === c.id ? styles.itemActive ?? '' : '';
-                    const visibilityToggle = (
-                      <AnnotationVisibilityToggle
-                        id={c.id}
-                        indexLabel={String(changeIdx + 1)}
-                        mode="changes"
-                        visible={visible}
-                        disabled={c.status === 'dismissed'}
-                        onChange={(next) => setAnnotationVisible(c.id, next)}
-                      />
-                    );
-                    const detail = (
-                      <ChangeDetail
-                        idx={String(changeIdx + 1)}
-                        change={c}
-                        ruleOpen={openRule?.ownerId === c.id}
-                        ruleBody={ruleBody}
-                        onToggleRule={() => c.rule_id && toggleRule(c.id, c.rule_id)}
-                        isRefAnchored={(i) => anchored.has(`${REF_ID_PREFIX}${c.id}:${i}`)}
-                        onJumpRef={(i) =>
-                          openRefModal(`${REF_ID_PREFIX}${c.id}:${i}`, (c.doc_refs ?? [])[i] ?? '')
-                        }
-                        busy={busyId === c.id} error={errorById[c.id]} showActions={!visible || isAnchored(c) || c.status === 'dismissed'} undoable={undoableIds.has(c.id)} editing={editingId === c.id} editText={editText} onEditText={setEditText} onEdit={() => { setEditingId(c.id); setEditText(c.quote ?? ''); }} onSaveEdit={() => { if (!editText.trim()) { setErrorById((p) => ({ ...p, [c.id]: 'Nội dung sửa không được để trống' })); return; } void editChange(c); }} onCancelEdit={() => setEditingId(null)} onDismiss={() => { if (c.status === 'dismissed') { void dismissChange(c); } else if (window.confirm('Bỏ thay đổi này khỏi tài liệu? Bạn có thể hoàn tác trong phiên hiện tại.')) void dismissChange(c); }}
-                        expanded={expandedIds.has(c.id)}
-                        onToggleExpand={() => toggleExpanded(c.id)}
-                        accepted={acceptedIds.has(c.id)}
-                        onAccept={() => acceptChange(c.id)}
-                        onSaveTable={(newQuote) => saveComponentTableEdit(c, newQuote)}
-                      />
-                    );
-                    // `div role="button"` chứ không phải `<button>` thật: thẻ
-                    // giờ chứa các nút con (chip rule, nút tham chiếu) và
-                    // `<button>` lồng `<button>` là HTML không hợp lệ — trình
-                    // duyệt tự gỡ lồng, làm mất luôn nút con. Bàn phím vẫn dùng
-                    // được nhờ tabIndex + xử lý Enter/Space bên dưới.
-                    if (visible && isAnchored(c)) {
-                      return (
-                        <div
-                          key={c.id}
-                          role="button"
-                          tabIndex={0}
-                          ref={setItemRef}
-                          data-change-item={c.id}
-                          className={`${styles.item} ${activeClass}`}
-                          onClick={() => selectFromList(c.id)}
-                          onKeyDown={(ev) => {
-                            if (ev.key !== 'Enter' && ev.key !== ' ') return;
-                            // Bấm phím trên một nút CON (chip rule / tham chiếu)
-                            // nổi bọt lên đây; xử lý tiếp sẽ chạy hai hành động
-                            // cho một lần bấm.
-                            if (ev.target !== ev.currentTarget) return;
-                            ev.preventDefault();
-                            selectFromList(c.id);
-                          }}
-                        >
-                          {visibilityToggle}
-                          {detail}
-                        </div>
-                      );
-                    }
-                    return (
-                      <div
-                        key={c.id}
-                        ref={setItemRef}
-                        data-change-item={c.id}
-                        className={`${styles.item} ${visible ? styles.itemDead : styles.itemDisabled ?? ''}`}
-                      >
-                        {visibilityToggle}
-                        {detail}
-                        {visible ? (
-                          <p className={styles.itemDeadNote}>
-                            <Icon name="info" size={12} />
-                            Không tìm thấy trong tài liệu — không nhảy tới được.
-                          </p>
-                        ) : <p className={styles.itemHiddenNote}>Highlight đang tắt.</p>}
-                      </div>
-                    );
-                  }) : null}
-                    {previewMode === 'notes' && notes.length > 0 ? (
-                      <>
-                        <h3 className={styles.railHeading}>Nhận xét (không sửa trực tiếp)</h3>
-                        {notes.map((n, noteIdx) => {
-                          const markId = `${NOTE_ID_PREFIX}${n.id}`;
-                          const setItemRef = (el: HTMLElement | null) => {
-                            if (el) itemsByChangeRef.current.set(markId, el);
-                            else itemsByChangeRef.current.delete(markId);
-                          };
-                          const visible = annotationVisible(markId);
-                          const activeClass = selectedId === markId ? styles.itemActive ?? '' : '';
-                          const visibilityToggle = (
-                            <AnnotationVisibilityToggle
-                              id={markId}
-                              indexLabel={`N${noteIdx + 1}`}
-                              mode="notes"
-                              visible={visible}
-                              disabled={n.status === 'dismissed'}
-                              onChange={(next) => setAnnotationVisible(markId, next)}
-                            />
-                          );
-                          const detail = (
-                            <NoteDetail
-                            idx={`N${noteIdx + 1}`}
-                              note={n}
-                              ruleOpen={openRule?.ownerId === markId}
-                              ruleBody={ruleBody}
-                              onToggleRule={() => n.rule_id && toggleRule(markId, n.rule_id)}
-                              isRefAnchored={(i) => anchored.has(`${REF_ID_PREFIX}${markId}:${i}`)}
-                              onJumpRef={(i) =>
-                                openRefModal(`${REF_ID_PREFIX}${markId}:${i}`, (n.doc_refs ?? [])[i] ?? '')
-                              }
-                              busy={busyId === markId} error={errorById[markId]} undoable={undoableIds.has(markId)} onDismiss={() => void dismissNote(n)}
-                            />
-                          );
-                          if (visible && isNoteAnchored(n)) {
-                            return (
-                              <div
-                                key={markId}
-                                role="button"
-                                tabIndex={0}
-                                ref={setItemRef}
-                                data-change-item={markId}
-                                className={`${styles.item} ${activeClass}`}
-                                onClick={() => selectFromList(markId)}
-                                onKeyDown={(ev) => {
-                                  if (ev.key !== 'Enter' && ev.key !== ' ') return;
-                                  if (ev.target !== ev.currentTarget) return;
-                                  ev.preventDefault();
-                                  selectFromList(markId);
-                                }}
-                              >
-                                {visibilityToggle}
-                                {detail}
-                              </div>
-                            );
-                          }
-                          return (
-                            <div
-                              key={markId}
-                              ref={setItemRef}
-                              data-change-item={markId}
-                              className={`${styles.item} ${visible ? styles.itemDead : styles.itemDisabled ?? ''}`}
-                            >
-                              {visibilityToggle}
-                              {detail}
-                              {visible ? (
-                                <p className={styles.itemDeadNote}>
-                                  <Icon name="info" size={12} />
-                                  Không tìm thấy trong tài liệu — không nhảy tới được.
-                                </p>
-                              ) : <p className={styles.itemHiddenNote}>Highlight đang tắt.</p>}
-                            </div>
-                          );
-                        })}
-                      </>
-                    ) : null}
-                  </>
-                )}
-                </div>
-              </div>
-            </div>
-            {/* Tab dọc mỏng ở mép phải — chỉ hiện khi panel ẩn, bấm mở lại. */}
-            {!panelOpen ? (
-              <button
-                type="button"
-                className={styles.panelTab ?? ''}
-                aria-label="Hiện chú giải"
-                onClick={togglePanel}
-              >
-                {activeChangeCount} · {dismissedTotalCount} · {activeNoteCount}
-              </button>
-            ) : null}
           </div>
         )}
       </div>
@@ -3262,8 +2401,8 @@ export function DocRedlinePreview({
               <section className={styles.printAppendix}>
                 <h2>Phụ lục — {modeLabel(previewMode).toLocaleLowerCase('vi')}</h2>
                 <table><thead><tr><th>STT</th><th>Loại / rule</th><th>Mức độ</th><th>Thay đổi / nhận xét</th><th>Lý do</th></tr></thead><tbody>
-                  {previewMode === 'changes' ? changes.map((c, i) => <tr key={`print-${c.id}`} className={c.status === 'dismissed' ? styles.printDismissed : undefined}><td>{i + 1}</td><td>{KIND_LABEL[c.kind]}{c.rule_id ? ` — ${ruleChipMeta(c.rule_id).label}` : ''}</td><td>{SEV_LABEL[c.severity]}</td><td>{c.before ?? '—'} → {c.quote ?? '—'}{c.status === 'dismissed' ? ' (Đã bỏ)' : ''}</td><td>{c.reason}</td></tr>) : null}
-                  {previewMode === 'notes' ? notes.map((n, i) => <tr key={`print-${NOTE_ID_PREFIX}${n.id}`} className={n.status === 'dismissed' ? styles.printDismissed : undefined}><td>N{i + 1}</td><td>Nhận xét — {KIND_LABEL[n.kind]}{n.rule_id ? ` — ${ruleChipMeta(n.rule_id).label}` : ''}</td><td>{SEV_LABEL[n.severity]}</td><td>{n.finding}{n.status === 'dismissed' ? ' (Đã bỏ)' : ''}</td><td>{n.suggestion}</td></tr>) : null}
+                  {previewMode === 'changes' ? changes.map((c, i) => <tr key={`print-${c.id}`} className={c.status === 'dismissed' ? styles.printDismissed : undefined}><td>{i + 1}</td><td>{KIND_LABEL[c.kind]}{c.rule_id ? ` — ${c.rule_id}` : ''}</td><td>{SEV_LABEL[c.severity]}</td><td>{c.before ?? '—'} → {c.quote ?? '—'}{c.status === 'dismissed' ? ' (Đã bỏ)' : ''}</td><td>{c.reason}</td></tr>) : null}
+                  {previewMode === 'notes' ? notes.map((n, i) => <tr key={`print-${NOTE_ID_PREFIX}${n.id}`} className={n.status === 'dismissed' ? styles.printDismissed : undefined}><td>N{i + 1}</td><td>Nhận xét — {KIND_LABEL[n.kind]}{n.rule_id ? ` — ${n.rule_id}` : ''}</td><td>{SEV_LABEL[n.severity]}</td><td>{n.finding}{n.status === 'dismissed' ? ' (Đã bỏ)' : ''}</td><td>{n.suggestion}</td></tr>) : null}
                 </tbody></table>
               </section>
             </div>,
@@ -3305,6 +2444,34 @@ export function DocRedlinePreview({
           </div>
         </div>
       ) : null}
+
+      {detailModal ? (() => {
+        const target = resolveAnnotationDetail(detailModal.id, changes, notes);
+        if (!target) return null;
+        const isChange = target.kind === 'change';
+        const id = isChange ? target.change.id : `${NOTE_ID_PREFIX}${target.note.id}`;
+        const dismissed = isChange ? target.change.status === 'dismissed' : target.note.status === 'dismissed';
+        return (
+          <div
+            className={styles.modalBackdrop}
+            role="presentation"
+            onClick={(ev) => {
+              if (ev.target === ev.currentTarget) setDetailModal(null);
+            }}
+          >
+            <AnnotationDetailModal
+              target={target}
+              busy={busyId === id}
+              error={errorById[id]}
+              undoable={undoableIds.has(id)}
+              dismissed={dismissed}
+              onClose={() => setDetailModal(null)}
+              onDismiss={() => { if (isChange) void dismissChange(target.change); else void dismissNote(target.note); }}
+              onOpenRef={(ref, i) => openRefModal(`${REF_ID_PREFIX}${id}:${i}`, ref)}
+            />
+          </div>
+        );
+      })() : null}
     </div>
   );
 }
@@ -3372,646 +2539,131 @@ function HighlightFilters({
   );
 }
 
-/** Props chung cho phần tham chiếu của cả hai loại thẻ — change và note hiển
- *  thị khác nhau ở phần diff, nhưng cơ chế trace (rule + doc_refs) giống hệt. */
-interface RefProps {
-  ruleOpen: boolean;
-  ruleBody: RuleBody;
-  onToggleRule: () => void;
-  isRefAnchored: (index: number) => boolean;
-  onJumpRef: (index: number) => void;
-  busy?: boolean;
+
+
+/** Modal chi tiết của MỘT change/note — thay cho rail/thẻ đã bỏ (xem docblock
+ *  đầu file). Nội dung THEO PHÉP SỬA: Thêm hiện nội dung mới; Sửa hiện
+ *  gốc→đề xuất; Xoá hiện đúng đoạn đề xuất bỏ (đoạn này vẫn CÒN NGUYÊN trong
+ *  tài liệu, chỉ được tô/gạch ngang tại chỗ — không có văn bản nào bị ghi lại
+ *  qua modal này). Note hiện phát hiện + đề xuất. `reason` (change) luôn hiện
+ *  ở cuối; note không có trường lý do riêng nên không có khối này.
+ *
+ *  Chữ hiển thị NGUYÊN VĂN (`white-space: pre-wrap` qua class `detailPre`),
+ *  KHÔNG dùng `dangerouslySetInnerHTML`: nội dung ở đây là markdown THÔ lấy
+ *  thẳng từ `changes.json`/`notes.json`, chưa qua renderMarkdownToSafeHtml —
+ *  dựng làm HTML sẽ vừa thừa bước vừa hiện sai cú pháp `**`/`#` còn nguyên. */
+function AnnotationDetailModal({
+  target,
+  busy,
+  error,
+  undoable,
+  dismissed,
+  onClose,
+  onDismiss,
+  onOpenRef,
+}: {
+  target: AnnotationDetailTarget;
+  busy: boolean;
   error?: string;
-  undoable?: boolean;
-}
-
-/** Chip `rule_id` bấm được: nhãn dễ hiểu ngoài, mã kỹ thuật + giải thích trong.
- *
- *  Vì sao không hiện thẳng mã: `criteria/rules.md#R-OVERLAY` chỉ nói cho người
- *  đọc biết có một luật tên vậy tồn tại ở đâu đó — muốn biết luật nói gì phải
- *  tự mở file criteria trong một tab khác. Ba mức dài dần: chip là nhãn ngắn,
- *  rê chuột ra một câu, bấm vào ra cả đoạn kèm mã đầy đủ để trace ngược.
- *
- *  Tooltip dùng `title` chứ không phải pseudo-element như `[data-tooltip]` ở
- *  styles/viewer/core.css: hai chỗ đó tooltip nằm trên nút icon vuông cỡ cố
- *  định (`white-space: nowrap`, canh giữa theo bề ngang nút), còn chip ở đây
- *  dài ngắn tuỳ nhãn và nằm trong rail có cuộn riêng — tooltip vẽ bằng CSS sẽ
- *  bị chính rail cắt mất.
- *
- *  `stopPropagation` ở mọi nút con: thẻ bao ngoài cũng bắt click (để nhảy tới
- *  vùng bôi), nên nếu không chặn thì một cú bấm chạy hai việc. */
-function RuleChip({ ruleId, open, body, onToggle }: { ruleId: string; open: boolean; body: RuleBody; onToggle: () => void }) {
-  const { label, summary } = ruleChipMeta(ruleId);
-  return (
-    <span className={styles.ruleWrap}>
-      {/* Badge là nhãn thuần — phần bấm được là dấu "?" đứng cạnh: affordance
-          rõ ràng hơn một cái chip trông như chữ thường. */}
-      <span className={styles.ruleId} title={summary}>
-        {label}
-      </span>
-      <button
-        type="button"
-        className={styles.ruleHelpBtn}
-        aria-expanded={open}
-        aria-label={`Giải thích rule ${label}`}
-        title={summary}
-        onClick={(ev) => {
-          ev.stopPropagation();
-          onToggle();
-        }}
-      >
-        ?
-      </button>
-      {open ? (
-        <span className={styles.rulePop} role="note" onClick={(ev) => ev.stopPropagation()}>
-          <span className={styles.rulePopHead}>
-            <span className={styles.rulePopLabel}>{label}</span>
-            {/* Mã kỹ thuật vẫn phải còn: nó là đường duy nhất đi ngược từ một
-                chỗ sửa về đúng mục trong file criteria. */}
-            <span className={styles.rulePopCode}>{ruleId}</span>
-          </span>
-          <span className={styles.rulePopBody}>
-            {body.status === 'loading' ? (
-              'Đang tải…'
-            ) : body.status === 'missing' ? (
-              'Không tìm thấy nội dung rule trong criteria/.'
-            ) : body.status === 'text' ? (
-              body.text
-            ) : (
-              // Safe by contract: renderMarkdownToSafeHtml escapes raw HTML and
-              // rejects unsafe link protocols (cùng lý do như cột tài liệu).
-              <span className="markdown-rendered" dangerouslySetInnerHTML={{ __html: body.html }} />
-            )}
-          </span>
-        </span>
-      ) : null}
-    </span>
-  );
-}
-
-/** Công tắc mắt của từng card. Đây chỉ là visibility state của preview; nút
- *  dừng propagation để không đồng thời chọn/cuộn card khi người dùng chỉ muốn
- *  bật hoặc tắt highlight. */
-function AnnotationVisibilityToggle({
-  id,
-  indexLabel,
-  mode,
-  visible,
-  disabled,
-  onChange,
-}: {
-  id: string;
-  indexLabel: string;
-  mode: PreviewMode;
-  visible: boolean;
-  disabled: boolean;
-  onChange: (visible: boolean) => void;
+  undoable: boolean;
+  dismissed: boolean;
+  onClose: () => void;
+  onDismiss: () => void;
+  /** Bấm một đoạn `doc_refs` (bằng chứng viện dẫn) trong modal — mở cửa sổ
+   *  xem đoạn đó trong tài liệu (xem `openRefModal`/`refModal` ở component
+   *  cha). `i` là chỉ số trong mảng `doc_refs`, khớp id mark `ref:<ownerId>:<i>`
+   *  do docRender sinh ra (xem requests trong docRender). */
+  onOpenRef?: (ref: string, i: number) => void;
 }) {
-  const noun = mode === 'changes' ? 'thay đổi' : 'nhận xét';
-  const action = visible ? 'Ẩn' : 'Hiện';
+  const c = target.kind === 'change' ? target.change : null;
+  const n = target.kind === 'note' ? target.note : null;
+  const op = c ? changeOp(c) : null;
+  const title = c
+    ? op === 'add' ? 'Thêm nội dung' : op === 'del' ? 'Đề xuất xoá' : 'Sửa nội dung'
+    : 'Nhận xét';
+  const ruleId = c?.rule_id ?? n?.rule_id;
+  const docRefs = c?.doc_refs ?? n?.doc_refs ?? [];
   return (
-    <button
-      type="button"
-      className={`${styles.itemVisibilityToggle ?? ''} ${visible ? styles.itemVisibilityOn ?? '' : ''}`}
-      data-annotation-visibility={id}
-      aria-label={`${action} highlight ${noun} ${indexLabel}`}
-      aria-pressed={visible}
-      disabled={disabled}
-      title={disabled ? 'Item đã bị bỏ nên không có highlight' : `${action} highlight trên tài liệu`}
-      onClick={(event) => {
-        event.stopPropagation();
-        onChange(!visible);
-      }}
-    >
-      <Icon name={visible ? 'eye' : 'eye-off'} size={15} />
-    </button>
-  );
-}
-
-/** Hàng nút "Tham chiếu": mỗi `doc_refs` một nút nhảy tới đoạn được viện dẫn.
- *  Ref không neo được vào tài liệu thì nút mờ đi thay vì biến mất — biến mất
- *  làm người đọc tưởng lý do không hề viện dẫn gì. */
-function RefRow({ refs, isRefAnchored, onJumpRef }: { refs: string[] } & Pick<RefProps, 'isRefAnchored' | 'onJumpRef'>) {
-  if (refs.length === 0) return null;
-  return (
-    <p className={styles.refRow}>
-      <span className={styles.refLabel}>Tham chiếu</span>
-      {refs.map((ref, i) => {
-        const ok = isRefAnchored(i);
-        return (
-          <button
-            key={i}
-            type="button"
-            className={styles.refBtn}
-            disabled={!ok}
-            title={ok ? ref : 'Không tìm thấy đoạn tham chiếu trong tài liệu'}
-            onClick={(ev) => {
-              ev.stopPropagation();
-              onJumpRef(i);
-            }}
-          >
-            ↳ {refLabel(ref)}
+    <div className={styles.modal} role="dialog" aria-modal="true" aria-label={title}>
+      <div className={styles.modalHead}>
+        <div className={styles.modalTitleWrap}>
+          <span className={styles.modalTitle}>{title}</span>
+          {ruleId ? <span className={styles.modalQuote}>{ruleId}</span> : null}
+        </div>
+        <div className={styles.modalActions}>
+          <button type="button" className={styles.modalClose} onClick={onClose}>
+            Đóng
           </button>
-        );
-      })}
-    </p>
-  );
-}
-
-/** Một khối chi tiết của một NOTE: nhóm, mức độ, rule_id, phát hiện, đề xuất.
- *  Không có `before → quote` vì note không sửa gì — đó là điểm phân biệt với
- *  ChangeDetail, và cũng là lý do thẻ mang nhãn riêng.
- *
- *  wp-redline-card-polish.yaml mục 4: về cùng khuôn thẻ-3-dòng nén như
- *  ChangeDetail — mặt thẻ chỉ còn `finding` (class `cardTitle` dùng chung,
- *  clamp 2 dòng bằng CSS) + `suggestion` rút gọn một dòng ellipsis; RuleChip/
- *  RefRow/"Đề xuất" đầy đủ chuyển vào sau "Chi tiết ▾". Trạng thái mở/đóng là
- *  state CỤC BỘ trong component này (không đẩy lên cha) — không có gì khác
- *  trong ứng dụng cần biết một note có đang mở Chi tiết hay không, cùng lý do
- *  như `tableEditOpen` của `ComponentTableCardBody`. */
-function NoteDetail({ note: n, idx, ruleOpen, ruleBody, onToggleRule, isRefAnchored, onJumpRef, busy, error, undoable, onDismiss }: { note: DocRedlineNote; idx?: string; onDismiss: () => void } & RefProps) {
-  const [expanded, setExpanded] = useState(false);
-  return (
-    <div className={`${styles.card} ${styles.cardCompact ?? ''} ${styles.noteCard} ${SEV_CLASS[n.severity]} ${n.status === 'dismissed' ? styles.dismissed : ''}`}>
-      <div className={styles.cardHead}>
-        {idx ? <span className={styles.cardIdx}>{idx}</span> : null}
-        <span className={styles.cardKind}>{KIND_LABEL[n.kind]}</span>
-        <span className={styles.sevBadge}>{SEV_LABEL[n.severity]}</span>
-      </div>
-      <p className={styles.cardTitle ?? ''} title={n.finding}>{n.finding}</p>
-      {n.suggestion ? (
-        <p className={styles.suggestionCompact ?? ''} title={n.suggestion}>{n.suggestion}</p>
-      ) : null}
-      <div className={styles.actions}>
-        <button type="button" disabled={busy} onClick={(ev) => { ev.stopPropagation(); onDismiss(); }}>{n.status === 'dismissed' && undoable ? 'Hoàn tác' : 'Bỏ'}</button>
-        {n.status === 'dismissed' ? <span className={styles.badgeDeleted}>Đã bỏ</span> : null}
-        <button type="button" className={styles.detailToggle ?? ''} aria-expanded={expanded} onClick={(ev) => { ev.stopPropagation(); setExpanded((prev) => !prev); }}>
-          {expanded ? 'Chi tiết ▴' : 'Chi tiết ▾'}
-        </button>
-      </div>
-      {expanded ? (
-        <div className={styles.cardDetail ?? ''}>
-          {n.rule_id ? <RuleChip ruleId={n.rule_id} open={ruleOpen} body={ruleBody} onToggle={onToggleRule} /> : null}
-          <p className={styles.reason}>{n.finding}</p>
-          {n.suggestion ? (
-            <p className={styles.suggestion}>
-              <span className={styles.suggestionLabel}>Đề xuất</span> {n.suggestion}
-            </p>
-          ) : null}
-          <RefRow refs={n.doc_refs ?? []} isRefAnchored={isRefAnchored} onJumpRef={onJumpRef} />
         </div>
-      ) : null}
-      {error ? <p className={styles.error}>{error}</p> : null}
-    </div>
-  );
-}
-
-/** Props chung của "Chi tiết ▾" — chỉ hai loại thẻ MỚI (sơ đồ, bảng thành
- *  phần) có nút này (xem docblock trên `ChangeDetail`); mở/đóng theo id, "Chấp
- *  nhận" đánh dấu TRONG PHIÊN (không ghi file — xem `acceptedIds` ở component
- *  cha, lý do không có status 'accepted' trong contracts). */
-interface CompactCardProps {
-  expanded: boolean;
-  onToggleExpand: () => void;
-  accepted: boolean;
-  onAccept: () => void;
-}
-
-/** Một khối chi tiết của một change: nhóm, mức độ, rule_id, lý do, và phần
- *  chữ cũ/chữ mới tuỳ theo phép sửa. Đây là nơi trường `before` (chữ cũ) tiếp
- *  tục sống sau khi cột tài liệu gốc bị bỏ.
- *
- *  Hai loại MỚI của WP3 (sơ đồ `flow-diagram`, bảng thành phần — change
- *  `component` không `before` với `rule_id` bắt đầu `comp/`) render theo
- *  khuôn thẻ-3-dòng riêng (`FlowDiagramCardBody`/`ComponentTableCardBody`).
- *
- *  wp3b.yaml mục D mở khuôn 3-dòng đó cho MỌI thẻ, kể cả các loại CŨ
- *  (`ux-writing`/`flow`/`gap`/`edge-case`/`component` có `before`, và change
- *  `origin: 'user'`) — nhánh dưới đây. `reason` đầy đủ (lại, không rút gọn)/
- *  RefRow/diff đầy đủ chuyển vào sau "Chi tiết ▾" — mặt thẻ chỉ còn tiêu đề
- *  (reason đầy đủ, clamp 2 dòng bằng CSS — xem `cardTitle`) + một dòng diff
- *  dạng khối mono. RuleChip (wp-redline-card-polish.yaml mục 3) KHÔNG còn ở
- *  mặt thẻ nữa — nó chuyển vào ĐẦU `cardDetail`, chỉ thấy khi mở "Chi tiết":
- *  hàng nút mặt thẻ trước đây chen "Sửa / Bỏ chỗ sửa / RuleChip / Chi tiết ▾"
- *  khiến khó đọc; `rule_id` vẫn trace ngược được, chỉ lùi vào sau một cú bấm.
- *  Các test cũ (doc-redline-preview/.ops/.refs/.rule-chip.test.tsx — nay đều
- *  nằm trong `touches` của wp3b.yaml) đã được cập nhật để mở "Chi tiết" trước
- *  khi assert phần đã gập; class DOM của phần diff đầy đủ (EditDiff/blockAdd/
- *  blockDel/diffBefore/diffAfter) giữ NGUYÊN để những test đó không phải đổi
- *  cách tìm phần tử, chỉ đổi thời điểm tìm. */
-function ChangeDetail(
-  props: {
-    change: DocRedlineChange;
-    idx?: string;
-    showActions: boolean;
-    undoable?: boolean;
-    editing: boolean;
-    editText: string;
-    onEditText: (value: string) => void;
-    onEdit: () => void;
-    onSaveEdit: () => void;
-    onCancelEdit: () => void;
-    onDismiss: () => void;
-    /** wp4.yaml mục 1 — chỉ `ComponentTableCardBody` đọc prop này; các nhánh
-     *  khác của `ChangeDetail` nhận nó qua spread nhưng bỏ qua, cùng khuôn với
-     *  `onEdit`/`onSaveEdit`… (chỉ nhánh mặc định dùng). Trả `Promise<boolean>`
-     *  (vá N2 review attempt2): `ComponentTableCardBody` chờ kết quả trước khi
-     *  quyết định đóng form. */
-    onSaveTable: (newQuote: string) => Promise<boolean>;
-  } & RefProps & CompactCardProps,
-) {
-  const { change: c } = props;
-  if (c.kind === 'flow-diagram') return <FlowDiagramCardBody {...props} />;
-  if (isComponentTableChange(c)) return <ComponentTableCardBody {...props} />;
-  const { idx, ruleOpen, ruleBody, onToggleRule, isRefAnchored, onJumpRef, busy, error, showActions, undoable, editing, editText, onEditText, onEdit, onSaveEdit, onCancelEdit, onDismiss, expanded, onToggleExpand } = props;
-  const op = changeOp(c);
-  const beforePreview = diffPreviewSide(c.before);
-  const afterPreview = diffPreviewSide(c.quote);
-  return (
-    <div className={`${styles.card} ${styles.cardCompact ?? ''} ${SEV_CLASS[c.severity]} ${c.status === 'dismissed' ? styles.dismissed : ''}`}>
-      <div className={styles.cardHead}>
-        {idx ? <span className={styles.cardIdx}>{idx}</span> : null}
-        <span className={styles.cardKind}>{KIND_LABEL[c.kind]}</span>
-        <span className={styles.sevBadge}>{SEV_LABEL[c.severity]}</span>
-        <span className={c.origin === 'user' ? styles.originUser : styles.originAgent}>
-          {c.origin === 'user' ? 'Người dùng' : 'Agent'}
-        </span>
-        {c.status === 'dismissed' ? <span className={styles.badgeDeleted}>Đã bỏ</span> : c.status === 'edited' ? <span className={styles.badgeEdited}>Đã sửa tay</span> : null}
       </div>
-      {/* Dòng 1 (tiếp): tiêu đề = reason đầy đủ, clamp 2 dòng bằng CSS
-          (`.cardTitle`, xem module.css) — `title` vẫn giữ nguyên văn đầy đủ để
-          rê chuột đọc được khi CSS clamp cắt mất phần cuối. */}
-      <p className={styles.cardTitle ?? ''} title={c.reason}>{cardTitle(c)}</p>
-      {/* Dòng 2: khối diff mono (wp-redline-card-polish.yaml mục 2) — sửa hiện
-          HAI dòng riêng "− cũ" / "+ mới" (mỗi vế đọc trọn một dòng thay vì gạch
-          ngang chung một dòng ~40 ký tự khó đọc); thêm chỉ "+ mới"; xoá chỉ
-          "− cũ" (mỗi vế ≤ 72 ký tự, cắt ở ranh giới từ — xem `diffPreviewSide`).
-          `diffPreviewBefore`/`diffPreviewAfter` — KHÔNG dùng lại
-          `diffBefore`/`diffAfter`: đó là hai class của layout-hai-khối-cũ bên
-          trong "Chi tiết" (EditDiff rơi về khi cặp quá lớn), và test cũ
-          (doc-redline-preview.ops.test.tsx) dùng chính sự CÓ MẶT của chúng để
-          khẳng định "đã/chưa rơi về layout cũ". Dòng rút gọn này LUÔN hiện
-          (không phụ thuộc cặp lớn hay nhỏ), nên phải là class khác để không
-          làm sai lệch phép đo đó. Prefix "− "/"+ " render thẳng trong JSX
-          (không phải content CSS) để còn chọn/copy được chữ. */}
-      <div className={styles.diffCompact ?? styles.diff}>
-        {op === 'edit' ? (
-          <>
-            <span className={styles.diffPreviewBefore ?? ''}>{'− '}{beforePreview}</span>
-            <span className={styles.diffPreviewAfter ?? ''}>{'+ '}{afterPreview}</span>
-          </>
-        ) : op === 'add' ? (
-          <span className={styles.diffPreviewAfter ?? ''}>{'+ '}{afterPreview}</span>
-        ) : (
-          <span className={styles.diffPreviewBefore ?? ''}>{'− '}{beforePreview}</span>
-        )}
-      </div>
-      {/* Dòng 3: sửa tay thay thế hẳn hàng hành động khi đang mở (giữ nguyên
-          hành vi/aria-label cũ) — "Chi tiết ▾" căn phải bằng
-          `margin-left: auto` (CSS), KHÔNG phụ thuộc `showActions`: một chỗ sửa
-          không neo được vẫn phải xem được lý do đầy đủ của nó (xem
-          `isAnchored`/"không neo được"). RuleChip KHÔNG còn ở hàng này — xem
-          `cardDetail` bên dưới. */}
-      {showActions && editing ? (
-        <div className={styles.editBox}>
-          <textarea value={editText} onChange={(ev) => onEditText(ev.target.value)} aria-label="Nội dung sửa" />
-          <div className={styles.actions}>
-            <button type="button" disabled={busy} onClick={(ev) => { ev.stopPropagation(); onSaveEdit(); }}>Lưu</button>
-            <button type="button" disabled={busy} onClick={(ev) => { ev.stopPropagation(); onCancelEdit(); }}>Hủy</button>
-          </div>
-        </div>
-      ) : null}
-      <div className={styles.actions}>
-        {showActions && !editing ? (
-          <>
-            <button type="button" disabled={busy || c.status === 'dismissed'} onClick={(ev) => { ev.stopPropagation(); onEdit(); }}>Sửa</button>
-            <button type="button" disabled={busy || (c.status !== 'dismissed' && c.before != null && c.quote == null && !c.anchor)} title={c.status !== 'dismissed' && c.before != null && c.quote == null && !c.anchor ? 'Không có anchor duy nhất để chèn lại' : undefined} onClick={(ev) => { ev.stopPropagation(); onDismiss(); }}>{c.status === 'dismissed' && undoable ? 'Hoàn tác' : 'Bỏ'}</button>
-            {c.status === 'dismissed' ? <span className={styles.badgeDeleted}>Đã bỏ</span> : null}
-          </>
-        ) : null}
-        <button type="button" className={styles.detailToggle ?? ''} aria-expanded={expanded} onClick={(ev) => { ev.stopPropagation(); onToggleExpand(); }}>
-          {expanded ? 'Chi tiết ▴' : 'Chi tiết ▾'}
-        </button>
-      </div>
-      {expanded ? (
-        <div className={styles.cardDetail ?? ''}>
-          {c.rule_id ? <RuleChip ruleId={c.rule_id} open={ruleOpen} body={ruleBody} onToggle={onToggleRule} /> : null}
-          <p className={styles.reason}>{c.reason}</p>
-          <RefRow refs={c.doc_refs ?? []} isRefAnchored={isRefAnchored} onJumpRef={onJumpRef} />
-          {op === 'edit' && c.before && c.quote ? (
-            <EditDiff before={c.before} after={c.quote} />
-          ) : op === 'add' && c.quote ? (
-            <p className={styles.diff}>
-              <span className={styles.blockAdd}>{c.quote}</span>
-              <span className={styles.badgeAdded}>Đã thêm</span>
-            </p>
-          ) : c.before ? (
-            <p className={styles.diff}>
-              <span className={styles.blockDel}>{c.before}</span>
-              <span className={styles.badgeDeleted}>Đã xoá</span>
-            </p>
-          ) : null}
-        </div>
-      ) : null}
-      {showActions && (error ? <p className={styles.error}>{error}</p> : null)}
-    </div>
-  );
-}
-
-/** Thẻ 3-dòng của change `flow-diagram`: dòng 1 nhóm/mức/tiêu đề cố định,
- *  dòng 2 diff rút gọn (caption Gốc → caption Đề xuất), dòng 3 hành động +
- *  "Chi tiết ▾". `rule_id`/kind kỹ thuật/id/lý do đầy đủ/before-quote đầy đủ
- *  chỉ hiện khi mở Chi tiết. */
-function FlowDiagramCardBody({
-  change: c,
-  idx,
-  isRefAnchored,
-  onJumpRef,
-  busy,
-  error,
-  showActions,
-  undoable,
-  onDismiss,
-  expanded,
-  onToggleExpand,
-  accepted,
-  onAccept,
-}: {
-  change: DocRedlineChange;
-  idx?: string;
-  showActions: boolean;
-  undoable?: boolean;
-  onDismiss: () => void;
-} & Pick<RefProps, 'isRefAnchored' | 'onJumpRef' | 'busy' | 'error'> & CompactCardProps) {
-  // (b, review WP3b): caption RIÊNG cho sơ đồ, KHÔNG dùng lại `diffPreviewSide`
-  // — text `null` (không trích được caption) rơi về chuỗi cố định thay vì in
-  // mã mermaid thô; `diffPreviewBefore`/`diffPreviewAfter` (không phải
-  // `diffBefore`/`diffAfter` — hai class đó thuộc layout-hai-khối-cũ của
-  // EditDiff/nhánh mặc định `ChangeDetail`, dùng lại ở đây là một chỗ trộn
-  // nghĩa class đã lọt qua review).
-  const beforeCaption = diagramCaption(c.before);
-  const afterCaption = diagramCaption(c.quote);
-  return (
-    <div className={`${styles.card} ${styles.cardCompact ?? ''} ${SEV_CLASS[c.severity]} ${c.status === 'dismissed' ? styles.dismissed : ''}`}>
-      <div className={styles.cardHead}>
-        {idx ? <span className={styles.cardIdx}>{idx}</span> : null}
-        <span className={styles.cardKind}>{KIND_LABEL[c.kind]}</span>
-        <span className={styles.sevBadge}>{SEV_LABEL[c.severity]}</span>
-        {accepted ? <span className={styles.badgeAccepted ?? ''}>Đã chấp nhận</span> : null}
-        {c.status === 'dismissed' ? <span className={styles.badgeDeleted}>Đã bỏ</span> : null}
-      </div>
-      <p className={styles.cardTitle ?? ''}>{cardTitle(c)}</p>
-      <p className={styles.diffCompact ?? styles.diff}>
-        {afterCaption == null ? (
-          'Sơ đồ đề xuất thay sơ đồ gốc'
+      <div className={styles.modalBody}>
+        {c ? (
+          op === 'add' ? (
+            <p className={styles.detailPre ?? ''}>{c.quote}</p>
+          ) : op === 'del' ? (
+            <p className={`${styles.detailPre ?? ''} ${styles.detailStrike ?? ''}`}>{c.before}</p>
+          ) : (
+            <EditDiffBlock before={c.before ?? ''} after={c.quote ?? ''} />
+          )
         ) : (
           <>
-            {beforeCaption ? <span className={styles.diffPreviewBefore ?? ''}>{beforeCaption}</span> : null}
-            {beforeCaption ? <span aria-hidden="true"> → </span> : null}
-            <span className={styles.diffPreviewAfter ?? ''}>{afterCaption}</span>
+            <p className={styles.detailPre ?? ''}>{n!.finding}</p>
+            {n!.suggestion ? (
+              <>
+                <p className={styles.detailLabel ?? ''}>Đề xuất</p>
+                <p className={styles.detailPre ?? ''}>{n!.suggestion}</p>
+              </>
+            ) : null}
           </>
         )}
-      </p>
-      <div className={styles.actions}>
-        {showActions ? (
+        {c?.reason ? (
           <>
-            <button type="button" disabled={busy || accepted || c.status === 'dismissed'} onClick={(ev) => { ev.stopPropagation(); onAccept(); }}>
-              {accepted ? 'Đã chấp nhận' : 'Chấp nhận'}
-            </button>
-            <button type="button" disabled={busy} onClick={(ev) => { ev.stopPropagation(); onDismiss(); }}>
-              {c.status === 'dismissed' && undoable ? 'Hoàn tác' : 'Giữ sơ đồ gốc'}
-            </button>
+            <p className={styles.detailLabel ?? ''}>Lý do</p>
+            <p className={styles.detailPre ?? ''}>{c.reason}</p>
           </>
         ) : null}
-        {/* (a, review WP3b): nút "Chi tiết ▾" ra NGOÀI gate `showActions` —
-            một sơ đồ không neo được (quote không khớp fence nào trong tài
-            liệu) trước đây MẤT LUÔN nút này, không có cách nào mở ra xem
-            reason/rule_id. Cùng khuôn với nhánh mặc định của `ChangeDetail`
-            (RuleChip + Chi tiết luôn hiện, chỉ Sửa/Bỏ mới theo showActions).
-            `detailToggle` (wp-redline-card-polish.yaml mục 3): căn phải bằng
-            margin-left: auto, đồng bộ cả 3 khuôn thẻ change. */}
-        <button type="button" className={styles.detailToggle ?? ''} aria-expanded={expanded} onClick={(ev) => { ev.stopPropagation(); onToggleExpand(); }}>
-          {expanded ? 'Chi tiết ▴' : 'Chi tiết ▾'}
+        {docRefs.length > 0 ? (
+          <>
+            <p className={styles.detailLabel ?? ''}>Bằng chứng viện dẫn</p>
+            {docRefs.map((ref, i) => (
+              <button key={i} type="button" onClick={() => onOpenRef?.(ref, i)}>
+                {refLabel(ref)}
+              </button>
+            ))}
+          </>
+        ) : null}
+        {error ? <p className={styles.error}>{error}</p> : null}
+      </div>
+      <div className={styles.modalActions}>
+        <button type="button" disabled={busy} onClick={onDismiss}>
+          {busy ? 'Đang lưu...' : dismissed ? 'Hoàn tác' : 'Bỏ'}
         </button>
       </div>
-      {expanded ? (
-        <div className={styles.cardDetail ?? ''}>
-          <p className={styles.detailRow ?? ''}>
-            <span className={styles.detailLabel ?? ''}>Đường dẫn</span> {c.rule_id ?? '—'}
-          </p>
-          <p className={styles.reason}>{c.reason}</p>
-          <RefRow refs={c.doc_refs ?? []} isRefAnchored={isRefAnchored} onJumpRef={onJumpRef} />
-          <p className={styles.detailRow ?? ''}>
-            <span className={styles.detailLabel ?? ''}>Gốc</span>
-          </p>
-          <pre className={styles.detailPre ?? ''}>{c.before ?? '—'}</pre>
-          <p className={styles.detailRow ?? ''}>
-            <span className={styles.detailLabel ?? ''}>Đề xuất</span>
-          </p>
-          <pre className={styles.detailPre ?? ''}>{c.quote ?? '—'}</pre>
-        </div>
-      ) : null}
-      {showActions && (error ? <p className={styles.error}>{error}</p> : null)}
     </div>
   );
 }
 
-/** Thẻ 3-dòng của một "Bảng thành phần" (change `component` không `before`,
- *  `rule_id` bắt đầu `comp/`): dòng 2 LÀ chính đếm N/M/K, không phải diff chữ
- *  — bảng không có "chữ cũ" để so. */
-function ComponentTableCardBody({
-  change: c,
-  idx,
-  isRefAnchored,
-  onJumpRef,
-  busy,
-  error,
-  showActions,
-  undoable,
-  onDismiss,
-  expanded,
-  onToggleExpand,
-  accepted,
-  onAccept,
-  onSaveTable,
-}: {
-  change: DocRedlineChange;
-  idx?: string;
-  showActions: boolean;
-  undoable?: boolean;
-  onDismiss: () => void;
-  /** wp4.yaml mục 1: "Sửa bảng" — chỗ gọi (DocRedlinePreview) đóng gói sẵn
-   *  change này, hàm chỉ cần đưa `quote` MỚI đã dựng lại. Trả `true`/`false`
-   *  (vá N2 review attempt2) để form biết có đóng được không. */
-  onSaveTable: (newQuote: string) => Promise<boolean>;
-} & Pick<RefProps, 'isRefAnchored' | 'onJumpRef' | 'busy' | 'error'> & CompactCardProps) {
-  const counts = componentTableCounts(c.quote);
-  // wp4.yaml mục 1: form theo hàng, tách khỏi "Chi tiết" — sửa được NGAY trên
-  // thẻ, không đòi bôi đen một ô ngắn (vấp luật "đoạn phải duy nhất", xem
-  // intent). Giữ state cục bộ trong thẻ này (không đẩy lên component cha):
-  // đây là một khung soạn thảo tạm, chỉ thẻ này cần biết nó đang mở hay đóng.
-  const [tableEditOpen, setTableEditOpen] = useState(false);
-  const [draftRows, setDraftRows] = useState<string[][] | null>(null);
-  // N4 (non-blocking, review attempt2): header của bảng ĐANG sửa, giữ lại
-  // cùng lúc mở form — tra chỉ số cột "Vai trò / dùng để"/"Ghi chú" theo NHÃN
-  // thay vì hard-code 4/7 (xem `tableColumnIndex`).
-  const [draftHeader, setDraftHeader] = useState<string | null>(null);
-  function openTableEdit() {
-    const parsed = parseComponentTableQuote(c.quote ?? '');
-    if (!parsed) return; // dữ liệu không đúng khuôn bảng — không có gì để sửa theo hàng
-    setDraftRows(parsed.rows.map((row) => [...row]));
-    setDraftHeader(parsed.header);
-    setTableEditOpen(true);
-  }
-  function closeTableEdit() {
-    setTableEditOpen(false);
-    setDraftRows(null);
-    setDraftHeader(null);
-  }
-  function setCell(rowIndex: number, colIndex: number, value: string) {
-    setDraftRows((prev) =>
-      prev ? prev.map((row, i) => (i === rowIndex ? row.map((cell, j) => (j === colIndex ? value : cell)) : row)) : prev,
-    );
-  }
-  function removeRow(rowIndex: number) {
-    setDraftRows((prev) => (prev ? prev.filter((_, i) => i !== rowIndex) : prev));
-  }
-  // N2 (phải vá, review attempt2): chỉ đóng form SAU KHI lưu thành công — lưu
-  // hỏng (POST lỗi) thì giữ nguyên form + nháp, người dùng không mất chỗ đã
-  // gõ. `onSaveTable` (qua `saveComponentTableEdit`/`saveAction`) trả
-  // `true`/`false` cho đúng mục đích này.
-  async function handleSaveTable() {
-    const parsed = parseComponentTableQuote(c.quote ?? '');
-    if (!parsed || !draftRows) return;
-    const newQuote = buildComponentTableQuote(parsed, draftRows);
-    const saved = await onSaveTable(newQuote);
-    if (saved) closeTableEdit();
-  }
-  return (
-    <div className={`${styles.card} ${styles.cardCompact ?? ''} ${SEV_CLASS[c.severity]} ${c.status === 'dismissed' ? styles.dismissed : ''}`}>
-      <div className={styles.cardHead}>
-        {idx ? <span className={styles.cardIdx}>{idx}</span> : null}
-        {/* Nhãn CỐ ĐỊNH "Bảng thành phần", không phải KIND_LABEL.component
-            ("Component") — đây là điểm phân biệt với change component "sửa
-            chữ nói về component" thường (có `before`). */}
-        <span className={styles.cardKind}>Bảng thành phần</span>
-        <span className={styles.sevBadge}>{SEV_LABEL[c.severity]}</span>
-        {accepted ? <span className={styles.badgeAccepted ?? ''}>Đã chấp nhận</span> : null}
-        {c.status === 'dismissed' ? <span className={styles.badgeDeleted}>Đã bỏ</span> : null}
-      </div>
-      <p className={styles.cardTitle ?? ''}>{cardTitle(c)}</p>
-      <p className={styles.diffCompact ?? styles.diff}>
-        {counts.total} thành phần · {counts.mapped} map DS · {counts.noDs} DS không có
-      </p>
-      <div className={styles.actions}>
-        {showActions ? (
-          <>
-            <button type="button" disabled={busy || accepted || c.status === 'dismissed'} onClick={(ev) => { ev.stopPropagation(); onAccept(); }}>
-              {accepted ? 'Đã chấp nhận' : 'Chấp nhận'}
-            </button>
-            <button type="button" disabled={busy} onClick={(ev) => { ev.stopPropagation(); onDismiss(); }}>
-              {c.status === 'dismissed' && undoable ? 'Hoàn tác' : 'Gỡ bảng'}
-            </button>
-            <button type="button" disabled={busy || c.status === 'dismissed'} onClick={(ev) => { ev.stopPropagation(); openTableEdit(); }}>
-              Sửa bảng
-            </button>
-          </>
-        ) : null}
-        {/* (a, review WP3b): nút "Chi tiết ▾" ra NGOÀI gate `showActions`,
-            cùng lý do như FlowDiagramCardBody ngay trên. `detailToggle` — xem
-            chú thích ở FlowDiagramCardBody. */}
-        <button type="button" className={styles.detailToggle ?? ''} aria-expanded={expanded} onClick={(ev) => { ev.stopPropagation(); onToggleExpand(); }}>
-          {expanded ? 'Chi tiết ▴' : 'Chi tiết ▾'}
-        </button>
-      </div>
-      {tableEditOpen && draftRows ? (
-        <div className={styles.tableEditForm ?? ''} role="group" aria-label="Sửa bảng thành phần">
-          {(() => {
-            // N4 (non-blocking, review attempt2): tra cột theo nhãn header
-            // thật của bảng đang sửa, không hard-code 4/7 — fallback 4/7 khi
-            // header không khớp (dữ liệu không đúng khuôn).
-            const roleCol = tableColumnIndex(draftHeader, 'Vai trò / dùng để', 4);
-            const noteCol = tableColumnIndex(draftHeader, 'Ghi chú', 7);
-            return draftRows.map((row, i) => {
-              const rowLabel = row[1] || `hàng ${i + 1}`;
-              return (
-                <div key={i} className={styles.tableEditRow ?? ''} data-table-edit-row={i}>
-                  <span className={styles.tableEditCellLabel ?? ''}>{rowLabel}</span>
-                  <input
-                    aria-label={`Vai trò / dùng để — ${rowLabel}`}
-                    value={row[roleCol] ?? ''}
-                    onChange={(ev) => setCell(i, roleCol, ev.target.value)}
-                  />
-                  <input
-                    aria-label={`Ghi chú — ${rowLabel}`}
-                    value={row[noteCol] ?? ''}
-                    onChange={(ev) => setCell(i, noteCol, ev.target.value)}
-                  />
-                  <button type="button" onClick={(ev) => { ev.stopPropagation(); removeRow(i); }}>Gỡ hàng</button>
-                </div>
-              );
-            });
-          })()}
-          <div className={styles.actions}>
-            {/* N6 (non-blocking, review attempt2): gỡ hết hàng → chặn Lưu —
-                lưu một bảng rỗng không có ý nghĩa, và không có gì để dựng lại
-                `buildComponentTableQuote`. */}
-            <button type="button" disabled={busy || draftRows.length === 0} onClick={(ev) => { ev.stopPropagation(); void handleSaveTable(); }}>
-              {busy ? 'Đang lưu...' : 'Lưu'}
-            </button>
-            <button type="button" disabled={busy} onClick={(ev) => { ev.stopPropagation(); closeTableEdit(); }}>Hủy</button>
-          </div>
-          {/* N2 (phải vá, review attempt2): lỗi lưu hiện NGAY TRONG form, không
-              phụ thuộc `showActions` — mất `showActions` không được kéo theo
-              mất luôn thông báo lỗi khi nháp vẫn còn mở. */}
-          {error ? <p className={styles.error}>{error}</p> : null}
-        </div>
-      ) : null}
-      {expanded ? (
-        <div className={styles.cardDetail ?? ''}>
-          <p className={styles.detailRow ?? ''}>
-            <span className={styles.detailLabel ?? ''}>Đường dẫn</span> {c.rule_id ?? '—'}
-          </p>
-          <p className={styles.reason}>{c.reason}</p>
-          <RefRow refs={c.doc_refs ?? []} isRefAnchored={isRefAnchored} onJumpRef={onJumpRef} />
-          {/* Bảng đầy đủ, dựng lại bằng renderer markdown sẵn có của cột tài
-              liệu (an toàn theo hợp đồng của renderMarkdownToSafeHtml — xem
-              cột tài liệu ở trên). */}
-          <div className="markdown-rendered" dangerouslySetInnerHTML={{ __html: renderMarkdownToSafeHtml(c.quote ?? '') }} />
-        </div>
-      ) : null}
-      {/* Form đang mở đã tự hiện lỗi ngay bên trong nó (N2 ở trên) — tránh lặp
-          lại cùng một thông báo hai lần trên một thẻ. */}
-      {!tableEditOpen && showActions && (error ? <p className={styles.error}>{error}</p> : null)}
-    </div>
-  );
-}
-
-/** Chữ cũ → chữ mới của một chỗ VIẾT LẠI, dưới dạng MỘT đoạn liền: chỉ chữ bị
- *  bỏ và chữ mới được tô, phần không đổi để nguyên. Hai khối nguyên văn (cách
- *  cũ) buộc người đọc tự so từng từ khi câu dài mà chỉ đổi vài từ.
- *
- *  `wordDiff` trả null với cặp đoạn quá lớn (bảng DP vượt trần) — khi đó rơi về
- *  đúng layout hai khối cũ, vì thà xấu còn hơn không hiện được chữ nào. */
-function EditDiff({ before, after }: { before: string; after: string }) {
+/** Nguyên bản → đề xuất của một chỗ SỬA, tô riêng từ THẬT SỰ đổi (mức từ,
+ *  `wordDiff`) thay vì hai khối nguyên văn — người đọc không phải tự so một
+ *  câu 30 từ chỉ đổi hai từ. Cặp đoạn quá lớn (`wordDiff` trả null, xem
+ *  docblock của nó) rơi về đúng hai khối cũ, vì thà xấu còn hơn không hiện
+ *  được chữ nào. */
+function EditDiffBlock({ before, after }: { before: string; after: string }) {
   const runs = useMemo(() => wordDiff(before, after), [before, after]);
   if (!runs) {
     return (
-      <p className={styles.diff}>
-        <span className={styles.diffBefore}>{before}</span>
-        <span aria-hidden="true">→</span>
-        <span className={styles.diffAfter}>{after}</span>
-      </p>
+      <>
+        <p className={styles.detailLabel ?? ''}>Nguyên bản</p>
+        <p className={`${styles.detailPre ?? ''} ${styles.detailStrike ?? ''}`}>{before}</p>
+        <p className={styles.detailLabel ?? ''}>Đề xuất</p>
+        <p className={styles.detailPre ?? ''}>{after}</p>
+      </>
     );
   }
   const RUN_CLASS = { same: styles.runSame ?? '', del: styles.runDel ?? '', add: styles.runAdd ?? '' };
   return (
-    <p className={styles.diffInline}>
+    <p className={`${styles.detailPre ?? ''} ${styles.diffInline ?? ''}`}>
       {runs.map((run, i) => (
-        // Nối bằng khoảng trắng GIỮA các run: `text` của một run chỉ chứa
-        // khoảng trắng nội bộ, nên không có nó thì hai run dính liền thành một
-        // từ sai. `key` theo chỉ số là đúng ở đây — danh sách này chỉ được dựng
-        // lại toàn bộ, không bao giờ chèn/xoá phần tử giữa.
         <span key={i}>
           {i > 0 ? ' ' : null}
           <span className={RUN_CLASS[run.op]}>{run.text}</span>
