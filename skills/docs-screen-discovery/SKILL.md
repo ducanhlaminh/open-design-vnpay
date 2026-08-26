@@ -149,7 +149,7 @@ IB", hoặc mục "BO" riêng.
   HAI biến thể của một màn nghiệp vụ, KHÔNG gộp thành một entry `screens[]`:
   giữ mỗi biến thể một dòng riêng (anchor riêng, mockup riêng), chỉ thêm hậu
   tố nền tảng vào `code` (hoặc vào `name` khi `code` là `null`) — ví dụ
-  `SCR-003-MB` / `SCR-003-IB` — để daemon nhận ra đây là cùng một màn khác
+  `SCR-003-APP` / `SCR-003-WEB` — để daemon nhận ra đây là cùng một màn khác
   biến thể chứ không phải trùng lặp do BA gõ lại.
 - Kickoff có thể kèm mục **"gợi ý nhóm"** — danh sách cặp tên gần-giống khác
   nền tảng mà daemon tự phát hiện (vd "danh sách lý do" ở MB và "popup danh
@@ -219,7 +219,7 @@ loại khi `dr-comp` đọc lại, không cảnh báo riêng ở bước này):
 - `code`: mã màn tài liệu đã ghi (giữ nguyên, kể cả hậu tố) nếu có. Tài liệu
   không có mã → để `null`, **KHÔNG BỊA MÃ**; daemon tự đánh `X1`, `X2`… theo
   thứ tự dòng anchor trong trang. Màn là một biến thể nền tảng của cùng một
-  màn nghiệp vụ (xem "Nhóm biến thể nền tảng" trên) → thêm hậu tố `-MB`/`-IB`
+  màn nghiệp vụ (xem "Nhóm biến thể nền tảng" trên) → thêm hậu tố `-APP`/`-WEB`
   vào cuối mã (`code` là `null` thì thêm vào cuối `name` thay vì bịa mã) —
   không gộp hai biến thể thành một entry `screens[]`.
 - `name`: tên màn ngắn gọn, đúng chữ tài liệu dùng (không diễn giải lại).

@@ -13,12 +13,12 @@ describe('diffVariantDescriptions', () => {
   test('lệch 1 bullet một phía (fixture "kết quả giao dịch") → đúng 1 finding, onlyIn đúng phía, bullet nguyên văn', () => {
     const entries: VariantDescription[] = [
       {
-        key: 'man-hinh-ket-qua-giao-dich--mb',
+        key: 'man-hinh-ket-qua-giao-dich--app',
         platform: 'mobile',
         descriptionBullets: ['Mã yêu cầu (bổ sung)', 'Số tiền GD (bổ sung)', 'Phản hồi (bổ sung)'],
       },
       {
-        key: 'man-hinh-ket-qua-giao-dich--ib',
+        key: 'man-hinh-ket-qua-giao-dich--web',
         platform: 'web',
         descriptionBullets: ['Mã yêu cầu (bổ sung)', 'Số tiền GD (bổ sung)'],
       },
@@ -30,19 +30,19 @@ describe('diffVariantDescriptions', () => {
     assert.equal(findings[0]!.onlyIn, 'mobile');
     // bullet giữ NGUYÊN VĂN — chưa chuẩn hóa (chưa lowercase, chưa bỏ dấu câu)
     assert.equal(findings[0]!.bullet, 'Phản hồi (bổ sung)');
-    assert.equal(findings[0]!.counterpartKey, 'man-hinh-ket-qua-giao-dich--ib');
+    assert.equal(findings[0]!.counterpartKey, 'man-hinh-ket-qua-giao-dich--web');
     assert.equal(findings[0]!.groupKey, 'cr-httt__G-man-hinh-ket-qua-giao-dich');
   });
 
   test('2 danh sách tương đương khác thứ tự, khác marker (• vs -), khác hoa-thường → 0 finding', () => {
     const entries: VariantDescription[] = [
       {
-        key: 'man-hinh-quan-ly--mb',
+        key: 'man-hinh-quan-ly--app',
         platform: 'mobile',
         descriptionBullets: ['• Mã yêu cầu (bổ sung)', '- SỐ TIỀN giao dịch (bổ sung)'],
       },
       {
-        key: 'man-hinh-quan-ly--ib',
+        key: 'man-hinh-quan-ly--web',
         platform: 'web',
         // thứ tự đảo ngược + marker khác + hoa/thường khác
         descriptionBullets: ['* số tiền giao dịch (bổ sung)', '- mã yêu cầu (bổ sung).'],
@@ -57,12 +57,12 @@ describe('diffVariantDescriptions', () => {
   test('lệch cả 2 phía → finding cho từng phía', () => {
     const entries: VariantDescription[] = [
       {
-        key: 'man-hinh-x--mb',
+        key: 'man-hinh-x--app',
         platform: 'mobile',
         descriptionBullets: ['Bullet A', 'Bullet chung'],
       },
       {
-        key: 'man-hinh-x--ib',
+        key: 'man-hinh-x--web',
         platform: 'web',
         descriptionBullets: ['Bullet chung', 'Bullet C'],
       },
@@ -76,14 +76,14 @@ describe('diffVariantDescriptions', () => {
     assert.ok(mobileFinding);
     assert.ok(webFinding);
     assert.equal(mobileFinding!.bullet, 'Bullet A');
-    assert.equal(mobileFinding!.counterpartKey, 'man-hinh-x--ib');
+    assert.equal(mobileFinding!.counterpartKey, 'man-hinh-x--web');
     assert.equal(webFinding!.bullet, 'Bullet C');
-    assert.equal(webFinding!.counterpartKey, 'man-hinh-x--mb');
+    assert.equal(webFinding!.counterpartKey, 'man-hinh-x--app');
   });
 
   test('chỉ 1 entry → []', () => {
     const entries: VariantDescription[] = [
-      { key: 'man-hinh-don--mb', platform: 'mobile', descriptionBullets: ['Bullet A'] },
+      { key: 'man-hinh-don--app', platform: 'mobile', descriptionBullets: ['Bullet A'] },
     ];
 
     assert.deepEqual(diffVariantDescriptions('cr-httt__G-man-hinh-don', entries), []);
@@ -91,8 +91,8 @@ describe('diffVariantDescriptions', () => {
 
   test('2 entry cùng platform → []', () => {
     const entries: VariantDescription[] = [
-      { key: 'man-hinh-y--mb-1', platform: 'mobile', descriptionBullets: ['Bullet A'] },
-      { key: 'man-hinh-y--mb-2', platform: 'mobile', descriptionBullets: ['Bullet B'] },
+      { key: 'man-hinh-y--app-1', platform: 'mobile', descriptionBullets: ['Bullet A'] },
+      { key: 'man-hinh-y--app-2', platform: 'mobile', descriptionBullets: ['Bullet B'] },
     ];
 
     assert.deepEqual(diffVariantDescriptions('cr-httt__G-man-hinh-y', entries), []);

@@ -23,7 +23,7 @@ export interface GroupSuggestion {
 
 export interface AutoGroupResult {
   /** groupKey (spec §3.4: `<stem>__G-<slug>`) -> key THÀNH VIÊN đã đổi tên
-   *  (hậu tố `--mb`/`--ib`). */
+   *  (hậu tố `--app`/`--web`). */
   groups: Record<string, string[]>;
   /** key gốc -> key mới, chỉ cho các màn đã vào một nhóm ≥2 thành viên.
    *  Màn không vào nhóm KHÔNG xuất hiện ở đây (key giữ nguyên — bảo toàn G6). */
@@ -82,7 +82,9 @@ function isSubset(shorter: Set<string>, longer: Set<string>): boolean {
   return true;
 }
 
-const PLATFORM_SUFFIX = { mobile: '--mb', web: '--ib' } as const;
+// Hậu tố CHUẨN HÓA App/Web — không dùng hậu tố kiểu MB/IB vì đó là thuật
+// ngữ riêng dự án bank (Mobile/Internet Banking), không phủ dự án thường.
+const PLATFORM_SUFFIX = { mobile: '--app', web: '--web' } as const;
 
 /** WP-V2: auto-nhóm CHỈ KHI tên chuẩn hóa trùng HỆT + platform khác nhau +
  *  cả hai đều non-null; không bao giờ nhóm 2 màn cùng platform (kể cả trùng

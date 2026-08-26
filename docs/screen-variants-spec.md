@@ -104,8 +104,11 @@ groups?: { [groupKey: string]: string[] /* các screen key thành viên */ };
 - `groupKey` = `<mdStem>__G-<slug tên chuẩn hóa>` (vd
   `CR-Ho-tro-truc-tuyen-GD2__G-man-hinh-quan-ly-yeu-cau-cua-toi`).
 - Screen key biến thể = key hiện hành + hậu tố platform khi (và chỉ khi)
-  màn nằm trong nhóm ≥2: `<key>--mb` / `<key>--ib` (BO không cần hậu tố —
-  không trùng ai). Màn đơn giữ key như cũ → G6 bảo toàn.
+  màn nằm trong nhóm ≥2: `<key>--app` (mobile) / `<key>--web` (web) — nhãn
+  CHUẨN HÓA App/Web phủ mọi loại dự án; MB/IB chỉ là cách gọi riêng của
+  dự án bank (Mobile/Internet Banking) và CHỈ tồn tại ở tầng TỪ KHÓA PHÁT
+  HIỆN heading (WP-V1), không bao giờ xuất hiện trong key/nhãn UI. BO
+  không cần hậu tố — không trùng ai. Màn đơn giữ key như cũ → G6 bảo toàn.
 - Chuẩn hóa tên để so trùng: lowercase, bỏ dấu, bỏ tiền tố
   `màn hình|man hinh|popup`, collapse khoảng trắng.
 
@@ -116,11 +119,13 @@ groups?: { [groupKey: string]: string[] /* các screen key thành viên */ };
 **Đích:** mỗi màn có `platform` đúng; BO/IB hết bị "SDK" trong BR kéo thành
 mobile.
 
-- Bảng từ khóa heading → platform (module mới `screen-platform.ts`):
-  - mobile: `\bMB\b`, `mobile`, `app di động`, `ứng dụng di động`, `iOS`,
-    `Android`, `SDK`
-  - web: `\bIB\b`, `internet banking`, `\bBO\b`, `backoffice`, `back office`,
-    `web`, `CMS`, `quản trị`
+- Bảng từ khóa heading → platform (module mới `screen-platform.ts`).
+  Đây là tầng PHÁT HIỆN — chứa cả cách viết generic lẫn alias theo domain
+  (bank: MB/IB/BO); nhãn chuẩn hóa ra ngoài luôn là App/Web:
+  - mobile (App): `\bapp\b`, `mobile`, `app di động`, `ứng dụng di động`,
+    `iOS`, `Android`, `SDK`, alias bank `\bMB\b`
+  - web (Web): `\bweb\b`, `\bCMS\b`, `quản trị`, `backoffice`, `back office`,
+    alias bank `\bIB\b`, `internet banking`, `\bBO\b`
 - Suy `platform` cho một màn bằng cách leo CHUỖI HEADING CHA của
   `section.startLine` (gần nhất thắng); không heading nào khớp → fallback
   `MOBILE_HINT_RE` toàn file như cũ.
@@ -190,15 +195,16 @@ cũ của dự án khác load nguyên trạng.
   migrate).
 
 **Acceptance:** fixture EIB — "Quản lý yêu cầu của tôi" ra 2 HTML
-(`--mb` data-layout=mobile, `--ib` data-layout=web), mỗi cái bám mockup
+(`--app` data-layout=mobile, `--web` data-layout=web), mỗi cái bám mockup
 của bảng tương ứng; màn BO ra data-layout=web.
 
 ### WP-V5 — studio UI + dr-review variant drift
 
 **Đích:** người xem thấy nhóm; BA thấy lệch biến thể.
 
-- Studio/web rail màn hình: entry cùng `groupKey` gộp 1 hàng + tab
-  MB/IB (fallback: không groupKey → hàng đơn như cũ).
+- Studio/web rail màn hình: entry cùng `groupKey` gộp 1 hàng + tab nhãn
+  chuẩn hóa **App** (mobile) / **Web** (fallback: không groupKey → hàng
+  đơn như cũ). Không dùng nhãn MB/IB trong UI.
 - dr-review: rule mới `VARIANT-DRIFT` — so cột "Mô tả" của 2 dòng bảng
   cùng nhóm (diff bullet chuẩn hóa), lệch thực chất → finding kèm evidence
   2 anchor. Chỉ chạy khi tài liệu có nhóm (0 nhóm = 0 chi phí).

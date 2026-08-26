@@ -257,7 +257,7 @@ export interface ScreenGroupingResult {
 
 /** screen-variants WP-V2 (docs/screen-variants-spec.md): gắn `groupKey` cho
  *  các biến thể nền tảng của cùng màn nghiệp vụ (autoGroupScreens — chỉ
- *  trùng-hệt tên chuẩn hóa + khác platform). Hậu tố key `--mb`/`--ib` CHỈ áp
+ *  trùng-hệt tên chuẩn hóa + khác platform). Hậu tố key `--app`/`--web` CHỈ áp
  *  cho màn origin 'doc'/'agent' — màn 'flow'/'user' giữ key nguyên để không
  *  phá liên kết flowchart node.screen / overrides đã trỏ theo key cũ; nhóm
  *  vẫn nhận groupKey ở CẢ hai thành viên. navOut/navIn được quét lại theo

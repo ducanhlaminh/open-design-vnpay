@@ -65,9 +65,10 @@ Fixture dùng chung (chuẩn bị trong T0): trích đoạn
     màn hình/man hinh/popup, collapse space);
   - `autoGroupScreens(screens: {key,name,platform}[]): {groups, renamedKeys,
     suggestions}` — auto-nhóm CHỈ trùng-hệt tên chuẩn hóa + khác platform;
-    sinh groupKey `<stem>__G-<slug>` + hậu tố key `--mb`/`--ib` cho thành
-    viên; tên gần-giống khác platform → đẩy vào `suggestions` (cho agent),
-    KHÔNG tự nhóm; cùng platform → không bao giờ nhóm.
+    sinh groupKey `<stem>__G-<slug>` + hậu tố key CHUẨN HÓA `--app`/`--web`
+    cho thành viên (MB/IB là thuật ngữ bank, chỉ dùng ở tầng từ khóa phát
+    hiện heading); tên gần-giống khác platform → đẩy vào `suggestions`
+    (cho agent), KHÔNG tự nhóm; cùng platform → không bao giờ nhóm.
 - **Cấm:** không wire; không đụng mergeExtractedScreens.
 - **Acceptance:** fixture — ≥3 nhóm auto đúng; cặp "danh sách lý do" vs
   "popup danh sách lý do hỗ trợ" nằm ở suggestions; 2 màn cùng tên cùng
@@ -88,7 +89,8 @@ Fixture dùng chung (chuẩn bị trong T0): trích đoạn
 
 - **Sửa:** `skills/docs-screen-discovery/SKILL.md` (thêm mục "gợi ý nhóm
   biến thể": agent chỉ xác nhận trong danh sách gợi ý, phải nêu anchorText
-  cả hai phía; luật màn trùng tên khác nền tảng → code hậu tố -MB/-IB),
+  cả hai phía; luật màn trùng tên khác nền tảng → code hậu tố chuẩn hóa
+  -APP/-WEB),
   `skills/docs-screen-components/SKILL.md` (bỏ "platform … áp cho mọi màn"
   → "theo từng màn, đọc `platform` của màn trong kickoff").
 - **Cấm:** không đụng skill khác; không đổi contract JSON output ngoài

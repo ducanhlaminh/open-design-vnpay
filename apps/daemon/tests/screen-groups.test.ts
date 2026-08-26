@@ -68,21 +68,21 @@ describe('autoGroupScreens — fixture đa nền tảng', () => {
     );
   });
 
-  it('groupKey đúng dạng <stem>__G-<slug> và thành viên nhận hậu tố --mb/--ib', () => {
+  it('groupKey đúng dạng <stem>__G-<slug> và thành viên nhận hậu tố --app/--web', () => {
     const g = result.groups[`${STEM}__G-quan-ly-yeu-cau-cua-toi`];
     expect(g).toEqual(
-      expect.arrayContaining([`${STEM}__mb-quan-ly--mb`, `${STEM}__ib-quan-ly--ib`]),
+      expect.arrayContaining([`${STEM}__mb-quan-ly--app`, `${STEM}__ib-quan-ly--web`]),
     );
     expect(g).toHaveLength(2);
   });
 
   it('renamedKeys chỉ chứa thành viên đã vào nhóm, đúng hậu tố platform', () => {
-    expect(result.renamedKeys[`${STEM}__mb-quan-ly`]).toBe(`${STEM}__mb-quan-ly--mb`);
-    expect(result.renamedKeys[`${STEM}__ib-quan-ly`]).toBe(`${STEM}__ib-quan-ly--ib`);
-    expect(result.renamedKeys[`${STEM}__mb-tao-yeu-cau`]).toBe(`${STEM}__mb-tao-yeu-cau--mb`);
-    expect(result.renamedKeys[`${STEM}__ib-tao-yeu-cau`]).toBe(`${STEM}__ib-tao-yeu-cau--ib`);
-    expect(result.renamedKeys[`${STEM}__mb-ket-qua`]).toBe(`${STEM}__mb-ket-qua--mb`);
-    expect(result.renamedKeys[`${STEM}__ib-ket-qua`]).toBe(`${STEM}__ib-ket-qua--ib`);
+    expect(result.renamedKeys[`${STEM}__mb-quan-ly`]).toBe(`${STEM}__mb-quan-ly--app`);
+    expect(result.renamedKeys[`${STEM}__ib-quan-ly`]).toBe(`${STEM}__ib-quan-ly--web`);
+    expect(result.renamedKeys[`${STEM}__mb-tao-yeu-cau`]).toBe(`${STEM}__mb-tao-yeu-cau--app`);
+    expect(result.renamedKeys[`${STEM}__ib-tao-yeu-cau`]).toBe(`${STEM}__ib-tao-yeu-cau--web`);
+    expect(result.renamedKeys[`${STEM}__mb-ket-qua`]).toBe(`${STEM}__mb-ket-qua--app`);
+    expect(result.renamedKeys[`${STEM}__ib-ket-qua`]).toBe(`${STEM}__ib-ket-qua--web`);
   });
 
   it('màn đơn (BO, không đối ứng) KHÔNG đổi key — không xuất hiện trong renamedKeys', () => {

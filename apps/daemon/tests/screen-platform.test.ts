@@ -96,9 +96,11 @@ describe('resolveScreenPlatform', () => {
   test('PLATFORM_HEADING_KEYWORDS export đủ mobile/web theo spec §WP-V1', () => {
     const mobile = PLATFORM_HEADING_KEYWORDS.filter((k) => k.platform === 'mobile');
     const web = PLATFORM_HEADING_KEYWORDS.filter((k) => k.platform === 'web');
-    assert.equal(mobile.length, 7);
+    assert.equal(mobile.length, 8);
     assert.equal(web.length, 8);
     assert.ok(mobile.some((k) => k.pattern.test('SDK')));
+    // Nhãn generic App phải được nhận (chuẩn hóa App/Web, MB/IB chỉ là alias bank).
+    assert.ok(mobile.some((k) => k.pattern.test('Màn hình App')));
     assert.ok(web.some((k) => k.pattern.test('Quản trị hệ thống')));
   });
 });

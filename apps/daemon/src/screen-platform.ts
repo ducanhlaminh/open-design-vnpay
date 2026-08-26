@@ -15,8 +15,12 @@ export interface PlatformHeadingKeyword {
 /** Bảng từ khóa heading → platform, đúng danh sách spec §WP-V1. Thứ tự
  *  mobile trước web — không ảnh hưởng kết quả vì một heading thực tế chỉ
  *  nên khớp một phía; nếu khớp cả hai, mobile thắng theo thứ tự duyệt. */
+// Nhãn CHUẨN HÓA của hệ là App (mobile) / Web — MB/IB/BO chỉ là TỪ KHÓA
+// PHÁT HIỆN theo cách viết của dự án bank (Mobile/Internet Banking), giữ
+// làm alias chứ không phải nhãn chuẩn.
 export const PLATFORM_HEADING_KEYWORDS: PlatformHeadingKeyword[] = [
   { platform: 'mobile', pattern: /\bMB\b/ },
+  { platform: 'mobile', pattern: /\bapp\b/i },
   { platform: 'mobile', pattern: /mobile/i },
   { platform: 'mobile', pattern: /app di động/i },
   { platform: 'mobile', pattern: /ứng dụng di động/i },
