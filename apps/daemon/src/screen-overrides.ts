@@ -262,6 +262,11 @@ export function buildScreensManifest(screens: ScreenInput[]): ScreensManifest {
     origin: s.origin ?? 'flow',
     line: s.section?.startLine ?? null,
     hasSection: !!s.section,
+    // screen-variants: field vắng thì KHÔNG serialize — tài liệu
+    // một-nền-tảng phải ra manifest byte-identical với trước (spec G6).
+    ...(s.platform ? { platform: s.platform } : {}),
+    ...(s.groupKey ? { groupKey: s.groupKey } : {}),
   }));
-  return { schema_version: 1, screens: entries };
+  const hasVariantFields = entries.some((e) => e.platform !== undefined || e.groupKey !== undefined);
+  return { schema_version: hasVariantFields ? 2 : 1, screens: entries };
 }

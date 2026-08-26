@@ -35,10 +35,21 @@ export interface ScreensManifestEntry {
    *  `source` — null khi không tìm thấy section nào. */
   line: number | null;
   hasSection: boolean;
+  /** screen-variants (docs/screen-variants-spec.md §3): nền tảng CỦA MÀN,
+   *  suy từ chuỗi heading cha của section — vắng khi tài liệu một-nền-tảng
+   *  (reader dùng platformHint mức tài liệu như trước). */
+  platform?: 'mobile' | 'web';
+  /** Khóa nhóm màn nghiệp vụ — các biến thể MB/IB của cùng màn có chung
+   *  groupKey. Vắng = màn đứng một mình. */
+  groupKey?: string;
 }
 
 export interface ScreensManifest {
-  schema_version: 1;
+  /** 1 = trước screen-variants; 2 = có thể mang `platform`/`groupKey` trên
+   *  entry. Writer chỉ emit 2 khi CÓ entry mang field mới (tài liệu
+   *  một-nền-tảng vẫn ra schema_version 1, byte-identical). Reader nhận cả
+   *  hai — entry v1 đơn giản là không có 2 field optional. */
+  schema_version: 1 | 2;
   screens: ScreensManifestEntry[];
 }
 

@@ -92,6 +92,13 @@ export interface ScreenInput {
   findings: { id: string; severity: string; title: string; recommendation?: string }[];
   /** 'mobile' | 'web' guess from the document wording — the agent decides. */
   platformHint: 'mobile' | 'web';
+  /** screen-variants (docs/screen-variants-spec.md §3.1): nền tảng CỦA MÀN
+   *  NÀY, suy từ chuỗi heading cha của section (WP-V1). Khi có, luôn thắng
+   *  `platformHint`; vắng = tài liệu một-nền-tảng, dùng hint như cũ. */
+  platform?: 'mobile' | 'web';
+  /** Khóa nhóm màn nghiệp vụ (WP-V2) — biến thể MB/IB của cùng màn chung
+   *  groupKey. Vắng = màn đứng một mình (nhóm 1 phần tử ngầm định). */
+  groupKey?: string;
   /** Where this screen came from — 'flow' (mặc định) khi dr-flow gắn được;
    *  'doc' khi dr-flow gắn KHÔNG màn nào và daemon phải quét heading tài
    *  liệu thay (sự cố #5d13309f); 'agent' khi lớp 2 (screen-extract.ts) trích

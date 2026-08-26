@@ -30,6 +30,11 @@ export interface RecoveryScreensFile {
   title?: string;
   source?: string;
   meta?: Record<string, ScreenMetadata>;
+  /** screen-variants WP-V3 (docs/screen-variants-spec.md §3.3): khi màn có
+   *  biến thể, key trong `cells`/`names` được phép là groupKey; map ở đây
+   *  từ groupKey → các screen key thành viên. File cũ không có field này —
+   *  mọi key là màn đơn, hành vi không đổi. */
+  groups?: Record<string, string[]>;
 }
 
 export interface ScreenRecoveryCandidate {
