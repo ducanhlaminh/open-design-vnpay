@@ -747,7 +747,12 @@ test('finalizeFlowUx: screens.json explicit map C_Type decision→Trang chủ đ
   }
 });
 
-test('finalizeFlowUx: WP9b — screens.json trỏ màn vào cạnh TRÔI (không source/target) → entry.screens rỗng, screensDropped có đúng lý do "cạnh không nối hai đỉnh", warnings tương ứng', async () => {
+// Bug prod #6d40d52e đảo hành vi WP9b cho cạnh trôi CÓ NHÃN: mapping màn trên
+// cạnh trôi có nhãn giờ được thăng cấp thành bước 'action' đứng riêng mang
+// screen (tài liệu sequence-only trước đây là ngõ cụt: recovery 0.8.142 nhận
+// cạnh UI, finalize lại vứt đúng các mapping ấy → flow không bao giờ được phủ).
+// Cạnh trôi KHÔNG nhãn vẫn drop với lý do WP9b như cũ (test dưới).
+test('finalizeFlowUx: screens.json trỏ màn vào cạnh TRÔI có nhãn → thăng cấp thành bước mang screen, flow được phủ, không còn screensDropped', async () => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'od-flow-ux-floaty-drop-'));
   try {
     const fdir = path.join(cwd, 'flows', 'FLOW-x');
@@ -789,7 +794,56 @@ test('finalizeFlowUx: WP9b — screens.json trỏ màn vào cạnh TRÔI (không
     const fin = await finalizeFlowUx(cwd);
     assert.equal(fin.index.length, 1);
     const entry = fin.index[0]!;
-    assert.deepEqual(entry.screens, [], 'cạnh trôi không gắn được màn nào — hành vi phần screens thật không đổi');
+    assert.deepEqual(entry.screens, [{ key: 'doc__MH1', name: 'doc__MH1' }], 'cạnh trôi có nhãn được thăng cấp — flow được phủ');
+    assert.equal(entry.screensDropped, undefined);
+    assert.ok(!fin.warnings.some((w) => w.includes('doc__MH1')), 'không còn cảnh báo drop cho mapping đã dùng được');
+    const flowchart = JSON.parse(fs.readFileSync(path.join(cwd, 'flows', 'FLOW-x.flowchart.json'), 'utf8')) as {
+      nodes: Array<{ id: string; type: string; label: string; screen?: string }>;
+    };
+    const promoted = flowchart.nodes.find((n) => n.id === 'floaty');
+    assert.deepEqual(promoted, { id: 'floaty', type: 'action', label: 'Click Đăng nhập', screen: 'doc__MH1' });
+    assert.notEqual(flowchart.nodes[0]!.id, 'floaty', 'bước thăng cấp không được chọn làm start');
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('finalizeFlowUx: cạnh TRÔI KHÔNG nhãn vẫn drop với lý do WP9b — không thăng cấp mù', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'od-flow-ux-floaty-unlabeled-'));
+  try {
+    const fdir = path.join(cwd, 'flows', 'FLOW-x');
+    fs.mkdirSync(fdir, { recursive: true });
+    const graphXml = `<mxGraphModel><root>
+<mxCell id="0"/><mxCell id="1" parent="0"/>
+<mxCell id="v1" value="Bắt đầu" style="ellipse;" vertex="1" parent="1"><mxGeometry x="0" y="0" width="80" height="40" as="geometry"/></mxCell>
+<mxCell id="v2" value="Kết thúc" style="ellipse;" vertex="1" parent="1"><mxGeometry x="200" y="0" width="80" height="40" as="geometry"/></mxCell>
+<mxCell id="e1" edge="1" parent="1" source="v1" target="v2"><mxGeometry relative="1" as="geometry"/></mxCell>
+<mxCell id="floaty" style="edgeStyle=orthogonalEdgeStyle;" edge="1" parent="1"><mxGeometry x="90" y="10" width="60" height="20" relative="1" as="geometry"/></mxCell>
+</root></mxGraphModel>`;
+    fs.writeFileSync(path.join(fdir, 'as-is.drawio'), encodeMxfile([{ id: 'p1', name: 'Hiện trạng', graphXml }]));
+    fs.writeFileSync(path.join(fdir, 'screens.json'), JSON.stringify({ cells: { floaty: 'doc__MH1' } }));
+    fs.writeFileSync(path.join(fdir, 'ux-review.json'), JSON.stringify({ summary: 'ok', findings: [] }));
+    fs.writeFileSync(
+      path.join(cwd, 'flows', '_inputs.json'),
+      JSON.stringify({
+        generatedAt: new Date().toISOString(),
+        flows: [
+          {
+            id: 'FLOW-x',
+            title: 'x',
+            kind: 'drawio',
+            source: 'doc.md',
+            diagram: 'doc.drawio',
+            files: { asIs: 'flows/FLOW-x/as-is.drawio', cells: 'flows/FLOW-x/cells.json' },
+            counts: { nodes: 2, edges: 2 },
+          },
+        ],
+      }),
+    );
+
+    const fin = await finalizeFlowUx(cwd);
+    const entry = fin.index[0]!;
+    assert.deepEqual(entry.screens, []);
     assert.deepEqual(entry.screensDropped, [{ cell: 'floaty', key: 'doc__MH1', reason: 'là cạnh không nối hai đỉnh (sơ đồ kiểu sequence)' }]);
     assert.ok(
       fin.warnings.some((w) => w.includes('mapping màn "doc__MH1" trỏ vào "floaty" bị bỏ — là cạnh không nối hai đỉnh (sơ đồ kiểu sequence)')),

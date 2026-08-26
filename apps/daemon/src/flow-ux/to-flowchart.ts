@@ -130,8 +130,9 @@ function finish(
   // WP9c: `from`/`to` optional — cạnh TRÔI (draw.io, không source/target)
   // vẫn có mặt trong bảng này (xem `drawioPageToFlowchart`) để
   // `resolveScreenCells` nội bộ tự phân loại đúng lý do, nhất quán với
-  // `edgesForDrop` ở `flow-ux/index.ts`.
-  edgeById: Record<string, { from?: string | undefined; to?: string | undefined }> = {},
+  // `edgesForDrop` ở `flow-ux/index.ts`. Bug #6d40d52e: mang thêm `label`
+  // để cạnh trôi CÓ NHÃN được thăng cấp thành bước — xem dưới.
+  edgeById: Record<string, { from?: string | undefined; to?: string | undefined; label?: string | undefined }> = {},
 ): FlowchartDoc {
   const ids = new Set(raw.nodes.map((n) => n.id));
   const edges = raw.edges.filter((e) => ids.has(e.from) && ids.has(e.to) && e.from !== e.to);
@@ -148,8 +149,28 @@ function finish(
     else type = 'action';
     return { id: n.id, type, label: n.label };
   });
+  // Bug prod #6d40d52e: sơ đồ sequence vẽ mũi tên theo TOẠ ĐỘ giữa các
+  // lifeline — mxCell cạnh không có source/target — nên mapping màn hợp lệ
+  // trỏ vào cạnh đó không quy được về đỉnh nào và bị drop "là cạnh không nối
+  // hai đỉnh". Với tài liệu sequence-only điều đó là ngõ cụt hệ thống: recovery
+  // (đã nhận cạnh UI từ 0.8.142) ghi screens.json xong finalize lại vứt đúng
+  // các mapping ấy, flow không bao giờ được phủ. Cạnh trôi CÓ NHÃN được thăng
+  // cấp thành bước 'action' đứng riêng (nhãn cạnh = thao tác người dùng) mang
+  // screen — thành thật với sơ đồ: không bịa liên kết, chỉ không vứt bằng
+  // chứng. Cạnh trôi KHÔNG nhãn vẫn drop như cũ.
+  const floatingScreenNodes: FlowchartNode[] = [];
+  for (const [cell, key] of Object.entries(screens)) {
+    if (ids.has(cell)) continue;
+    const edge = edgeById[cell];
+    if (edge && !edge.from && !edge.to && edge.label?.trim()) {
+      floatingScreenNodes.push({ id: cell, type: 'action', label: edge.label.trim(), screen: key });
+    }
+  }
   const { byNode } = resolveScreenCells(
-    { nodes: typed.map(({ id, type }) => ({ id, type })), edges: Object.entries(edgeById).map(([id, e]) => ({ id, ...e })) },
+    {
+      nodes: [...typed, ...floatingScreenNodes].map(({ id, type }) => ({ id, type })),
+      edges: Object.entries(edgeById).map(([id, e]) => ({ id, from: e.from, to: e.to })),
+    },
     screens,
   );
   const nodes: FlowchartNode[] = typed.map((n) => {
@@ -164,6 +185,8 @@ function finish(
     const first = nodes.find((n) => (indeg.get(n.id) ?? 0) === 0) ?? nodes[0]!;
     if (first.type !== 'decision') first.type = 'start';
   }
+  // Sau start-fix để bước thăng cấp không bao giờ bị chọn làm start.
+  nodes.push(...floatingScreenNodes);
   return { ...meta, nodes, edges };
 }
 
@@ -232,10 +255,10 @@ export function drawioPageToFlowchart(
   // (kết quả `dropped` của lượt gọi nội bộ này không dùng cho warnings —
   // chỉ để JSDoc không nói một đằng code làm một nẻo). `edges`/`edgeSet`
   // (đồ thị thật) vẫn CHỈ nhận cạnh có đủ hai đầu như cũ.
-  const edgeById: Record<string, { from?: string | undefined; to?: string | undefined }> = {};
+  const edgeById: Record<string, { from?: string | undefined; to?: string | undefined; label?: string | undefined }> = {};
   for (const c of cells) {
     if (c.kind !== 'edge') continue;
-    edgeById[c.id] = { from: c.source, to: c.target };
+    edgeById[c.id] = { from: c.source, to: c.target, label: c.label };
     if (!c.source || !c.target) continue;
     const key = `${c.source}→${c.target}`;
     if (edgeSet.has(key)) continue;

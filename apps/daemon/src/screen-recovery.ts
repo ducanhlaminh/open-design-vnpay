@@ -207,7 +207,11 @@ function exactAnchorCount(markdown: string, anchorText: string): number {
 }
 
 const BACKEND_TERMS = /\b(?:backend|server|api|database|db|billing|sdk|ncc|service|worker|cron|queue|webhook)\b|gạch nợ|đối soát/i;
-const UI_TERMS = /\b(?:screen|page|form|dialog|modal|button|tab|app|web|ui)\b|màn(?: hình)?|trang|khách hàng|người dùng|bấm|chọn|nhập|xác nhận|hiển thị/i;
+// Bug #6d40d52e: thiếu "nhấn" (đồng nghĩa "bấm", rất phổ biến trong URD) và
+// "MH" (viết tắt màn hình, xuất hiện ở mọi dòng "**MH n: ...**") khiến
+// candidate hợp lệ như label `Nhấn "Thêm vào Ví Apple"` + anchor
+// `**MH 6: Chi tiết thẻ**` bị từ chối "không có bằng chứng UI".
+const UI_TERMS = /\b(?:screen|page|form|dialog|modal|button|tab|app|web|ui|mh|click|tap)\b|màn(?: hình)?|trang|khách hàng|người dùng|bấm|nhấn|chạm|chọn|nhập|xác nhận|hiển thị/i;
 
 function isUiCell(cell: ScreenRecoveryCell): boolean {
   const type = (cell.type ?? cell.kind ?? '').toLowerCase();

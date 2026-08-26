@@ -16,6 +16,8 @@ const markdown = `# Thanh toán
 
 Khách hàng kiểm tra đơn và bấm Thanh toán.
 
+**MH 6: Chi tiết thẻ (Chưa liên kết)**
+
 \`\`\`
 ## SCR-099 — Chỉ là ví dụ
 \`\`\`
@@ -36,6 +38,9 @@ const context: ScreenRecoveryContext = {
         // daemon ghi từ draw.io.
         { id: 'e-tap', label: 'Chọn icon chức năng "Apple Pay" ở MH trang chủ', kind: 'edge' },
         { id: 'e-api', label: 'API kiểm tra trạng thái thẻ', kind: 'edge' },
+        // Bug #6d40d52e: "nhấn" không có trong UI_TERMS (chỉ có "bấm") nên
+        // label thao tác rất phổ biến này bị coi là không-UI.
+        { id: 'e-press', label: 'Nhấn "Thêm vào Ví Apple"', kind: 'edge' },
       ],
     },
   },
@@ -153,6 +158,32 @@ describe('validateScreenRecovery', () => {
     expect(result.rejected).toEqual([]);
     expect(result.accepted).toHaveLength(1);
     expect(result.accepted[0]?.cells).toEqual(['e-tap']);
+  });
+
+  // Bug prod #6d40d52e (0.8.142 vẫn lỗi): UI_TERMS thiếu "nhấn" và "MH" nên
+  // 2/4 candidate FLOW-apple hợp lệ vẫn bị "không có bằng chứng UI".
+  it('nhận label "Nhấn ..." trên cạnh sequence làm bằng chứng UI', () => {
+    const press = candidate({
+      name: 'MH 6: Chi tiết thẻ (Chưa liên kết)',
+      cells: ['e-press'],
+      diagramEvidence: [{ cellId: 'e-press', label: 'Nhấn "Thêm vào Ví Apple"' }],
+    });
+    delete press.anchorText;
+    const result = validateScreenRecovery({ schema_version: 1, candidates: [press] }, context);
+    expect(result.rejected).toEqual([]);
+    expect(result.accepted).toHaveLength(1);
+  });
+
+  it('nhận anchorText "**MH n: ...**" (viết tắt màn hình) làm bằng chứng UI', () => {
+    const anchored = candidate({
+      name: 'Chi tiết thẻ (Chưa liên kết)',
+      anchorText: '**MH 6: Chi tiết thẻ (Chưa liên kết)**',
+      cells: ['e-press'],
+      diagramEvidence: [],
+    });
+    const result = validateScreenRecovery({ schema_version: 1, candidates: [anchored] }, context);
+    expect(result.rejected).toEqual([]);
+    expect(result.accepted).toHaveLength(1);
   });
 
   it('dedupe cùng screen, gộp nhiều cell và sinh AUTO key ổn định', () => {
