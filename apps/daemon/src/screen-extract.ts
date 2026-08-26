@@ -26,6 +26,7 @@
 import path from 'node:path';
 
 import { scanDocScreens, isBlockedScreenName, MOBILE_HINT_RE, findAnchorTextLines, type ScreenInput } from './screen-components.js';
+import { resolveScreenPlatform } from './screen-platform.js';
 
 export const DOC_SCREENS_FILE = 'comp/_doc-screens.json';
 
@@ -270,6 +271,9 @@ export function mergeExtractedScreens(
     const md = mdBySource.get(a.source) ?? '';
     // WP14: 'agent' nay là thành viên chính thức của ScreenInput['origin']
     // (screen-components.ts) — không còn cần cast cục bộ như WP12.
+    // screen-variants WP-V1: platform theo heading cha của section màn này
+    // (khi suy được) — không còn một hint chung cho cả tài liệu.
+    const platform = md && a.section ? resolveScreenPlatform(md, a.section.startLine) : null;
     const input: ScreenInput = {
       key,
       name: a.name,
@@ -282,6 +286,7 @@ export function mergeExtractedScreens(
       navIn: [],
       findings: [],
       platformHint: MOBILE_HINT_RE.test(md) ? 'mobile' : 'web',
+      ...(platform ? { platform } : {}),
       origin: 'agent',
       ...(a.section ? { section: buildAgentSection(md, a.section.startLine, a.section.endLine) } : {}),
     };

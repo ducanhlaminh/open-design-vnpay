@@ -20,6 +20,7 @@ import type {
 } from '@open-design/contracts';
 
 import { findAnchorTextLines, type ScreenInput } from './screen-components.js';
+import { autoGroupScreens, type GroupSuggestion } from './screen-groups.js';
 
 /** `comp/<key>.screen.json` sibling — manifest của LẦN CHẠY HIỆN TẠI (sau khi
  *  áp overrides lên danh sách máy đoán). Nằm DƯỚI `comp/` nên bị "Run lại"
@@ -245,6 +246,54 @@ export function applyScreenOverrides(
   out = out.map((s, i) => ({ ...s, order: i, navIn: s.navIn.filter((k) => remainingKeys.has(k)) }));
 
   return { screens: out, warnings };
+}
+
+export interface ScreenGroupingResult {
+  screens: ScreenInput[];
+  groupCount: number;
+  suggestions: GroupSuggestion[];
+  changed: boolean;
+}
+
+/** screen-variants WP-V2 (docs/screen-variants-spec.md): gắn `groupKey` cho
+ *  các biến thể nền tảng của cùng màn nghiệp vụ (autoGroupScreens — chỉ
+ *  trùng-hệt tên chuẩn hóa + khác platform). Hậu tố key `--mb`/`--ib` CHỈ áp
+ *  cho màn origin 'doc'/'agent' — màn 'flow'/'user' giữ key nguyên để không
+ *  phá liên kết flowchart node.screen / overrides đã trỏ theo key cũ; nhóm
+ *  vẫn nhận groupKey ở CẢ hai thành viên. navOut/navIn được quét lại theo
+ *  map key cũ→mới. Tài liệu một-nền-tảng: 0 nhóm, trả `changed: false`,
+ *  danh sách nguyên trạng (spec G6). */
+export function applyScreenGrouping(screens: ScreenInput[]): ScreenGroupingResult {
+  const { groups, renamedKeys, suggestions } = autoGroupScreens(
+    screens.map((s) => ({ key: s.key, name: s.name, platform: s.platform ?? null })),
+  );
+  if (Object.keys(groups).length === 0) {
+    return { screens, groupCount: 0, suggestions, changed: false };
+  }
+  // autoGroupScreens trả `groups` theo key ĐÃ đổi tên — đảo renamedKeys để
+  // biết key gốc của từng thành viên rồi mới quyết có đổi thật hay không.
+  const originalOf = new Map<string, string>(Object.entries(renamedKeys).map(([oldKey, newKey]) => [newKey, oldKey]));
+  const finalKeyByOld = new Map<string, string>();
+  const groupKeyByOld = new Map<string, string>();
+  const byKey = new Map(screens.map((s) => [s.key, s]));
+  for (const [groupKey, members] of Object.entries(groups)) {
+    for (const renamed of members) {
+      const oldKey = originalOf.get(renamed) ?? renamed;
+      const screen = byKey.get(oldKey);
+      if (!screen) continue;
+      groupKeyByOld.set(oldKey, groupKey);
+      const mayRename = screen.origin === 'doc' || screen.origin === 'agent';
+      finalKeyByOld.set(oldKey, mayRename ? renamed : oldKey);
+    }
+  }
+  const out = screens.map((s) => {
+    const groupKey = groupKeyByOld.get(s.key);
+    const finalKey = finalKeyByOld.get(s.key) ?? s.key;
+    const navOut = s.navOut.map((n) => (finalKeyByOld.has(n.to) ? { ...n, to: finalKeyByOld.get(n.to)! } : n));
+    const navIn = s.navIn.map((k) => finalKeyByOld.get(k) ?? k);
+    return { ...s, key: finalKey, navOut, navIn, ...(groupKey ? { groupKey } : {}) };
+  });
+  return { screens: out, groupCount: Object.keys(groups).length, suggestions, changed: true };
 }
 
 /** Dựng `comp/_screens.json` từ danh sách màn SAU khi áp overrides — map

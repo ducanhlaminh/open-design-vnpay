@@ -26,6 +26,7 @@ import path from 'node:path';
 
 import type { FlowchartDoc } from './flow-ux/to-flowchart.js';
 import type { FlowIndexEntry, UxReview } from './flow-ux/index.js';
+import { resolveScreenPlatform } from './screen-platform.js';
 
 export const SCREEN_COMPONENTS_SCHEMA_VERSION = '2.1' as const;
 export const SCREEN_INPUTS_FILE = 'comp/_inputs.json';
@@ -1093,6 +1094,9 @@ export function resolveDocScreens(input: ResolveDocScreensInput): ScreenInput[] 
           ? resolvedBlocks.map((b) => ({ name: b.name, section: buildAnchorSection(md, b.line, nextAnchorEndLine(b.line)) }))
           : undefined;
 
+        // screen-variants WP-V1: platform theo chuỗi heading cha của section
+        // — khi suy được thì thắng platformHint mức tài liệu.
+        const platform = resolveScreenPlatform(md, section.startLine);
         out.push({
           key,
           name: c.name,
@@ -1107,6 +1111,7 @@ export function resolveDocScreens(input: ResolveDocScreensInput): ScreenInput[] 
           navIn: [],
           findings: [],
           platformHint: MOBILE_HINT_RE.test(md) ? 'mobile' : 'web',
+          ...(platform ? { platform } : {}),
           origin: 'agent',
           ...(blocks ? { blocks } : {}),
         });
@@ -1142,6 +1147,10 @@ export function resolveDocScreens(input: ResolveDocScreensInput): ScreenInput[] 
       if (section) {
         scanned.section = { heading: section.heading, startLine: section.startLine, endLine: section.endLine, excerpt: section.excerpt };
         if (section.referenceTable) scanned.referenceTable = section.referenceTable;
+        // screen-variants WP-V1: chỉ suy platform khi có section (cần
+        // startLine để leo heading cha).
+        const platform = resolveScreenPlatform(md, section.startLine);
+        if (platform) scanned.platform = platform;
       }
       out.push(scanned);
     }
@@ -1213,6 +1222,11 @@ export async function prepareScreenComponentInputs(
       };
       if (section) {
         input.section = { heading: section.heading, startLine: section.startLine, endLine: section.endLine, excerpt: section.excerpt };
+        // screen-variants WP-V1: platform theo heading cha của section.
+        if (md) {
+          const platform = resolveScreenPlatform(md, section.startLine);
+          if (platform) input.platform = platform;
+        }
         if (section.referenceTable) input.referenceTable = section.referenceTable;
         if (md && page) {
           const mockups = await extractSectionMockups(cwd, page.mdPath, md, section);

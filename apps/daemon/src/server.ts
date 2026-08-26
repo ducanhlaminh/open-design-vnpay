@@ -722,10 +722,12 @@ import { validateDocScreenExtract, mergeExtractedScreens, DOC_SCREENS_FILE } fro
 import {
   parseScreensOverrides,
   applyScreenOverrides,
+  applyScreenGrouping,
   buildScreensManifest,
   SCREENS_MANIFEST_FILE,
   SCREENS_OVERRIDES_REL,
 } from './screen-overrides.js';
+import { orderMockupsByChangeColumn } from './mockup-order.js';
 import type { ScreenFlowLayoutOverrides, ScreenFlowsIndex, ScreenFlowModel, ScreensManifest, ScreensOverrides } from '@open-design/contracts';
 import { renderFigmaComponentsMarkdown, anchorFor, type FigmaComponentCatalogSnapshot } from './figma-component-catalog.js';
 // WP19a: fallback description guide (hạ tầng — xem docblock đầu file đó cho
@@ -17621,6 +17623,24 @@ export async function startServer({
           await persistInputs();
         }
 
+        // screen-variants WP-V2: nhóm biến thể nền tảng (MB/IB) SAU lớp 3 và
+        // TRƯỚC mockup/navigation/manifest — key hậu tố phải chốt ở đây để
+        // mọi thứ xuôi dòng (kickoff, fan-out, manifest) thấy key cuối.
+        // Tài liệu một-nền-tảng: changed=false, không đụng gì (spec G6).
+        {
+          const grouping = applyScreenGrouping(screenInputs);
+          if (grouping.suggestions.length > 0) {
+            console.log(
+              `[docs-comp] gợi ý nhóm biến thể (chưa auto, chờ vòng xác nhận): ${grouping.suggestions.map((g) => `${g.a.name} ↔ ${g.b.name}`).join('; ')}`,
+            );
+          }
+          if (grouping.changed) {
+            screenInputs = grouping.screens;
+            noteParts.push(`Nhóm biến thể nền tảng: ${grouping.groupCount} nhóm.`);
+            await persistInputs();
+          }
+        }
+
         // WP24a (review follow-up): màn do lớp 2 (EXTRACT) / lớp 3 (override
         // 'add') thêm vào KHÔNG đi qua prepareScreenComponentInputs nên chưa
         // được quét ảnh mockup — quét bù ở đây để kickoff + layoutSource không
@@ -17638,6 +17658,24 @@ export async function startServer({
             const mockups = await extractSectionMockups(cwd, s.source, md, s.section);
             if (mockups.length > 0) {
               s.mockups = mockups;
+              mockupsEnriched = true;
+            }
+          }
+          // screen-variants WP-V4: bảng CR `Hiện trạng | Thay đổi` — ảnh cột
+          // "Thay đổi" (trạng thái ĐÍCH) phải đứng trước trong `mockups` để
+          // agent lấy đúng nguồn bố cục. Section không có bảng dạng này thì
+          // orderMockupsByChangeColumn trả nguyên trạng.
+          for (const s of screenInputs) {
+            if (!s.section || !s.source || !s.mockups || s.mockups.length < 2) continue;
+            if (!mockupMdCache.has(s.source)) {
+              mockupMdCache.set(s.source, await fs.promises.readFile(path.join(cwd, s.source), 'utf8').catch(() => null));
+            }
+            const md = mockupMdCache.get(s.source);
+            if (md == null) continue;
+            const sectionLines = md.split(/\r?\n/).slice(s.section.startLine - 1, s.section.endLine);
+            const { ordered, hasBeforeAfter } = orderMockupsByChangeColumn(sectionLines, s.mockups);
+            if (hasBeforeAfter && ordered.join('\n') !== s.mockups.join('\n')) {
+              s.mockups = ordered;
               mockupsEnriched = true;
             }
           }
@@ -17752,7 +17790,13 @@ export async function startServer({
         setProjectPipelineStatus(db, projectId, pipelineId, { status: 'running', lastConversationId: roleMapConvId });
         persistTasks();
 
-        const platformCounts = screenInputs.reduce<Record<string, number>>((acc, s) => ({ ...acc, [s.platformHint]: (acc[s.platformHint] ?? 0) + 1 }), {});
+        // screen-variants WP-V1: platform theo TỪNG màn (fallback hint mức
+        // tài liệu) — platformGuess chỉ còn là mặc định cho lượt role-map,
+        // từng màn đọc `platform` của chính nó trong _inputs.json.
+        const platformCounts = screenInputs.reduce<Record<string, number>>((acc, s) => {
+          const p = s.platform ?? s.platformHint;
+          return { ...acc, [p]: (acc[p] ?? 0) + 1 };
+        }, {});
         const platformGuess = (platformCounts.mobile ?? 0) > (platformCounts.web ?? 0) ? 'mobile' : 'web';
         const roleMapKickoff = buildScreenComponentsKickoff({
           mode: 'role-map',
@@ -22122,7 +22166,15 @@ export async function startServer({
         // dùng — để comp/_screens.json (route GET /docs-review/screens +
         // ScreenListManager) đọc được NGAY sau dr-screens, không cần đợi dr-comp.
         const { screens: mergedScreens } = mergeExtractedScreens([], accepted, mdBySource);
-        const manifest = buildScreensManifest(mergedScreens);
+        // screen-variants WP-V2: nhóm biến thể trước khi ghi manifest —
+        // dr-screens là nơi kiểm kê nên nhóm phải hiện ngay từ đây.
+        const grouping = applyScreenGrouping(mergedScreens);
+        if (grouping.suggestions.length > 0) {
+          console.log(
+            `[dr-screens] gợi ý nhóm biến thể (chưa auto): ${grouping.suggestions.map((g) => `${g.a.name} ↔ ${g.b.name}`).join('; ')}`,
+          );
+        }
+        const manifest = buildScreensManifest(grouping.changed ? grouping.screens : mergedScreens);
         await fs.promises.mkdir(path.join(cwd, 'comp'), { recursive: true });
         await fs.promises.writeFile(path.join(cwd, SCREENS_MANIFEST_FILE), JSON.stringify(manifest, null, 2), 'utf8');
 

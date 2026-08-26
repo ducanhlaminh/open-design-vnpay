@@ -508,6 +508,10 @@ interface ScreensFile {
   source?: string;
   /** Optional recovery provenance keyed by canonical SCREEN-KEY. */
   meta?: Record<string, ScreenMetadata>;
+  /** screen-variants WP-V3 (docs/screen-variants-spec.md §3.3): key trong
+   *  `cells`/`names` được phép là groupKey; map groupKey → screen key thành
+   *  viên. File cũ không có field này → mọi key là màn đơn, không đổi gì. */
+  groups?: Record<string, string[]>;
 }
 
 function normalizeReview(raw: unknown, flowId: string): UxReview | null {
@@ -865,6 +869,19 @@ export async function finalizeFlowUx(cwd: string): Promise<FinalizeResult> {
       await writeJson(path.join(flowsDir, `${input.id}.flowchart.json`), flowchart);
       entry.files!.flowchart = `flows/${input.id}.flowchart.json`;
       entry.screens = screensOf(flowchart, names, screensFile.meta ?? {});
+      // screen-variants WP-V3: key có thể là groupKey — expand ra từng thành
+      // viên (giữ nguyên name/provenance của nhóm) để coverage đếm theo màn
+      // nghiệp vụ mà mỗi biến thể vẫn có mặt trong index. screens.json không
+      // có `groups` → nhánh bất động.
+      const groups = screensFile.groups;
+      if (groups && Object.keys(groups).length) {
+        const seenKeys = new Set<string>();
+        entry.screens = entry.screens.flatMap((s) => {
+          const members = groups[s.key];
+          const expanded = members?.length ? members.map((k) => ({ ...s, key: k })) : [s];
+          return expanded.filter((e) => (seenKeys.has(e.key) ? false : (seenKeys.add(e.key), true)));
+        });
+      }
     }
     // Mapping màn bị bỏ (id lạ / trỏ vào cạnh mà hai đầu không dùng được /
     // chỉ có ở bản đề xuất patch.json chưa vào flowchart) — mapping trực tiếp
