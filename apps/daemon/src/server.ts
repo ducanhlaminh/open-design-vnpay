@@ -23001,34 +23001,45 @@ export async function startServer({
                 pageMdPaths: pages.map((page) => page.mdPath),
                 recoveryFile: recoveryRel,
               });
-              activeRuns.add(recoveryRun);
-              upsertMessage(db, recoveryConversationId, { id: `pipeline-user-${recoveryRun.id}`, role: 'user', content: recoveryKickoff });
-              upsertMessage(db, recoveryConversationId, {
-                id: recoveryAssistantId,
-                role: 'assistant',
-                content: '',
-                agentId,
-                agentName: getAgentDef(agentId)?.name ?? agentId,
-                runId: recoveryRun.id,
-                runStatus: 'queued',
-                startedAt: Date.now(),
-              });
-              design.runs.start(recoveryRun, () => startChatRun({
-                agentId,
-                projectId,
-                conversationId: recoveryConversationId,
-                assistantMessageId: recoveryAssistantId,
-                clientRequestId: recoveryRun.clientRequestId,
-                skillId: def.skillId,
-                ...(wfDir ? { cwdSubdir: wfDir } : {}),
-                model: modelPrefs.model ?? null,
-                reasoning: modelPrefs.reasoning ?? null,
-                message: recoveryKickoff,
-                promptProfile: 'pipeline',
-                pipelineUsesDesignSystem: def.acceptsDesignSystem === true,
-              }, recoveryRun));
-              const recoveryFinal = await design.runs.wait(recoveryRun);
-              activeRuns.delete(recoveryRun);
+              // Canceler riêng cho recovery run: stage đơn vốn cancel qua
+              // lastRunId, nhưng lastRunId lúc này trỏ vào run CHÍNH đã kết
+              // thúc. KHÔNG dùng `activeRuns` — biến đó chỉ tồn tại trong các
+              // hàm fan-out; tham chiếu ở đây là ReferenceError runtime (file
+              // này @ts-nocheck nên tsc không bắt được).
+              const recoveryCancelKey = `${projectId}::${pipelineId}`;
+              const recoveryActiveRuns = new Set<{ id: string }>([recoveryRun]);
+              registerPipelineCanceler(recoveryCancelKey, recoveryActiveRuns, () => {});
+              let recoveryFinal: Awaited<ReturnType<typeof design.runs.wait>>;
+              try {
+                upsertMessage(db, recoveryConversationId, { id: `pipeline-user-${recoveryRun.id}`, role: 'user', content: recoveryKickoff });
+                upsertMessage(db, recoveryConversationId, {
+                  id: recoveryAssistantId,
+                  role: 'assistant',
+                  content: '',
+                  agentId,
+                  agentName: getAgentDef(agentId)?.name ?? agentId,
+                  runId: recoveryRun.id,
+                  runStatus: 'queued',
+                  startedAt: Date.now(),
+                });
+                design.runs.start(recoveryRun, () => startChatRun({
+                  agentId,
+                  projectId,
+                  conversationId: recoveryConversationId,
+                  assistantMessageId: recoveryAssistantId,
+                  clientRequestId: recoveryRun.clientRequestId,
+                  skillId: def.skillId,
+                  ...(wfDir ? { cwdSubdir: wfDir } : {}),
+                  model: modelPrefs.model ?? null,
+                  reasoning: modelPrefs.reasoning ?? null,
+                  message: recoveryKickoff,
+                  promptProfile: 'pipeline',
+                  pipelineUsesDesignSystem: def.acceptsDesignSystem === true,
+                }, recoveryRun));
+                recoveryFinal = await design.runs.wait(recoveryRun);
+              } finally {
+                pipelineCancelers.delete(recoveryCancelKey);
+              }
               db.prepare(`UPDATE messages SET run_status = ?, ended_at = ? WHERE id = ?`)
                 .run(recoveryFinal.status, Date.now(), recoveryAssistantId);
 
