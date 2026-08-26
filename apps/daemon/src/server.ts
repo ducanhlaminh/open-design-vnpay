@@ -728,6 +728,7 @@ import {
   SCREENS_OVERRIDES_REL,
 } from './screen-overrides.js';
 import { orderMockupsByChangeColumn } from './mockup-order.js';
+import { scanVariantDriftFromDocs, readMdBySourceForManifest, VARIANT_DRIFT_FILE, type VariantDriftReport } from './variant-drift-scan.js';
 import type { ScreenFlowLayoutOverrides, ScreenFlowsIndex, ScreenFlowModel, ScreensManifest, ScreensOverrides } from '@open-design/contracts';
 import { renderFigmaComponentsMarkdown, anchorFor, type FigmaComponentCatalogSnapshot } from './figma-component-catalog.js';
 // WP19a: fallback description guide (hạ tầng — xem docblock đầu file đó cho
@@ -17706,7 +17707,29 @@ export async function startServer({
         // TRƯỚC role-map — để một lượt chạy hỏng giữa chừng ngay sau đây
         // người dùng vẫn thấy máy đã đoán những màn nào.
         await fs.promises.mkdir(path.join(cwd, 'comp'), { recursive: true });
-        await fs.promises.writeFile(path.join(cwd, SCREENS_MANIFEST_FILE), JSON.stringify(buildScreensManifest(screenInputs), null, 2), 'utf8');
+        const screensManifest = buildScreensManifest(screenInputs);
+        await fs.promises.writeFile(path.join(cwd, SCREENS_MANIFEST_FILE), JSON.stringify(screensManifest, null, 2), 'utf8');
+
+        // screen-variants WP-V5 (docs/screen-variants-spec.md §WP-V5, subplan
+        // T8): "lệch biến thể" — so cột "Mô tả" giữa các biến thể MB/IB của
+        // cùng nhóm. Zero-cost khi tài liệu không có nhóm (gate trong
+        // scanVariantDriftFromDocs). Ghi file riêng comp/_variant-drift.json
+        // thay vì gộp vào khuôn findings của dr-review (docs-review.ts) —
+        // tránh đụng vùng đó đang có WIP của phiên khác; chưa có UI card, xem
+        // report của T8.
+        {
+          const variantDriftMdBySource = await readMdBySourceForManifest(cwd, screensManifest);
+          const variantDrift = scanVariantDriftFromDocs(screensManifest, variantDriftMdBySource);
+          if (variantDrift.warnings.length > 0) {
+            console.warn(`[docs-comp] variant-drift: ${variantDrift.warnings.length} cảnh báo —`, variantDrift.warnings);
+          }
+          if (variantDrift.findings.length > 0) {
+            const report: VariantDriftReport = { schema_version: 1, findings: variantDrift.findings };
+            await fs.promises.writeFile(path.join(cwd, VARIANT_DRIFT_FILE), JSON.stringify(report, null, 2), 'utf8');
+            noteParts.push(`Lệch biến thể (VARIANT-DRIFT): ${variantDrift.findings.length} chỗ lệch giữa các biến thể nền tảng — xem ${VARIANT_DRIFT_FILE}.`);
+            console.log(`[docs-comp] variant-drift: ${variantDrift.findings.length} finding(s) → ${VARIANT_DRIFT_FILE}`);
+          }
+        }
 
         outerScreenKeys = screenInputs.map((s) => s.key);
 

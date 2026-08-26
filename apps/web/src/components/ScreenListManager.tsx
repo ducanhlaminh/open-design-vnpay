@@ -21,7 +21,7 @@
 // @open-design/contracts (web đã import package này rộng rãi ở nơi khác,
 // xem apps/web/AGENTS.md/providers/*), giữ NGUYÊN tên `ScreenManifestEntry`
 // qua alias để không phá test WP13b đã viết theo tên đó.
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import type {
   ScreenOrigin,
@@ -83,6 +83,93 @@ function OriginBadge({ origin }: { origin: ScreenOrigin }) {
   );
 }
 
+// screen-variants WP-V5 (docs/screen-variants-spec.md §WP-V5, T7 trong
+// docs/screen-variants-subplan.md): manifest schema_version 2 có thể mang
+// `platform`/`groupKey` trên entry — các biến thể của cùng màn nghiệp vụ
+// chia sẻ `groupKey`. UI gộp các entry cùng groupKey thành MỘT hàng với tab
+// App/Web (nhãn generic — KHÔNG dùng thuật ngữ MB/IB riêng của dự án bank);
+// chọn tab = chọn key thành viên cho mọi hành vi hiện có (đổi tên/bỏ dùng
+// đúng key thành viên đang chọn, không phụ thuộc hậu tố key --mb/--ib hay
+// --app/--web — khớp theo `platform`/`groupKey` của manifest, không parse
+// hậu tố). Manifest v1 / entry không groupKey KHÔNG đi qua nhánh này — render
+// y hệt trước (xem `renderScreenRow` khi `tabsNode` là `undefined`,
+// `platformBadge` chỉ xuất hiện cho màn đơn có `platform`).
+const PLATFORM_TAB_LABEL: Record<'mobile' | 'web', string> = { mobile: 'App', web: 'Web' };
+const PLATFORM_ORDER: Record<'mobile' | 'web', number> = { mobile: 0, web: 1 };
+
+/** Badge phụ bên cạnh OriginBadge — chỉ cho MÀN ĐƠN có `platform` (không
+ *  thuộc nhóm, vì nhóm đã có tab App/Web riêng để phân biệt). */
+function PlatformBadge({ platform }: { platform: 'mobile' | 'web' }) {
+  return (
+    <span
+      data-testid="platform-badge"
+      style={{
+        display: 'inline-block',
+        marginLeft: 4,
+        padding: '2px 7px',
+        borderRadius: 999,
+        fontSize: 10.5,
+        fontWeight: 700,
+        color: M.soft,
+        background: 'transparent',
+        border: `1px solid ${M.border}`,
+        whiteSpace: 'nowrap',
+      }}
+    >
+      {PLATFORM_TAB_LABEL[platform]}
+    </span>
+  );
+}
+
+/** Tab App/Web cho một hàng nhóm — click đổi key thành viên đang chọn cho
+ *  hàng đó; không đổi gì ở các nhóm khác. */
+function GroupPlatformTabs({
+  groupKey,
+  members,
+  selectedKey,
+  onSelect,
+}: {
+  groupKey: string;
+  members: ScreenManifestEntry[];
+  selectedKey: string;
+  onSelect: (key: string) => void;
+}) {
+  return (
+    <div data-testid={`screen-group-tabs-${groupKey}`} style={{ display: 'flex', gap: 6, marginBottom: 4 }}>
+      {members.map((m) => {
+        if (!m.platform) return null;
+        const active = m.key === selectedKey;
+        return (
+          <button
+            key={m.key}
+            type="button"
+            aria-pressed={active}
+            data-testid={`screen-tab-${groupKey}-${m.platform}`}
+            onClick={() => onSelect(m.key)}
+            style={{
+              padding: '1px 8px',
+              borderRadius: 999,
+              fontSize: 10.5,
+              fontWeight: 700,
+              border: `1px solid ${active ? M.accent : M.border}`,
+              background: active ? M.accent : 'transparent',
+              color: active ? '#fff' : M.soft,
+              cursor: 'pointer',
+            }}
+          >
+            {PLATFORM_TAB_LABEL[m.platform]}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/** Hàng của bảng sau khi gộp theo `groupKey`: entry không có `groupKey`
+ *  giữ nguyên là hàng đơn; entry cùng `groupKey` gộp thành một hàng nhóm
+ *  (thứ tự thành viên: mobile trước, web sau). */
+type ScreenRow = { kind: 'single'; entry: ScreenManifestEntry } | { kind: 'group'; groupKey: string; members: ScreenManifestEntry[] };
+
 /** Override rename/remove còn hiệu lực cho một key — entry SAU CÙNG trong
  *  mảng thắng (client luôn append entry mới thay vì sửa tại chỗ). */
 function pendingActionFor(
@@ -110,6 +197,9 @@ export function ScreenListManager({ projectId, onClose }: { projectId: string; o
   const [addCode, setAddCode] = useState('');
   const [addName, setAddName] = useState('');
   const [addAnchor, setAddAnchor] = useState('');
+  // groupKey -> key thành viên đang chọn (tab App/Web); nhóm chưa có entry ở
+  // đây thì mặc định thành viên đầu tiên (xem `rows` bên dưới).
+  const [selectedGroupMember, setSelectedGroupMember] = useState<Record<string, string>>({});
 
   useEffect(() => {
     let cancelled = false;
@@ -148,6 +238,30 @@ export function ScreenListManager({ projectId, onClose }: { projectId: string; o
     const set = new Set<string>();
     for (const s of manifest?.screens ?? []) if (s.source) set.add(s.source);
     return [...set];
+  }, [manifest]);
+
+  // Gộp entry cùng `groupKey` thành một hàng nhóm; entry không `groupKey`
+  // (manifest v1, hoặc màn đứng một mình trong v2) giữ nguyên là hàng đơn —
+  // đây là điểm giữ cho v1 render y hệt trước (không entry nào có groupKey
+  // thì `rows` luôn toàn hàng `single`, đúng thứ tự manifest.screens gốc).
+  const rows = useMemo<ScreenRow[]>(() => {
+    const screens = manifest?.screens ?? [];
+    const out: ScreenRow[] = [];
+    const seenGroups = new Set<string>();
+    for (const entry of screens) {
+      if (entry.groupKey) {
+        if (seenGroups.has(entry.groupKey)) continue;
+        seenGroups.add(entry.groupKey);
+        const members = screens
+          .filter((s) => s.groupKey === entry.groupKey)
+          .slice()
+          .sort((a, b) => (PLATFORM_ORDER[a.platform ?? 'web'] ?? 2) - (PLATFORM_ORDER[b.platform ?? 'web'] ?? 2));
+        out.push({ kind: 'group', groupKey: entry.groupKey, members });
+      } else {
+        out.push({ kind: 'single', entry });
+      }
+    }
+    return out;
   }, [manifest]);
 
   // Ghi ĐÈ toàn bộ overrides (không PATCH) — xem giải thích ở đầu file.
@@ -228,6 +342,99 @@ export function ScreenListManager({ projectId, onClose }: { projectId: string; o
     void putOverrides(next);
   }
 
+  // Render một hàng bảng cho `entry` — dùng chung cho hàng đơn (v1, hoặc màn
+  // đứng một mình trong v2) và hàng nhóm (v2, `entry` = thành viên ĐANG CHỌN
+  // của nhóm). `tabsNode` chỉ khác `undefined` ở hàng nhóm — khi đó thêm dải
+  // tab App/Web phía trên tên; hàng đơn không có `tabsNode` nên DOM giống hệt
+  // trước khi có schema v2 (không entry nào có groupKey → nhánh này không
+  // chạy). Mọi hành vi (đổi tên/bỏ) đọc/ghi theo `entry.key` — với hàng nhóm
+  // đó là key thành viên đang chọn, đúng yêu cầu "chọn tab = chọn key".
+  function renderScreenRow(entry: ScreenManifestEntry, tabsNode?: ReactNode) {
+    const pending = pendingActionFor(overrides, entry.key);
+    const isRemoved = pending?.action === 'remove';
+    const isRenaming = renamingKey === entry.key;
+    // Badge platform độc lập chỉ cho màn ĐƠN (không nằm trong nhóm, vì nhóm
+    // đã có tab App/Web) — "nếu chỗ đó đã có pattern badge" (OriginBadge).
+    const platformBadge = !tabsNode && entry.platform ? <PlatformBadge platform={entry.platform} /> : null;
+    return (
+      <tr key={entry.key} data-testid={`screen-row-${entry.key}`} style={{ borderTop: `1px solid ${M.border}`, opacity: isRemoved ? 0.55 : 1 }}>
+        <td style={{ padding: '6px' }}>
+          <code>{entry.code}</code>
+        </td>
+        <td style={{ padding: '6px' }}>
+          {tabsNode ?? null}
+          {isRenaming ? (
+            <span style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+              <input
+                value={renameValue}
+                onChange={(e) => setRenameValue(e.target.value)}
+                data-testid={`rename-input-${entry.key}`}
+                style={{ fontSize: 12.5, padding: '4px 6px', border: `1px solid ${M.border}`, borderRadius: 6, background: M.paper, color: M.ink }}
+              />
+              <button type="button" onClick={() => commitRename(entry.key)} disabled={!renameValue.trim()} data-testid={`rename-save-${entry.key}`}>
+                Lưu
+              </button>
+              <button type="button" onClick={cancelRename}>
+                Huỷ
+              </button>
+            </span>
+          ) : pending?.action === 'rename' ? (
+            <span>
+              <span style={{ textDecoration: 'line-through', color: M.soft }}>{entry.name}</span> <span>{pending.name}</span>{' '}
+              <em style={{ color: M.soft }}>(chờ chạy lại)</em>
+            </span>
+          ) : (
+            entry.name
+          )}
+        </td>
+        <td style={{ padding: '6px' }}>
+          <OriginBadge origin={entry.origin} />
+          {platformBadge}
+        </td>
+        <td style={{ padding: '6px' }}>
+          {isRemoved ? (
+            <span>
+              <em style={{ color: M.soft }}>Sẽ bỏ (chờ chạy lại)</em>{' '}
+              <button type="button" onClick={() => undoRemove(entry.key)} data-testid={`undo-remove-${entry.key}`}>
+                Hoàn tác
+              </button>
+            </span>
+          ) : (
+            <span style={{ display: 'flex', gap: 6 }}>
+              {!isRenaming ? (
+                <button
+                  type="button"
+                  onClick={() => startRename(entry.key, pending?.action === 'rename' ? pending.name : entry.name)}
+                  data-testid={`rename-btn-${entry.key}`}
+                >
+                  Đổi tên
+                </button>
+              ) : null}
+              <button type="button" onClick={() => removeScreen(entry.key)} data-testid={`remove-btn-${entry.key}`}>
+                Bỏ
+              </button>
+            </span>
+          )}
+        </td>
+      </tr>
+    );
+  }
+
+  function renderRow(row: ScreenRow) {
+    if (row.kind === 'single') return renderScreenRow(row.entry);
+    const selectedKey = selectedGroupMember[row.groupKey] ?? row.members[0]?.key ?? '';
+    const selectedEntry = row.members.find((m) => m.key === selectedKey) ?? row.members[0]!;
+    const tabs = (
+      <GroupPlatformTabs
+        groupKey={row.groupKey}
+        members={row.members}
+        selectedKey={selectedEntry.key}
+        onSelect={(key) => setSelectedGroupMember((prev) => ({ ...prev, [row.groupKey]: key }))}
+      />
+    );
+    return renderScreenRow(selectedEntry, tabs);
+  }
+
   return createPortal(
     <div
       role="dialog"
@@ -294,73 +501,7 @@ export function ScreenListManager({ projectId, onClose }: { projectId: string; o
                   <th style={{ padding: '4px 6px' }}>Thao tác</th>
                 </tr>
               </thead>
-              <tbody>
-                {manifest.screens.map((s) => {
-                  const pending = pendingActionFor(overrides, s.key);
-                  const isRemoved = pending?.action === 'remove';
-                  const isRenaming = renamingKey === s.key;
-                  return (
-                    <tr key={s.key} data-testid={`screen-row-${s.key}`} style={{ borderTop: `1px solid ${M.border}`, opacity: isRemoved ? 0.55 : 1 }}>
-                      <td style={{ padding: '6px' }}>
-                        <code>{s.code}</code>
-                      </td>
-                      <td style={{ padding: '6px' }}>
-                        {isRenaming ? (
-                          <span style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                            <input
-                              value={renameValue}
-                              onChange={(e) => setRenameValue(e.target.value)}
-                              data-testid={`rename-input-${s.key}`}
-                              style={{ fontSize: 12.5, padding: '4px 6px', border: `1px solid ${M.border}`, borderRadius: 6, background: M.paper, color: M.ink }}
-                            />
-                            <button type="button" onClick={() => commitRename(s.key)} disabled={!renameValue.trim()} data-testid={`rename-save-${s.key}`}>
-                              Lưu
-                            </button>
-                            <button type="button" onClick={cancelRename}>
-                              Huỷ
-                            </button>
-                          </span>
-                        ) : pending?.action === 'rename' ? (
-                          <span>
-                            <span style={{ textDecoration: 'line-through', color: M.soft }}>{s.name}</span> <span>{pending.name}</span>{' '}
-                            <em style={{ color: M.soft }}>(chờ chạy lại)</em>
-                          </span>
-                        ) : (
-                          s.name
-                        )}
-                      </td>
-                      <td style={{ padding: '6px' }}>
-                        <OriginBadge origin={s.origin} />
-                      </td>
-                      <td style={{ padding: '6px' }}>
-                        {isRemoved ? (
-                          <span>
-                            <em style={{ color: M.soft }}>Sẽ bỏ (chờ chạy lại)</em>{' '}
-                            <button type="button" onClick={() => undoRemove(s.key)} data-testid={`undo-remove-${s.key}`}>
-                              Hoàn tác
-                            </button>
-                          </span>
-                        ) : (
-                          <span style={{ display: 'flex', gap: 6 }}>
-                            {!isRenaming ? (
-                              <button
-                                type="button"
-                                onClick={() => startRename(s.key, pending?.action === 'rename' ? pending.name : s.name)}
-                                data-testid={`rename-btn-${s.key}`}
-                              >
-                                Đổi tên
-                              </button>
-                            ) : null}
-                            <button type="button" onClick={() => removeScreen(s.key)} data-testid={`remove-btn-${s.key}`}>
-                              Bỏ
-                            </button>
-                          </span>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
+              <tbody>{rows.map(renderRow)}</tbody>
             </table>
           )}
 
