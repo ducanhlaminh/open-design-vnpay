@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Background, Controls, Handle, Position, ReactFlow, ReactFlowProvider, useNodesState,
-  type Edge, type Node, type NodeProps, type ReactFlowInstance,
+  Background, BaseEdge, Controls, EdgeLabelRenderer, Handle, MarkerType, Position, ReactFlow, ReactFlowProvider,
+  getBezierPath, getSmoothStepPath, useNodesState,
+  type Edge, type EdgeProps, type Node, type NodeProps, type ReactFlowInstance,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 
@@ -113,10 +114,32 @@ export function layoutScreenFlow(model: ScreenFlowCanvasModel): ScreenFlowLayout
   const maxColumns = Math.max(1, ...[...layers.values()].map((layer) => layer.length));
   const width = Math.max(760, PADDING_X * 2 + maxColumns * NODE_WIDTH + (maxColumns - 1) * COLUMN_GAP + 120);
   const nodes: LayoutNode[] = [];
+  // Barycenter ordering: trong mỗi hàng, xếp node theo trung bình toạ độ x
+  // của các node CHA (cạnh semantic) đã đặt ở các hàng trên — con đứng ngay
+  // dưới cha thay vì theo thứ tự khai báo, cạnh bớt vòng chéo qua nhánh khác.
+  // Node không có cha đã đặt (hàng đầu, hoặc cha cùng hàng) giữ thứ tự gốc
+  // (sort ổn định, key so sánh Infinity) — hàng 1 nhánh không đổi gì.
+  const placedX = new Map<string, number>();
+  const semanticParents = new Map<string, string[]>();
+  for (const edge of edges.filter(isSemantic)) {
+    semanticParents.set(edge.to, [...(semanticParents.get(edge.to) ?? []), edge.from]);
+  }
   for (const [layer, screens] of [...layers].sort(([a], [b]) => a - b)) {
-    const rowWidth = screens.length * NODE_WIDTH + Math.max(0, screens.length - 1) * COLUMN_GAP;
+    const barycenter = (key: string): number => {
+      const xs = (semanticParents.get(key) ?? []).map((parent) => placedX.get(parent)).filter((x): x is number => x != null);
+      return xs.length ? xs.reduce((sum, x) => sum + x, 0) / xs.length : Number.POSITIVE_INFINITY;
+    };
+    const ordered = screens
+      .map((screen, index) => ({ screen, index, center: barycenter(screen.key) }))
+      .sort((a, b) => (a.center === b.center ? a.index - b.index : a.center - b.center))
+      .map((entry) => entry.screen);
+    const rowWidth = ordered.length * NODE_WIDTH + Math.max(0, ordered.length - 1) * COLUMN_GAP;
     const startX = (width - rowWidth) / 2;
-    screens.forEach((screen, column) => nodes.push({ key: screen.key, name: screen.name, x: startX + column * (NODE_WIDTH + COLUMN_GAP), y: PADDING_Y + layer * (NODE_HEIGHT + ROW_GAP), unlinked: false }));
+    ordered.forEach((screen, column) => {
+      const x = startX + column * (NODE_WIDTH + COLUMN_GAP);
+      placedX.set(screen.key, x + NODE_WIDTH / 2);
+      nodes.push({ key: screen.key, name: screen.name, x, y: PADDING_Y + layer * (NODE_HEIGHT + ROW_GAP), unlinked: false });
+    });
   }
   const unlinked = model.screens.filter((screen) => unlinkedKeys.has(screen.key) || (!screen.linked && !edgeKeys.has(screen.key)));
   const lastLinkedBottom = nodes.length ? Math.max(...nodes.map((node) => node.y + NODE_HEIGHT)) : PADDING_Y;
@@ -143,29 +166,137 @@ function ScreenNodeView({ data }: NodeProps<ScreenNode>) {
     <button type="button" className={`${styles.nodeCard} ${data.unlinked ? styles.unlinkedNode : ''} ${data.selected ? styles.selectedNode : ''}`} aria-pressed={data.selected} aria-label={`Mở màn hình ${data.name}`} title={data.name} onClick={data.onOpen}>
       <Handle id="main-in" type="target" position={Position.Top} className={styles.mainHandle} />
       <Handle id="aux-in" type="target" position={Position.Right} className={styles.auxHandle} />
+      {/* Handle TRÁI cho cặp cạnh 2 chiều: hai chiều cùng bám bên phải thì
+          đường + label đè nhau — chiều ngược tách sang trái (buildEdges). */}
+      <Handle id="aux-in-left" type="target" position={Position.Left} className={styles.auxHandle} />
       <span className={styles.nodeCode}>{data.code}</span>
       <span className={styles.nodeName}>{displayName(data.name, data.code)}</span>
       <Handle id="main-out" type="source" position={Position.Bottom} className={styles.mainHandle} />
       <Handle id="aux-out" type="source" position={Position.Right} className={styles.auxHandle} />
+      <Handle id="aux-out-left" type="source" position={Position.Left} className={styles.auxHandle} />
     </button>
   );
 }
 const NODE_TYPES = { screen: ScreenNodeView };
+
+// Custom edge: path vẽ trong SVG như thường, nhưng LABEL render qua
+// EdgeLabelRenderer — một lớp HTML nổi TRÊN toàn bộ lớp cạnh. Label built-in
+// của React Flow nằm cùng lớp SVG với path nên path của cạnh vẽ SAU gạch
+// xuyên qua chữ của cạnh vẽ trước (bug review: "eSIM / SIM Vật lý" bị một
+// đường kẻ ngang cắt đôi); nền trắng của label không cứu được vì thứ tự vẽ.
+type ScreenEdgeData = {
+  variant: 'smoothstep' | 'bezier';
+  borderRadius?: number;
+  offset?: number;
+  curvature?: number;
+  labelText?: string;
+  secondary?: boolean;
+} & Record<string, unknown>;
+type ScreenEdge = Edge<ScreenEdgeData, 'screen'>;
+function ScreenEdgeView({ sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, markerEnd, style, data }: EdgeProps<ScreenEdge>) {
+  const variant = data?.variant ?? 'smoothstep';
+  const [path, labelX, labelY] =
+    variant === 'bezier'
+      ? getBezierPath({ sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition, curvature: data?.curvature ?? 0.25 })
+      : getSmoothStepPath({ sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition, borderRadius: data?.borderRadius ?? 10, offset: data?.offset ?? 18 });
+  return (
+    <>
+      <BaseEdge path={path} markerEnd={markerEnd} style={style} />
+      {data?.labelText ? (
+        <EdgeLabelRenderer>
+          <div
+            style={{
+              position: 'absolute',
+              transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
+              pointerEvents: 'none',
+              fontSize: 11,
+              fontWeight: 550,
+              padding: '3px 8px',
+              borderRadius: 8,
+              background: 'var(--bg, #fff)',
+              border: '1px solid var(--border, #e1e5eb)',
+              color: data?.secondary ? 'var(--text-muted, #77736c)' : 'var(--text, #1a1916)',
+              maxWidth: 260,
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+            }}
+          >
+            {data.labelText}
+          </div>
+        </EdgeLabelRenderer>
+      ) : null}
+    </>
+  );
+}
+const EDGE_TYPES = { screen: ScreenEdgeView };
 function buildNodes(layout: ScreenFlowLayout, currentScreenKey: string | null, onOpenScreen: (key: string) => void, overrides?: ScreenFlowLayoutPositions | null): ScreenNode[] {
   return layout.nodes.map((node) => ({ id: node.key, type: 'screen', position: overrides?.[node.key] ?? { x: node.x, y: node.y }, data: { name: node.name, code: shortCode(node.key), selected: currentScreenKey === node.key, unlinked: node.unlinked, onOpen: () => onOpenScreen(node.key) }, draggable: !node.unlinked }));
 }
-function buildEdges(layout: ScreenFlowLayout, showSecondary: boolean): Edge[] {
-  return layout.edges.filter((edge) => showSecondary || !edge.secondary).map((edge) => ({
-    id: edge.id, source: edge.from, target: edge.to,
-    sourceHandle: edge.secondary ? 'aux-out' : 'main-out', targetHandle: edge.secondary ? 'aux-in' : 'main-in',
-    type: 'smoothstep', label: edge.label || undefined,
-    className: edge.secondary ? styles.secondaryEdge : styles.semanticEdge,
-    animated: edge.kind === 'inferred', deletable: false, selectable: false,
-    style: edge.secondary ? { strokeDasharray: '6 5' } : undefined,
-    labelStyle: { fontSize: 11, fontWeight: 550 },
-    labelBgStyle: { fill: 'var(--bg, #fff)', stroke: 'var(--border, #e1e5eb)' },
-    labelBgPadding: [8, 4] as [number, number], labelBgBorderRadius: 8,
-  }));
+export function buildEdges(layout: ScreenFlowLayout, showSecondary: boolean): Edge[] {
+  const visible = layout.edges.filter((edge) => showSecondary || !edge.secondary);
+  // Đếm thứ tự cạnh trong nhóm cùng node nguồn/đích để so le `offset` của
+  // smoothstep — mọi cạnh chính đều cắm vào CÙNG một handle giữa cạnh node,
+  // không so le thì các cạnh trùng đoạn thẳng và gộp thành một "bus" chung,
+  // hết phân biệt được cạnh nào của màn nào.
+  const bySource = new Map<string, number>();
+  const byTarget = new Map<string, number>();
+  // Cặp 2 CHIỀU (A→B và B→A cùng hiện): hai đường + hai label đè nhau nếu
+  // cùng bám một phía. Chiều ngược tách hẳn sang handle TRÁI: chiều xuôi ở
+  // giữa/bên phải, chiều ngược bên trái → label hai chiều nằm hai phía node.
+  // Key hướng qua JSON.stringify — key màn có thể chứa khoảng trắng ("MH 2")
+  // nên nối chuỗi trần sẽ nhập nhằng.
+  const byDirection = new Map(visible.map((edge) => [JSON.stringify([edge.from, edge.to]), edge] as const));
+  const reverseOf = (edge: LayoutEdge) => byDirection.get(JSON.stringify([edge.to, edge.from]));
+  const hasReverse = (edge: LayoutEdge) => reverseOf(edge) != null;
+  const isAux = (edge: LayoutEdge) => edge.secondary || edge.back;
+  return visible.map((edge) => {
+    // Cạnh chính đi NGƯỢC (quay lại màn đứng trên) tách khỏi lưới dọc: vòng
+    // qua handle bên cạnh bằng đường cong bezier — vẽ chung kiểu smoothstep
+    // với cạnh xuôi thì nó đâm xuyên các hàng giữa hai node.
+    const backSemantic = !edge.secondary && edge.back;
+    const useAux = edge.secondary || backSemantic;
+    // Chọn phía cho cạnh aux trong cặp 2 chiều: chiều ngược của một cạnh
+    // CHÍNH (smoothstep giữa hai node) sang trái — cạnh chính đã chiếm hành
+    // lang giữa còn aux phải là đất của điều hướng phụ; cặp mà CẢ HAI chiều
+    // đều aux (2 cạnh phụ, hoặc 2 màn cùng hàng trỏ nhau) chia trái/phải
+    // theo thứ tự key cho tất định.
+    const reverse = reverseOf(edge);
+    const auxLeft = useAux && reverse != null && (!isAux(reverse) ? true : edge.from > edge.to);
+    const sourceOrder = bySource.get(edge.from) ?? 0;
+    bySource.set(edge.from, sourceOrder + 1);
+    const targetOrder = byTarget.get(edge.to) ?? 0;
+    byTarget.set(edge.to, targetOrder + 1);
+    const stagger = Math.max(sourceOrder, targetOrder);
+    return {
+      id: edge.id, source: edge.from, target: edge.to,
+      sourceHandle: useAux ? (auxLeft ? 'aux-out-left' : 'aux-out') : 'main-out',
+      targetHandle: useAux ? (auxLeft ? 'aux-in-left' : 'aux-in') : 'main-in',
+      type: 'screen' as const,
+      // Cạnh aux trong cặp 2 chiều cong sâu hơn (curvature 0.5) để label ở
+      // giữa cung nằm hẳn ra ngoài hành lang cạnh xuôi, không kê lên nhau.
+      data: {
+        variant: (useAux ? 'bezier' : 'smoothstep') as 'bezier' | 'smoothstep',
+        ...(useAux
+          ? { curvature: hasReverse(edge) ? 0.5 : 0.25 }
+          : { borderRadius: 10, offset: 18 + (stagger % 4) * 12 }),
+        labelText: edge.label || undefined,
+        secondary: edge.secondary,
+      },
+      className: edge.secondary ? styles.secondaryEdge : styles.semanticEdge,
+      animated: edge.kind === 'inferred', deletable: false, selectable: false,
+      style: edge.secondary ? { strokeDasharray: '6 5' } : undefined,
+      // Đầu mũi tên chỉ HƯỚNG điều hướng — không có nó thì nhãn "Điều hướng"/
+      // "Mở màn hình" không nói được từ màn nào sang màn nào. Màu qua CSS var
+      // (marker của @xyflow render bằng inline style nên var() ăn theo theme).
+      markerEnd: {
+        type: MarkerType.ArrowClosed,
+        width: 15,
+        height: 15,
+        color: edge.secondary ? 'var(--text-muted, #77736c)' : 'var(--text, #1a1916)',
+      },
+    };
+  });
 }
 
 function ScreenFlowCanvasInner({ model, currentScreenKey, onOpenScreen, layoutPositions, layoutLocked, onLayoutPositionsChange, onLayoutLockedChange, onResetLayout }: ScreenFlowCanvasProps) {
@@ -206,7 +337,7 @@ function ScreenFlowCanvasInner({ model, currentScreenKey, onOpenScreen, layoutPo
       <div className={styles.canvas} role="img" aria-label="Sơ đồ luồng màn hình">
         <ReactFlow
           nodes={renderNodes}
-          edges={edges} nodeTypes={NODE_TYPES} onNodesChange={onNodesChange}
+          edges={edges} nodeTypes={NODE_TYPES} edgeTypes={EDGE_TYPES} onNodesChange={onNodesChange}
           onNodeDragStop={(_, __, draggedNodes) => {
             if (!onLayoutPositionsChange) return;
             const changed = new Map(draggedNodes.map((node) => [node.id, node.position]));

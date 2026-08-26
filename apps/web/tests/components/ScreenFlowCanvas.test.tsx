@@ -3,7 +3,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 
-import { layoutScreenFlow, ScreenFlowCanvas, type ScreenFlowCanvasModel } from '../../src/components/ScreenFlowCanvas';
+import { buildEdges, layoutScreenFlow, ScreenFlowCanvas, type ScreenFlowCanvasModel } from '../../src/components/ScreenFlowCanvas';
 
 class ResizeObserverMock {
   private callback: ResizeObserverCallback;
@@ -123,5 +123,59 @@ describe('ScreenFlowCanvas', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Đặt lại bố cục' }));
     expect(onResetLayout).toHaveBeenCalledTimes(1);
     expect(screen.getByRole('button', { name: 'Tự sắp xếp' })).toBeTruthy();
+  });
+});
+
+// Mũi tên + tách cạnh 2 chiều (review canvas 08/2026): mọi cạnh phải có
+// markerEnd chỉ hướng; cặp A→B / B→A không được cùng bám một phía node —
+// đường + label đè nhau là bug người dùng báo.
+describe('buildEdges', () => {
+  it('mọi cạnh có markerEnd; cạnh xuôi smoothstep so le offset', () => {
+    const edges = buildEdges(layoutScreenFlow(model), true);
+    expect(edges.length).toBe(2);
+    for (const edge of edges) {
+      expect(edge.markerEnd).toBeTruthy();
+    }
+    const forward = edges.find((edge) => edge.id === 'e1')!;
+    expect(forward.type).toBe('screen');
+    expect((forward.data as { variant?: string }).variant).toBe('smoothstep');
+    expect(forward.sourceHandle).toBe('main-out');
+    // Label đi qua data.labelText (custom edge render bằng EdgeLabelRenderer
+    // — lớp HTML trên SVG, cạnh khác không gạch xuyên chữ được).
+    expect((forward.data as { labelText?: string }).labelText).toContain('SIM du lịch Quốc tế');
+  });
+
+  it('cặp 2 chiều xuôi-chính/ngược-phụ: chiều ngược vòng sang handle TRÁI', () => {
+    const edges = buildEdges(layoutScreenFlow(model), true);
+    const back = edges.find((edge) => edge.id === 'e2')!;
+    expect(back.type).toBe('screen');
+    expect((back.data as { variant?: string }).variant).toBe('bezier');
+    expect(back.sourceHandle).toBe('aux-out-left');
+    expect(back.targetHandle).toBe('aux-in-left');
+  });
+
+  it('cặp 2 chiều mà CẢ HAI đều aux (cùng hàng trỏ nhau) chia đều hai phía', () => {
+    const twin: ScreenFlowCanvasModel = {
+      entryScreens: ['F__A'],
+      screens: [
+        { key: 'F__ROOT', name: 'Gốc', linked: true },
+        { key: 'F__A', name: 'A', linked: true },
+        { key: 'F__B', name: 'B', linked: true },
+      ],
+      edges: [
+        // ROOT rẽ ra A và B để A/B cùng một hàng (cùng rank).
+        { id: 'r1', from: 'F__ROOT', to: 'F__A', kind: 'primary' },
+        { id: 'r2', from: 'F__ROOT', to: 'F__B', kind: 'primary' },
+        { id: 'ab', from: 'F__A', to: 'F__B', kind: 'secondary', via: 'Sang B' },
+        { id: 'ba', from: 'F__B', to: 'F__A', kind: 'secondary', via: 'Về A' },
+      ],
+      unlinkedScreens: [],
+    };
+    const edges = buildEdges(layoutScreenFlow(twin), true);
+    const ab = edges.find((edge) => edge.id === 'ab')!;
+    const ba = edges.find((edge) => edge.id === 'ba')!;
+    const sides = new Set([ab.sourceHandle, ba.sourceHandle]);
+    expect(sides).toEqual(new Set(['aux-out', 'aux-out-left']));
+    expect(new Set([ab.targetHandle, ba.targetHandle])).toEqual(new Set(['aux-in', 'aux-in-left']));
   });
 });
