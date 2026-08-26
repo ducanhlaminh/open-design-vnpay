@@ -3198,6 +3198,11 @@ export function isUiPreviewFile(name: string): boolean {
   // DOCS_COMPONENT_FAILURE_NOTE) — same reasoning as review-khong-chay-duoc.md.
   if (base === 'comp-khong-chay-duoc.md') return true;
   if (base === 'screen.json') return true;
+  // dr-screens ("Phát hiện màn hình"): screens-discovered.json mở
+  // ScreensDiscoveredPreview (danh sách màn theo trang + khối bổ sung + đã
+  // loại trừ). Bản digest .md và comp/_screens.json (manifest máy-đọc, trước
+  // đây lọt fallback rồi render nhầm thành UX Spec toàn dấu "−") ẩn đi.
+  if (base === 'screens-discovered.json') return true;
   // dr-comp ("Màn hình → Component" 2.0): one entry per screen —
   // `comp/<SCREEN-KEY>.screen.json` opens ScreenComponentsPreview (rail of
   // every screen + wireframe + DS component panel). Its wireframes/*.html,

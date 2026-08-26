@@ -59,6 +59,7 @@ import { PipelineReactPreview } from './pipeline-preview/PipelineReactPreview';
 import { PipelineReactCanvas } from './pipeline-preview/PipelineReactCanvas';
 import { adaptScreenSpec } from './pipeline-preview/screen-adapter';
 import { SpecPreview, type SpecDoc } from './SpecPreview';
+import { ScreensDiscoveredPreview, isScreensDiscoveredDoc, type ScreensDiscoveredDoc } from './ScreensDiscoveredPreview';
 import { DocRedlinePreview } from './DocRedlinePreview';
 import { ComponentAuditPreview, isComponentAuditFile } from './ComponentAuditPreview';
 import { ScreenComponentsPreview, isScreenComponentsFile } from './ScreenComponentsPreview';
@@ -8523,18 +8524,44 @@ function SpecFileViewer({
     }
   }, [text, review, docsMockupReview, systemMap]);
 
+  // Output của stage "Phát hiện màn hình" (dr-screens): screens-discovered.json
+  // — có preview riêng (ScreensDiscoveredPreview), phải nhận diện TRƯỚC nhánh
+  // spec bên dưới vì nó không phải ux-spec.
+  const screensDiscovered = useMemo<ScreensDiscoveredDoc | null>(() => {
+    if (text == null || review || uxResearch || docsMockupReview || systemMap) return null;
+    try {
+      const p = JSON.parse(text) as unknown;
+      return isScreensDiscoveredDoc(p) ? p : null;
+    } catch {
+      return null;
+    }
+  }, [text, review, uxResearch, docsMockupReview, systemMap]);
+
   const spec = useMemo<SpecDoc | null>(() => {
-    if (text == null || review || uxResearch || docsMockupReview || systemMap) return null; // a review/research/map report is not a spec
+    if (text == null || review || uxResearch || docsMockupReview || systemMap || screensDiscovered) return null; // a review/research/map report is not a spec
     try {
       const parsed = JSON.parse(text) as SpecDoc;
       const hasJourneys = Array.isArray(parsed.journeys) && parsed.journeys.length > 0;
       const hasPersonas = Array.isArray(parsed.personas) && parsed.personas.length > 0;
       const hasScreens = Array.isArray(parsed.screens) && parsed.screens.length > 0;
+      // ScreensManifest (comp/_screens.json của dr-screens/dr-comp) cũng có
+      // mảng `screens` nhưng entry mang key/origin chứ không phải
+      // screen_type/components — KHÔNG phải ux-spec, để nó rơi xuống
+      // TextViewer thay vì render UxSpecView toàn dấu "−" (bug 0.8.143).
+      const looksLikeScreensManifest =
+        hasScreens &&
+        !hasJourneys &&
+        !hasPersonas &&
+        (parsed.screens as unknown[]).every((s) => {
+          const entry = s as Record<string, unknown> | null;
+          return !!entry && typeof entry.key === 'string' && typeof entry.origin === 'string';
+        });
+      if (looksLikeScreensManifest) return null;
       return hasJourneys || hasPersonas || hasScreens ? parsed : null;
     } catch {
       return null;
     }
-  }, [text, review, uxResearch, docsMockupReview, systemMap]);
+  }, [text, review, uxResearch, docsMockupReview, systemMap, screensDiscovered]);
 
   const displayText = useMemo(
     () => (text == null ? null : formatJsonFileTextForDisplay(file, text)),
@@ -8551,6 +8578,7 @@ function SpecFileViewer({
     !uxResearch &&
     !docsMockupReview &&
     !systemMap &&
+    !screensDiscovered &&
     !docsSpecReviewIndex
   ) {
     return <TextViewer projectId={projectId} file={file} />;
@@ -8625,8 +8653,11 @@ function SpecFileViewer({
           uxResearch === null &&
           docsMockupReview === null &&
           systemMap === null &&
+          screensDiscovered === null &&
           docsSpecReviewIndex === null) ? (
           <div className="viewer-empty">{t('fileViewer.loading')}</div>
+        ) : screensDiscovered && mode === 'preview' ? (
+          <ScreensDiscoveredPreview doc={screensDiscovered} />
         ) : docsSpecReviewIndex && mode === 'preview' ? (
           <DocsSpecReviewIndexPreview index={docsSpecReviewIndex} />
         ) : systemMap && mode === 'preview' ? (

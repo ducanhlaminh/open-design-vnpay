@@ -66,6 +66,16 @@ describe('isUiPreviewFile', () => {
     expect(isUiPreviewFile('docs-review/docs-feature/A/x.md')).toBe(true);
   });
 
+  // dr-screens ("Phát hiện màn hình", 0.8.143): Quick result mở
+  // screens-discovered.json (ScreensDiscoveredPreview); digest .md và
+  // comp/_screens.json (manifest — trước đây lọt fallback rồi render nhầm
+  // thành UX Spec) phải ẩn.
+  it('matches dr-screens screens-discovered.json and hides its siblings', () => {
+    expect(isUiPreviewFile('docs-review/screens-discovered.json')).toBe(true);
+    expect(isUiPreviewFile('docs-review/screens-discovered.md')).toBe(false);
+    expect(isUiPreviewFile('docs-review/comp/_screens.json')).toBe(false);
+  });
+
   // ds-lab (0.8.105): Quick result of "Đề xuất kit" opened on kit-plan.json
   // (raw JSON, sorted first) instead of the human table kit-plan.md — the user
   // read it as "no Quick result". Readable Lab outputs are previewable; their
