@@ -9771,7 +9771,26 @@ export async function startServer({
         .readFile(path.join(cwd, SCREENS_OVERRIDES_REL), 'utf8')
         .then((raw) => parseScreensOverrides(raw).doc)
         .catch(() => null);
-      const body: { manifest: ScreensManifest | null; overrides: ScreensOverrides | null } = { manifest, overrides };
+      // screen-variants WP-V5 (T9): variantDrift là field CỘNG THÊM optional —
+      // không đổi 2 field manifest/overrides mà WP13b đã đóng contract. Đọc
+      // khoan dung: file thiếu, JSON hỏng, hoặc findings không phải mảng đều
+      // trả null (UI coi như không có lệch), không throw.
+      const variantDrift = await fs.promises
+        .readFile(path.join(cwd, VARIANT_DRIFT_FILE), 'utf8')
+        .then((raw) => {
+          try {
+            const parsed = JSON.parse(raw) as VariantDriftReport;
+            return Array.isArray(parsed?.findings) ? parsed : null;
+          } catch {
+            return null;
+          }
+        })
+        .catch(() => null);
+      const body: { manifest: ScreensManifest | null; overrides: ScreensOverrides | null; variantDrift: VariantDriftReport | null } = {
+        manifest,
+        overrides,
+        variantDrift,
+      };
       res.json(body);
     } catch (err) {
       res.status(500).json({ error: String(err) });
@@ -17728,6 +17747,11 @@ export async function startServer({
             await fs.promises.writeFile(path.join(cwd, VARIANT_DRIFT_FILE), JSON.stringify(report, null, 2), 'utf8');
             noteParts.push(`Lệch biến thể (VARIANT-DRIFT): ${variantDrift.findings.length} chỗ lệch giữa các biến thể nền tảng — xem ${VARIANT_DRIFT_FILE}.`);
             console.log(`[docs-comp] variant-drift: ${variantDrift.findings.length} finding(s) → ${VARIANT_DRIFT_FILE}`);
+          } else {
+            // Xóa file cũ: nếu lượt chạy trước có lệch rồi tài liệu được sửa
+            // xong chạy lại còn 0 finding, file cũ vẫn nằm đó và route GET
+            // /docs-review/screens sẽ trả drift đã lỗi thời (stale).
+            await fs.promises.rm(path.join(cwd, VARIANT_DRIFT_FILE), { force: true });
           }
         }
 

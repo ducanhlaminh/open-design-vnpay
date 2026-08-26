@@ -33,9 +33,24 @@ import type {
 
 export type { ScreenOrigin, ScreensManifest, ScreenManifestEntry, ScreensOverrideEntry, ScreensOverrides };
 
+// screen-variants WP-V5 (T9): shape của comp/_variant-drift.json (daemon:
+// apps/daemon/src/variant-drift-scan.ts). Khai LOCAL thay vì import từ
+// @open-design/contracts vì package đó chưa có DTO này, và AGENTS.md cấm
+// `apps/web/**` import `apps/daemon/src/**` trực tiếp — field trên response
+// là optional (`variantDrift?`) nên daemon cũ (chưa ghi field này) vẫn tương
+// thích, UI coi vắng field = không có lệch.
+export type VariantDriftFinding = {
+  groupKey: string;
+  onlyIn: 'mobile' | 'web';
+  bullet: string;
+  counterpartKey: string;
+};
+export type VariantDriftReport = { schema_version: 1; findings: VariantDriftFinding[] };
+
 interface ScreensGetResponse {
   manifest: ScreensManifest | null;
   overrides: ScreensOverrides | null;
+  variantDrift?: VariantDriftReport | null;
 }
 
 const ORIGIN_LABEL: Record<ScreenOrigin, string> = { flow: 'Luồng', doc: 'Tài liệu', agent: 'Agent', user: 'Bạn thêm' };
@@ -122,20 +137,24 @@ function PlatformBadge({ platform }: { platform: 'mobile' | 'web' }) {
 }
 
 /** Tab App/Web cho một hàng nhóm — click đổi key thành viên đang chọn cho
- *  hàng đó; không đổi gì ở các nhóm khác. */
+ *  hàng đó; không đổi gì ở các nhóm khác. `driftCount` (screen-variants
+ *  WP-V5, T9) là optional — nhóm không có finding lệch giữ DOM y hệt trước
+ *  (không render chip), nên bất biến v1/v2 không-drift không đổi. */
 function GroupPlatformTabs({
   groupKey,
   members,
   selectedKey,
   onSelect,
+  driftCount,
 }: {
   groupKey: string;
   members: ScreenManifestEntry[];
   selectedKey: string;
   onSelect: (key: string) => void;
+  driftCount?: number;
 }) {
   return (
-    <div data-testid={`screen-group-tabs-${groupKey}`} style={{ display: 'flex', gap: 6, marginBottom: 4 }}>
+    <div data-testid={`screen-group-tabs-${groupKey}`} style={{ display: 'flex', gap: 6, marginBottom: 4, alignItems: 'center' }}>
       {members.map((m) => {
         if (!m.platform) return null;
         const active = m.key === selectedKey;
@@ -161,6 +180,25 @@ function GroupPlatformTabs({
           </button>
         );
       })}
+      {driftCount && driftCount > 0 ? (
+        <span
+          data-testid={`variant-drift-chip-${groupKey}`}
+          title="Mô tả tài liệu đang khác nhau giữa các biến thể App/Web của nhóm màn này — kiểm tra lại với BA."
+          style={{
+            display: 'inline-block',
+            padding: '1px 8px',
+            borderRadius: 999,
+            fontSize: 10.5,
+            fontWeight: 700,
+            color: M.red,
+            background: M.redBg,
+            border: `1px solid ${M.redBorder}`,
+            whiteSpace: 'nowrap',
+          }}
+        >
+          ⚠ lệch ({driftCount})
+        </span>
+      ) : null}
     </div>
   );
 }
@@ -200,6 +238,9 @@ export function ScreenListManager({ projectId, onClose }: { projectId: string; o
   // groupKey -> key thành viên đang chọn (tab App/Web); nhóm chưa có entry ở
   // đây thì mặc định thành viên đầu tiên (xem `rows` bên dưới).
   const [selectedGroupMember, setSelectedGroupMember] = useState<Record<string, string>>({});
+  // screen-variants WP-V5 (T9): findings lệch biến thể của lần chạy gần nhất
+  // — vắng field (daemon cũ) hoặc null đều coi như mảng rỗng (không lệch).
+  const [driftFindings, setDriftFindings] = useState<VariantDriftFinding[]>([]);
 
   useEffect(() => {
     let cancelled = false;
@@ -210,6 +251,7 @@ export function ScreenListManager({ projectId, onClose }: { projectId: string; o
         if (cancelled) return;
         setManifest(data.manifest ?? null);
         setOverrides(data.overrides?.overrides ?? []);
+        setDriftFindings(Array.isArray(data.variantDrift?.findings) ? data.variantDrift.findings : []);
       } catch {
         if (!cancelled) setLoadError('Không tải được danh sách màn hình — thử lại.');
       } finally {
@@ -263,6 +305,18 @@ export function ScreenListManager({ projectId, onClose }: { projectId: string; o
     }
     return out;
   }, [manifest]);
+
+  // screen-variants WP-V5 (T9): groupKey -> findings lệch của nhóm đó, dùng
+  // cho cả chip trên GroupPlatformTabs lẫn card tổng hợp bên dưới bảng.
+  const driftByGroup = useMemo(() => {
+    const map = new Map<string, VariantDriftFinding[]>();
+    for (const f of driftFindings) {
+      const arr = map.get(f.groupKey) ?? [];
+      arr.push(f);
+      map.set(f.groupKey, arr);
+    }
+    return map;
+  }, [driftFindings]);
 
   // Ghi ĐÈ toàn bộ overrides (không PATCH) — xem giải thích ở đầu file.
   async function putOverrides(next: ScreensOverrideEntry[]) {
@@ -430,6 +484,7 @@ export function ScreenListManager({ projectId, onClose }: { projectId: string; o
         members={row.members}
         selectedKey={selectedEntry.key}
         onSelect={(key) => setSelectedGroupMember((prev) => ({ ...prev, [row.groupKey]: key }))}
+        driftCount={driftByGroup.get(row.groupKey)?.length ?? 0}
       />
     );
     return renderScreenRow(selectedEntry, tabs);
@@ -504,6 +559,45 @@ export function ScreenListManager({ projectId, onClose }: { projectId: string; o
               <tbody>{rows.map(renderRow)}</tbody>
             </table>
           )}
+
+          {/* screen-variants WP-V5 (T9): card tổng hợp lệch biến thể — không
+              finding nào thì không render (giữ DOM y hệt trước, bất biến
+              v1/v2 không-drift). */}
+          {driftFindings.length > 0 ? (
+            <div
+              data-testid="variant-drift-card"
+              style={{
+                border: `1px solid ${M.redBorder}`,
+                background: M.redBg,
+                borderRadius: 10,
+                padding: '10px 12px',
+                display: 'grid',
+                gap: 8,
+              }}
+            >
+              <div style={{ fontSize: 12.5, fontWeight: 700, color: M.red }}>Lệch biến thể ({driftFindings.length})</div>
+              <p style={{ fontSize: 11.5, color: M.soft, margin: 0 }}>
+                Mô tả tài liệu đang khác nhau giữa các biến thể App/Web của cùng nhóm màn — kiểm tra lại với BA trước khi dựng UI.
+              </p>
+              <div style={{ display: 'grid', gap: 10 }}>
+                {[...driftByGroup.entries()].map(([groupKey, findings]) => {
+                  const groupName = manifest?.screens.find((s) => s.groupKey === groupKey)?.name ?? groupKey;
+                  return (
+                    <div key={groupKey} data-testid={`variant-drift-group-${groupKey}`}>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: M.ink }}>{groupName}</div>
+                      <ul style={{ margin: '2px 0 0', padding: 0, listStyle: 'none', display: 'grid', gap: 2 }}>
+                        {findings.map((f, i) => (
+                          <li key={i} style={{ fontSize: 11.5, color: M.ink }}>
+                            chỉ có ở {PLATFORM_TAB_LABEL[f.onlyIn]}: {f.bullet}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ) : null}
 
           {pendingAdds.length > 0 ? (
             <div data-testid="pending-adds">

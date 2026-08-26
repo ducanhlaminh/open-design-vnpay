@@ -8,7 +8,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 
 import { ScreenListManager } from '../../src/components/ScreenListManager';
-import type { ScreenManifestEntry, ScreensOverrideEntry, ScreensOverrides } from '../../src/components/ScreenListManager';
+import type {
+  ScreenManifestEntry,
+  ScreensOverrideEntry,
+  ScreensOverrides,
+  VariantDriftReport,
+} from '../../src/components/ScreenListManager';
 
 afterEach(() => {
   cleanup();
@@ -26,11 +31,16 @@ function jsonResponse(body: unknown, status = 200): Response {
 }
 
 /** fetch mock: GET trả manifest+overrides cố định; PUT trả `putResult`
- *  (mặc định 200 { ok: true }) và ghi lại body gửi lên vào `putCalls`. */
+ *  (mặc định 200 { ok: true }) và ghi lại body gửi lên vào `putCalls`.
+ *  `variantDrift` (screen-variants WP-V5, T9): không truyền → key này VẮNG
+ *  HẲN khỏi JSON trả về (giả lập daemon cũ chưa ghi field — `JSON.stringify`
+ *  tự bỏ key có giá trị `undefined`); truyền `null` → JSON giữ `"variantDrift":
+ *  null`. Cả hai ca UI phải coi như không có lệch. */
 function mockFetch(opts: {
   manifest: { schema_version: 1 | 2; screens: ScreenManifestEntry[] } | null;
   overrides?: ScreensOverrideEntry[];
   putResult?: Response | (() => Response);
+  variantDrift?: VariantDriftReport | null;
 }) {
   const putCalls: ScreensOverrides[] = [];
   const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
@@ -38,6 +48,7 @@ function mockFetch(opts: {
       return jsonResponse({
         manifest: opts.manifest,
         overrides: opts.overrides ? { schema_version: 1, overrides: opts.overrides } : null,
+        variantDrift: opts.variantDrift,
       });
     }
     if (url.endsWith('/docs-review/screens-overrides')) {
@@ -285,5 +296,57 @@ describe('ScreenListManager — nhóm biến thể (manifest schema_version 2)',
     expect(screen.queryByTestId('platform-badge')).toBeNull();
     expect(screen.queryAllByTestId(/^screen-tab-/).length).toBe(0);
     expect(screen.queryAllByTestId(/^screen-group-tabs-/).length).toBe(0);
+  });
+});
+
+// screen-variants WP-V5 (docs/screen-variants-spec.md §WP-V5, T9): daemon ghi
+// comp/_variant-drift.json (apps/daemon/src/variant-drift-scan.ts) — panel
+// đọc field cộng thêm `variantDrift` từ GET /docs-review/screens và hiện
+// chip cảnh báo trên hàng nhóm lệch + 1 card tổng hợp dưới bảng.
+const DRIFT_REPORT_LOGIN: VariantDriftReport = {
+  schema_version: 1,
+  findings: [
+    { groupKey: 'login__G-dang-nhap', onlyIn: 'mobile', bullet: 'Cho phép đăng nhập bằng vân tay.', counterpartKey: 'login__DN01--ib' },
+    { groupKey: 'login__G-dang-nhap', onlyIn: 'web', bullet: 'Hiển thị captcha sau 3 lần đăng nhập sai.', counterpartKey: 'login__DN01--mb' },
+  ],
+};
+
+describe('ScreenListManager — lệch biến thể (screen-variants WP-V5, T9)', () => {
+  it('c) manifest v2 2 nhóm + report 2 finding cùng nhóm login → card đúng tổng/tên nhóm/nội dung; chip chỉ ở nhóm login', async () => {
+    mockFetch({ manifest: { schema_version: 2, screens: SCREENS_V2 }, variantDrift: DRIFT_REPORT_LOGIN });
+    render(<ScreenListManager projectId="p1" onClose={vi.fn()} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('variant-drift-card')).toBeTruthy();
+    });
+    expect(screen.getByTestId('variant-drift-card').textContent).toContain('Lệch biến thể (2)');
+
+    const group = screen.getByTestId('variant-drift-group-login__G-dang-nhap');
+    expect(group.textContent).toContain('Đăng nhập');
+    expect(group.textContent).toContain('chỉ có ở App:');
+    expect(group.textContent).toContain('Cho phép đăng nhập bằng vân tay.');
+    expect(group.textContent).toContain('chỉ có ở Web:');
+    expect(group.textContent).toContain('Hiển thị captcha sau 3 lần đăng nhập sai.');
+
+    expect(screen.getByTestId('variant-drift-chip-login__G-dang-nhap')).toBeTruthy();
+    expect(screen.queryByTestId('variant-drift-chip-transfer__G-chuyen-tien')).toBeNull();
+  });
+
+  it('d1) field variantDrift VẮNG HẲN khỏi response (daemon cũ) → không card, không chip', async () => {
+    mockFetch({ manifest: { schema_version: 2, screens: SCREENS_V2 } });
+    render(<ScreenListManager projectId="p1" onClose={vi.fn()} />);
+
+    await waitFor(() => expect(screen.getByText('Màn hình (5)')).toBeTruthy());
+    expect(screen.queryByTestId('variant-drift-card')).toBeNull();
+    expect(screen.queryByTestId('variant-drift-chip-login__G-dang-nhap')).toBeNull();
+  });
+
+  it('d2) field variantDrift = null → không card, không chip', async () => {
+    mockFetch({ manifest: { schema_version: 2, screens: SCREENS_V2 }, variantDrift: null });
+    render(<ScreenListManager projectId="p1" onClose={vi.fn()} />);
+
+    await waitFor(() => expect(screen.getByText('Màn hình (5)')).toBeTruthy());
+    expect(screen.queryByTestId('variant-drift-card')).toBeNull();
+    expect(screen.queryByTestId('variant-drift-chip-login__G-dang-nhap')).toBeNull();
   });
 });
