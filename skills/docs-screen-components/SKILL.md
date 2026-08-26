@@ -99,7 +99,10 @@ Bạn **không review câu chữ, không sửa tài liệu, không sửa `flows/
   — PHẢI đọc các khoảng dòng này y như `section` chính, xem Chế độ SCREEN),
   `steps[]` (bước luồng diễn ra trên màn), `navOut[]` (đi sang màn nào,
   qua bước nào, điều kiện gì), `navIn[]`, `findings[]` (phát hiện UX của
-  dr-flow chạm màn này), `platformHint`; và `ds` (file nào của DS đang có).
+  dr-flow chạm màn này), `platform` (nền tảng CỦA MÀN NÀY, khi daemon suy
+  được theo section — xem luật `platform` ở Chế độ SCREEN dưới), `platformHint`
+  (tín hiệu yếu mức TÀI LIỆU, dùng làm fallback khi màn không có `platform`
+  riêng); và `ds` (file nào của DS đang có).
 - **Design System** (có file nào đọc file đó; thiếu là bình thường):
   `criteria/components.md` — danh mục ĐÓNG (`### \`#anchor\` Tên`); `criteria/
   catalog.md` — kiến thức chọn component + bảng Screen scaffolding; `criteria/
@@ -143,7 +146,14 @@ System và ghi **đúng một file** `comp/_role-map.json`:
 }
 ```
 
-- `platform`: `mobile` | `web` — theo tài liệu (kickoff có gợi ý), áp cho mọi màn.
+- `platform`: `mobile` | `web` — mức mặc định của lượt ROLE-MAP (kickoff gợi ý
+  theo cảm nhận chung của tài liệu), dùng để thiên vị biến thể role/component
+  khi liệt kê `roles[]`. **Platform là của TỪNG MÀN, không phải một giá trị
+  chung cho cả tài liệu**: tài liệu đa nền tảng (vd cùng khai cả "Màn hình
+  MB" lẫn "Màn hình IB") thì mỗi màn ở chế độ SCREEN đọc `platform` riêng của
+  chính nó trong kickoff (fallback `platformHint` khi màn không có `platform`
+  riêng) — các màn trong cùng lượt hoàn toàn có thể ra platform khác nhau;
+  đừng suy một platform duy nhất rồi áp cho mọi màn của tài liệu.
 - `roles[]`: **phủ đủ mọi vai trò mà các màn của feature sẽ cần** — đọc hết
   `steps`, `section.excerpt`, `referenceTable` của mọi màn để liệt kê (app
   bar, tab, search, list item, card, table, form input các loại, select, date
@@ -199,7 +209,12 @@ nằm ngoài `section`).
 }
 ```
 
-- `key`/`platform`: đúng như kickoff (`platform` = của role-map).
+- `key`: đúng SCREEN-KEY kickoff nêu.
+- `platform`: CỦA MÀN NÀY — đọc trường `platform` mà kickoff liệt kê cho đúng
+  màn này, fallback `platformHint` khi kickoff không có `platform` riêng cho
+  màn. Tài liệu đa nền tảng thì các màn khác nhau trong cùng lượt SCREEN có
+  thể ra `platform` khác nhau — KHÔNG suy theo `platform` của role-map hay
+  theo một platform chung cảm nhận từ cả tài liệu.
 - `elements[]`: mọi phần tử người dùng thấy/tương tác trên màn, theo thứ tự
   bố cục từ trên xuống. `id` ổn định, chỉ `[A-Za-z0-9_.-]`, duy nhất trong
   màn — wireframe dùng đúng id này ở `data-el`.

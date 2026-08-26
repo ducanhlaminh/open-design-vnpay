@@ -139,6 +139,27 @@ phụ lục/luồng ở trên để chốt.
   chắn bạn đang tách nhầm trường/khối con thành màn — hạ chúng xuống `blocks[]`.
 - Không tự bịa/gộp/tách. Không suy diễn màn KHÔNG có trong tài liệu.
 
+### Nhóm biến thể nền tảng (tài liệu đa nền tảng)
+
+Một số tài liệu (vd CR) khai CÙNG một màn nghiệp vụ lặp lại ở nhiều mục nền
+tảng khác nhau trong cùng một file — ví dụ bảng "Màn hình MB", bảng "Màn hình
+IB", hoặc mục "BO" riêng.
+
+- Màn trùng tên nhưng nằm ở section thuộc NỀN TẢNG KHÁC nhau (MB/IB/BO) là
+  HAI biến thể của một màn nghiệp vụ, KHÔNG gộp thành một entry `screens[]`:
+  giữ mỗi biến thể một dòng riêng (anchor riêng, mockup riêng), chỉ thêm hậu
+  tố nền tảng vào `code` (hoặc vào `name` khi `code` là `null`) — ví dụ
+  `SCR-003-MB` / `SCR-003-IB` — để daemon nhận ra đây là cùng một màn khác
+  biến thể chứ không phải trùng lặp do BA gõ lại.
+- Kickoff có thể kèm mục **"gợi ý nhóm"** — danh sách cặp tên gần-giống khác
+  nền tảng mà daemon tự phát hiện (vd "danh sách lý do" ở MB và "popup danh
+  sách lý do hỗ trợ" ở IB). Bạn CHỈ được xác nhận hoặc bác một cặp NẰM TRONG
+  danh sách gợi ý đó — KHÔNG tự bịa nhóm mới ngoài danh sách. Khi xác nhận
+  (hoặc bác) một cặp, phải nêu `anchorText` NGUYÊN VĂN của CẢ HAI phía (dòng
+  bảng/heading khai từng màn) làm bằng chứng; daemon sẽ đối chiếu tất định
+  anchor đó có tồn tại trong trang trước khi chấp nhận, cùng luật `anchorText`
+  ở trên. Không có mục "gợi ý nhóm" trong kickoff → bỏ qua phần này.
+
 ## Output — đúng 2 file
 
 ### `docs-review/screens-discovered.json`
@@ -173,6 +194,15 @@ phụ lục/luồng ở trên để chốt.
       "source": "docs-feature/2.1-PRD-Mua-SIM.md",
       "reason": "Tiêu đề mục liệt kê của tài liệu, không mô tả một giao diện cụ thể."
     }
+  ],
+  "groupSuggestions": [
+    {
+      "suggestionId": "danh-sach-ly-do__mb-ib",
+      "decision": "confirm",
+      "anchorTextA": "| Danh sách lý do | ... |",
+      "anchorTextB": "**Popup danh sách lý do hỗ trợ**",
+      "why": "Cùng luồng nhắc lý do hỗ trợ, chỉ khác cách trình bày MB/IB."
+    }
   ]
 }
 ```
@@ -188,7 +218,10 @@ loại khi `dr-comp` đọc lại, không cảnh báo riêng ở bước này):
   nhau, không ghép nhiều dòng làm một anchor.
 - `code`: mã màn tài liệu đã ghi (giữ nguyên, kể cả hậu tố) nếu có. Tài liệu
   không có mã → để `null`, **KHÔNG BỊA MÃ**; daemon tự đánh `X1`, `X2`… theo
-  thứ tự dòng anchor trong trang.
+  thứ tự dòng anchor trong trang. Màn là một biến thể nền tảng của cùng một
+  màn nghiệp vụ (xem "Nhóm biến thể nền tảng" trên) → thêm hậu tố `-MB`/`-IB`
+  vào cuối mã (`code` là `null` thì thêm vào cuối `name` thay vì bịa mã) —
+  không gộp hai biến thể thành một entry `screens[]`.
 - `name`: tên màn ngắn gọn, đúng chữ tài liệu dùng (không diễn giải lại).
 - `why` (tuỳ chọn): một câu ngắn giải thích vì sao đây là màn thật, hữu ích
   khi ranh giới không hiển nhiên (vd một popup).
@@ -206,6 +239,14 @@ loại khi `dr-comp` đọc lại, không cảnh báo riêng ở bước này):
   `partOf` nữa.
 - Mỗi trang trong `pages[]` **chỉ liệt kê MỘT LẦN** trong mảng `pages`; gộp
   toàn bộ màn của trang đó vào `screens[]` của đúng một mục.
+- `groupSuggestions[]` (tuỳ chọn, chỉ khi kickoff có mục "gợi ý nhóm"): mỗi
+  phần tử ứng với ĐÚNG MỘT gợi ý trong kickoff — `suggestionId` chép nguyên
+  văn id daemon đưa ra; `decision`: `"confirm"` (đúng là hai biến thể của
+  cùng một màn) hoặc `"reject"` (không liên quan); `anchorTextA`/
+  `anchorTextB`: chép nguyên văn dòng khai màn của MỖI phía, cùng luật
+  `anchorText` ở trên (duy nhất trong trang của nó); `why` tuỳ chọn. Không có
+  gợi ý nào trong kickoff, hoặc không xác nhận/bác cặp nào → bỏ hẳn field.
+  Không tự thêm phần tử ứng với cặp KHÔNG có trong danh sách gợi ý.
 
 ### `docs-review/screens-discovered.md`
 
@@ -218,8 +259,9 @@ bằng sub-bullet, ví dụ:
   - Khối bổ sung: Voucher
 ```
 
-và danh sách mục tài liệu bị loại kèm lý do (`excluded[]`), để người review
-hiểu nhanh quyết định của bạn mà không cần đọc JSON.
+danh sách mục tài liệu bị loại kèm lý do (`excluded[]`); và nếu kickoff có
+"gợi ý nhóm", một mục ngắn nêu cặp nào bạn xác nhận/bác kèm `anchorText` hai
+phía — để người review hiểu nhanh quyết định của bạn mà không cần đọc JSON.
 
 ## Hard rules
 
