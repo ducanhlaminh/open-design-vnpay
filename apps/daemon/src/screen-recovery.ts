@@ -211,7 +211,12 @@ const UI_TERMS = /\b(?:screen|page|form|dialog|modal|button|tab|app|web|ui)\b|m�
 
 function isUiCell(cell: ScreenRecoveryCell): boolean {
   const type = (cell.type ?? cell.kind ?? '').toLowerCase();
-  if (type === 'start' || type === 'end' || type === 'edge') return false;
+  // KHÔNG loại thẳng kind 'edge' (bug #ba03366c): sơ đồ kiểu sequence đặt
+  // thao tác UI TRÊN mũi tên ("Chọn icon Apple Pay ở MH trang chủ") — cell
+  // duy nhất mang bằng chứng UI chính là cạnh, và SKILL.md docs-flow-ux đã
+  // dặn agent trỏ cells vào id cạnh cho sơ đồ dạng này. Cạnh được xét label
+  // như node thường; label backend thuần vẫn bị loại ở dòng dưới.
+  if (type === 'start' || type === 'end') return false;
   if (BACKEND_TERMS.test(cell.label) && !UI_TERMS.test(cell.label)) return false;
   return UI_TERMS.test(cell.label);
 }

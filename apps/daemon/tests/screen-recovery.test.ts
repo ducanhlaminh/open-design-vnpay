@@ -31,6 +31,11 @@ const context: ScreenRecoveryContext = {
         { id: 'confirm', label: 'Khách hàng xác nhận', type: 'action' },
         { id: 'billing', label: 'Billing gạch nợ', type: 'action' },
         { id: 'end', label: 'Kết thúc', type: 'end' },
+        // Cạnh kiểu sequence-diagram (bug #ba03366c): thao tác UI nằm TRÊN
+        // mũi tên — dùng `kind` (không phải `type`) đúng như cells.json
+        // daemon ghi từ draw.io.
+        { id: 'e-tap', label: 'Chọn icon chức năng "Apple Pay" ở MH trang chủ', kind: 'edge' },
+        { id: 'e-api', label: 'API kiểm tra trạng thái thẻ', kind: 'edge' },
       ],
     },
   },
@@ -121,13 +126,33 @@ describe('validateScreenRecovery', () => {
   const backendOnly = candidate({ cells: ['billing'], diagramEvidence: [{ cellId: 'billing', label: 'Billing gạch nợ' }] });
   delete backendOnly.anchorText;
 
+  const backendEdgeOnly = candidate({ cells: ['e-api'], diagramEvidence: [{ cellId: 'e-api', label: 'API kiểm tra trạng thái thẻ' }] });
+  delete backendEdgeOnly.anchorText;
+
   it.each([
     ['start/end thuần', startEndOnly],
     ['backend thuần', backendOnly],
+    ['cạnh sequence label backend thuần', backendEdgeOnly],
   ])('loại candidate %s khi không có bằng chứng UI', (_label, value) => {
     const result = validateScreenRecovery({ schema_version: 1, candidates: [value] }, context);
     expect(result.accepted).toEqual([]);
     expect(result.rejected[0]?.reasons).toContain('candidate chỉ mô tả start/end/backend, không có bằng chứng UI');
+  });
+
+  // Bug #ba03366c: sơ đồ sequence chỉ có bằng chứng UI TRÊN cạnh — trước đây
+  // isUiCell loại thẳng kind 'edge' khiến 21/21 candidate hợp lệ bị từ chối
+  // và recovery không bao giờ qua được với tài liệu dạng này.
+  it('nhận candidate chỉ có cạnh sequence mang label thao tác UI (không anchorText)', () => {
+    const seq = candidate({
+      name: 'MH 1: Trang chủ',
+      cells: ['e-tap'],
+      diagramEvidence: [{ cellId: 'e-tap', label: 'Chọn icon chức năng "Apple Pay" ở MH trang chủ' }],
+    });
+    delete seq.anchorText;
+    const result = validateScreenRecovery({ schema_version: 1, candidates: [seq] }, context);
+    expect(result.rejected).toEqual([]);
+    expect(result.accepted).toHaveLength(1);
+    expect(result.accepted[0]?.cells).toEqual(['e-tap']);
   });
 
   it('dedupe cùng screen, gộp nhiều cell và sinh AUTO key ổn định', () => {

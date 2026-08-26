@@ -435,7 +435,12 @@ Quy tắc evidence:
   nằm ngoài code fence** trong file `source`. Không rút gọn, sửa chính tả hay
   tự dựng heading.
 - Mỗi `{cellId,label}` phải khớp nguyên văn một cell có thật trong diagram
-  as-is; `cellId` đó cũng phải có trong `cells`.
+  as-is; `cellId` đó cũng phải có trong `cells`. Với sơ đồ kiểu sequence,
+  cell là CẠNH vẫn được tính là bằng chứng UI **khi label của nó mô tả thao
+  tác người dùng trên màn** ("Chọn icon X ở MH trang chủ") — label chỉ nói
+  lời gọi hệ thống/backend thì không. Khi tài liệu .md có sẵn dòng tên màn
+  (heading/bold "MH 1: …"), hãy kèm luôn `anchorText` dòng đó: bằng chứng
+  từ tài liệu mạnh hơn và không phụ thuộc cách sơ đồ được vẽ.
 - `confidence` là số từ `0` đến `1`; `reason` giải thích ngắn vì sao evidence
   đó chứng minh đây là màn hình, không dùng reason thay evidence.
 - Nhiều cell cùng diễn ra trên một màn phải nằm trong **một candidate**. Không
