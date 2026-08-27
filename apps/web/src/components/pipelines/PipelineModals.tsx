@@ -3189,6 +3189,11 @@ const isScreenFile = (name: string) =>
 export function isUiPreviewFile(name: string): boolean {
   const lower = name.toLowerCase();
   const base = lower.split('/').pop() ?? '';
+  // Ẩn manifest/digest máy-đọc ở MỌI vị trí (feedback 08/2026): rail chỉ liệt
+  // kê trang nội dung. index.json từng lọt qua rule report-JSON cuối hàm chỉ
+  // vì nằm trong review/; summary.md (review/ digest, docs-feature/ digest)
+  // từng match rule trang .md phía dưới.
+  if (base === 'index.json' || base === 'summary.md') return false;
   // dr-review's "the run produced no review" note (sibling of `review/`, see
   // apps/daemon/src/docs-review.ts's DOCS_REVIEW_FAILURE_NOTE) — surfaced here
   // so Quick result shows the readable failure reason instead of an empty
@@ -3245,9 +3250,6 @@ export function isUiPreviewFile(name: string): boolean {
   if (/(^|\/)(docs|docs-feature)\/.+\.md$/.test(lower)) return base !== '_index.md';
   // Primary visual spec docs (UX Spec / Customer Journey).
   if (/-ux-spec\.json$/.test(base) || /-(customer-journey|journey|cj)\.json$/.test(base)) return true;
-  // docs-review's digest (review/summary.md) — the clone pages themselves
-  // already match the docs|docs-feature rule above.
-  if (/(^|\/)review\/summary\.md$/.test(lower)) return true;
   // Visual report previews — UX Heuristic Review + UX Research + docs-to-prd's
   // PRD Mockup Review (DocsReviewPreview).
   return /(^|\/)(heuristic-review|ux-research|review)\/[^/]*\.json$/.test(lower);
@@ -3700,9 +3702,24 @@ export function PipelineResultView({
 }) {
   const state = usePipelineResultFiles(projectId, pipeline, workflowId);
   const { active } = state;
+  // Toàn màn hình: phủ kín viewport bằng CSS (position fixed), KHÔNG dùng
+  // Fullscreen API của browser — API đó chặn được bởi permission/iframe và
+  // không test được trong jsdom; một lớp overlay thì hành xử y hệt ở mọi nơi.
+  const [fullscreen, setFullscreen] = useState(false);
+  useEffect(() => {
+    if (!fullscreen) return;
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key === 'Escape') setFullscreen(false);
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [fullscreen]);
 
   return (
-    <section className="pl-result-page" aria-label={`Quick result · ${pipeline.name}`}>
+    <section
+      className={`pl-result-page${fullscreen ? ' pl-result-page--fullscreen' : ''}`}
+      aria-label={`Quick result · ${pipeline.name}`}
+    >
       <header className="pl-result-page__header">
         <button type="button" className="pl-btn pl-result-page__back" onClick={onBack}>
           <Icon name="arrow-left" size={14} />
@@ -3717,6 +3734,15 @@ export function PipelineResultView({
           </span>
         </div>
         <div className="pl-result-page__actions">
+          <button
+            type="button"
+            className="pl-btn"
+            onClick={() => setFullscreen((v) => !v)}
+            title={fullscreen ? 'Thoát toàn màn hình (Esc)' : 'Phóng Quick result kín màn hình'}
+          >
+            <Icon name="maximize" size={13} />
+            <span>{fullscreen ? 'Thu nhỏ' : 'Toàn màn hình'}</span>
+          </button>
           {active ? (
             <button
               type="button"

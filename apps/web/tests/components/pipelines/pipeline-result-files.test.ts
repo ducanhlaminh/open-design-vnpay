@@ -66,6 +66,16 @@ describe('isUiPreviewFile', () => {
     expect(isUiPreviewFile('docs-review/docs-feature/A/x.md')).toBe(true);
   });
 
+  // Feedback 08/2026: rail chỉ liệt kê TRANG nội dung — manifest/digest
+  // máy-đọc (index.json, summary.md) ẩn ở mọi vị trí. review/index.json từng
+  // lọt qua rule report-JSON cuối hàm chỉ vì nằm trong review/.
+  it('hides index.json and summary.md everywhere in the rail', () => {
+    expect(isUiPreviewFile('docs-review/review/index.json')).toBe(false);
+    expect(isUiPreviewFile('docs-review/review/summary.md')).toBe(false);
+    expect(isUiPreviewFile('docs-review/docs-feature/summary.md')).toBe(false);
+    expect(isUiPreviewFile('docs-to-prd/review/summary.md')).toBe(false);
+  });
+
   // dr-screens ("Phát hiện màn hình", 0.8.143): Quick result mở
   // screens-discovered.json (ScreensDiscoveredPreview); digest .md và
   // comp/_screens.json (manifest — trước đây lọt fallback rồi render nhầm

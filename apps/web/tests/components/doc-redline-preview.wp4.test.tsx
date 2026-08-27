@@ -118,6 +118,13 @@ function clickButton(root: HTMLElement, label: string) {
   if (!btn) throw new Error(`không tìm thấy nút "${label}"`);
   fireEvent.click(btn);
 }
+/** Toolbar tự chỉnh mặc định ẨN sau nút "Tự chỉnh" — mọi test thao tác dàn
+ *  nút Sửa/Xoá/Thêm đều phải bật chế độ trước. */
+function enterEditMode(root: HTMLElement) {
+  const btn = Array.from(root.querySelectorAll('button')).find((b) => b.textContent?.includes('Tự chỉnh'));
+  if (!btn) throw new Error('không tìm thấy nút "Tự chỉnh"');
+  fireEvent.click(btn);
+}
 
 describe('DocRedlinePreview — wp4.yaml mục 2: "Thêm sau mục…"', () => {
   it('chọn một heading từ danh sách → lưu change add neo trên heading đó, KHÔNG ghi lại tài liệu (.md)', async () => {
@@ -128,6 +135,7 @@ describe('DocRedlinePreview — wp4.yaml mục 2: "Thêm sau mục…"', () => {
     await waitFor(() => {
       expect(container.querySelector('article')).not.toBeNull();
     });
+    enterEditMode(container);
 
     clickButton(container, 'Thêm sau mục…');
     const select = getByRole('combobox', { name: 'Chọn mục' }) as HTMLSelectElement;
@@ -179,6 +187,7 @@ describe('DocRedlinePreview — wp4.yaml mục 2: "Thêm sau mục…"', () => {
     await waitFor(() => {
       expect(container.querySelector('article')).not.toBeNull();
     });
+    enterEditMode(container);
     const btn = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Thêm sau mục…');
     expect(btn, 'phải có nút "Thêm sau mục…"').toBeTruthy();
     expect(btn!.disabled).toBe(true);
@@ -213,6 +222,7 @@ describe('DocRedlinePreview — wp4.yaml mục 2: "Thêm sau mục…"', () => {
     await waitFor(() => {
       expect(container.querySelector('article')).not.toBeNull();
     });
+    enterEditMode(container);
 
     clickButton(container, 'Thêm sau mục…');
     const select = getByRole('combobox', { name: 'Chọn mục' }) as HTMLSelectElement;
@@ -272,6 +282,7 @@ describe('DocRedlinePreview — wp4.yaml mục 3: select "Loại" trong composer
     await waitFor(() => {
       expect(container.querySelector('article')).not.toBeNull();
     });
+    enterEditMode(container);
 
     selectText(container, 'Người dùng nhập mã OTP.');
     fireEvent.click(getByRole('button', { name: 'Sửa đoạn chọn' }));
@@ -300,6 +311,7 @@ describe('DocRedlinePreview — wp4.yaml mục 3: select "Loại" trong composer
     await waitFor(() => {
       expect(container.querySelector('article')).not.toBeNull();
     });
+    enterEditMode(container);
 
     selectText(container, 'Người dùng nhập mã OTP.');
     fireEvent.click(getByRole('button', { name: 'Thêm sau đoạn chọn' }));
@@ -326,6 +338,7 @@ describe('DocRedlinePreview — wp4.yaml mục 3: select "Loại" trong composer
     await waitFor(() => {
       expect(container.querySelector('article')).not.toBeNull();
     });
+    enterEditMode(container);
 
     selectText(container, 'Người dùng nhập mã OTP.');
     fireEvent.click(getByRole('button', { name: 'Xoá đoạn chọn' }));

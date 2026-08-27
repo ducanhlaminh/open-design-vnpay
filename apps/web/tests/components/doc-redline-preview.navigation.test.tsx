@@ -35,6 +35,19 @@ describe('DocRedlinePreview navigation integration', () => {
     expect(calls.some((el) => (el as HTMLElement).dataset.changeId === 'del')).toBe(true);
   });
 
+  it('panel chi tiết đang mở thì Trước/Sau đổi nội dung panel theo mục điều hướng tới', async () => {
+    const { container, baseElement } = render(<DocRedlinePreview projectId="p" file={FILE} />);
+    const nav = await within(container).findByRole('navigation', { name: 'Điều hướng thay đổi' });
+    await waitFor(() => expect(container.querySelector('mark[data-change-id="add"]')).not.toBeNull());
+    fireEvent.click(container.querySelector('mark[data-change-id="add"]')!);
+    await waitFor(() => expect(baseElement.querySelector('[role="dialog"]')?.textContent).toContain('thêm'));
+
+    fireEvent.click(within(nav).getByRole('button', { name: 'Thay đổi sau' }));
+    await waitFor(() => expect(baseElement.querySelector('[role="dialog"]')?.textContent).toContain('sửa'));
+    fireEvent.click(within(nav).getByRole('button', { name: 'Thay đổi sau' }));
+    await waitFor(() => expect(baseElement.querySelector('[role="dialog"]')?.textContent).toContain('xoá'));
+  });
+
   it('keyboard điều hướng và đổi mode reset current', async () => {
     const { container } = render(<DocRedlinePreview projectId="p" file={FILE} />);
     const nav = await within(container).findByRole('navigation', { name: 'Điều hướng thay đổi' });

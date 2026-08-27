@@ -2729,6 +2729,23 @@
   box-shadow: var(--shadow-md);
 }
 
+/* Toàn màn hình: phủ kín viewport, đè lên nav rail/header app. Giữ nguyên
+   cấu trúc header + rail + stage — chỉ đổi khung chứa, để nút "Thu nhỏ"/Esc
+   trả về đúng trạng thái cũ không remount FileViewer. */
+.pl-result-page--fullscreen {
+  position: fixed;
+  inset: 0;
+  /* Cùng tầng với backdrop modal pipelines (1000): phải nổi trên header/tab
+     bar của app (z thấp hơn nhiều) — 90 từng bị header web đè lên; vẫn dưới
+     toast/overlay hệ thống (primitives 9000). */
+  z-index: 1000;
+  height: 100vh;
+  height: 100dvh;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+
 .pl-result-page__header {
   flex: none;
   display: grid;

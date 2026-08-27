@@ -4,76 +4,31 @@ import type { RuntimeModelOption } from '../types.js';
 import type { RuntimeAgentDef } from '../types.js';
 
 // Product decision 19/08/2026: Codex CLI runs pinned to Luna — MODEL is not a
-// user choice. Revised 21/08/2026: reasoning effort IS a user choice now
-// (Settings → agent → Reasoning, stored in agentModels.codex.reasoning);
-// `CODEX_DEFAULT_REASONING` only fills in when the user never picked one or
-// the stored value is stale/invalid. Revised 23/08/2026: MODEL is a user
-// choice again, but only among the CLOSED list below (the three GPT-5.6
-// siblings `codex debug models` lists on codex-cli 0.147.0: Luna / Sol /
-// Terra) — no live probing, no custom-typed ids; anything else falls back to
-// Luna. `CODEX_MODEL_OPTIONS[0]` is the default (SettingsDialog shows option
-// [0] when the user never picked one, so it MUST be the real default).
-//
-// Default effort: ONE notch above the model's own default (asked 19/08/2026,
-// revised down from `max`). `codex debug models` reports, for all three:
-// `default_reasoning_level: "medium"` over the ladder
-// low → medium → high → xhigh → max (Luna) / … → max → ultra (Sol, Terra).
-// One notch above `medium` is `high` ("Greater reasoning depth for complex
-// problems"). `max`/`ultra` buy depth on the hardest stages but cost latency
-// and quota on every stage, including the mechanical ones — which is exactly
-// why it's the user's call, not a pin.
+// user choice. Revised 21/08/2026 (reasoning thành user choice) rồi 23/08/2026
+// (model thành closed list Luna/Sol/Terra). Revised 27/08/2026: KHÓA lại cả
+// hai — model ghim Luna, reasoning effort KHÔNG đẩy xuống CLI nữa để Codex
+// dùng đúng default của chính nó như khi mới cài (`codex debug models`:
+// `default_reasoning_level: "medium"`). Lý do: model/effort thấp do người
+// dùng chọn làm các stage nặng suy luận (dr-review, dr-comp) sụp đổ; giá trị
+// đã lưu trong agentModels.codex.{model,reasoning} trở thành inert —
+// resolveCodexModel nuốt mọi id cũ (Sol/Terra) về Luna, còn reasoning không
+// còn picker (def bỏ reasoningOptions) và không còn `-c
+// model_reasoning_effort` trong argv.
 export const CODEX_MODEL_OPTIONS = [
   { id: 'gpt-5.6-luna', label: 'GPT-5.6-Luna' },
-  { id: 'gpt-5.6-sol', label: 'GPT-5.6-Sol' },
-  { id: 'gpt-5.6-terra', label: 'GPT-5.6-Terra' },
 ] as const;
 export const CODEX_DEFAULT_MODEL = CODEX_MODEL_OPTIONS[0].id;
-/** @deprecated tên cũ từ thời model ghim cứng — giữ cho caller/test cũ; nay
- *  là model MẶC ĐỊNH (Luna), không còn là model duy nhất. */
+/** @deprecated tên cũ — giữ cho caller/test cũ; nay model lại ghim Luna. */
 export const CODEX_FIXED_MODEL = CODEX_DEFAULT_MODEL;
-export const CODEX_DEFAULT_REASONING = 'high';
-// Bậc effort THẬT mà buildArgs chấp nhận đẩy xuống CLI — hợp của ladder
-// theo `codex debug models` cho 3 model trên (xem comment trên). `ultra` chỉ
-// Sol/Terra có — buildArgs hạ về `max` khi model là Luna.
-export const CODEX_REASONING_LADDER = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const;
-// Model KHÔNG có bậc `ultra` (theo `codex debug models`): chọn ultra với model
-// này thì hạ một nấc về `max` thay vì để CLI từ chối effort lạ.
-const CODEX_MODELS_WITHOUT_ULTRA: ReadonlySet<string> = new Set(['gpt-5.6-luna']);
-// Danh sách hiển thị cho picker: theo convention của def `pi`, option đầu là
-// sentinel 'default' — SettingsDialog hiển thị option [0] khi user chưa chọn,
-// nên option đầu PHẢI là hành vi mặc định thật (rơi về
-// CODEX_DEFAULT_REASONING trong buildArgs), không phải bậc thấp nhất.
-export const CODEX_REASONING_OPTIONS = [
-  { id: 'default', label: 'Default (High)' },
-  { id: 'low', label: 'Low' },
-  { id: 'medium', label: 'Medium' },
-  { id: 'high', label: 'High' },
-  { id: 'xhigh', label: 'XHigh' },
-  { id: 'max', label: 'Max' },
-  { id: 'ultra', label: 'Ultra (Sol/Terra — Luna hạ về Max)' },
-] as const;
 
 /** Model thật đẩy xuống CLI: id nằm trong CODEX_MODEL_OPTIONS thì giữ, còn
- *  lại (unset, sentinel 'default', id lạ/cũ) → CODEX_DEFAULT_MODEL. */
+ *  lại (unset, sentinel 'default', id lạ/cũ — kể cả Sol/Terra đã lưu từ
+ *  trước 27/08/2026) → CODEX_DEFAULT_MODEL. */
 export function resolveCodexModel(model: string | null | undefined): string {
   const id = typeof model === 'string' ? model.trim() : '';
   return (CODEX_MODEL_OPTIONS as readonly { id: string }[]).some((m) => m.id === id)
     ? id
     : CODEX_DEFAULT_MODEL;
-}
-
-/** Effort thật đẩy xuống CLI cho model đã resolve: bậc trên ladder thì giữ
- *  (trừ `ultra` với model không có bậc đó → `max`); còn lại →
- *  CODEX_DEFAULT_REASONING. */
-export function resolveCodexReasoning(
-  model: string,
-  reasoning: string | null | undefined,
-): string {
-  const effort = (CODEX_REASONING_LADDER as readonly string[]).includes(reasoning ?? '')
-    ? (reasoning as string)
-    : CODEX_DEFAULT_REASONING;
-  if (effort === 'ultra' && CODEX_MODELS_WITHOUT_ULTRA.has(model)) return 'max';
-  return effort;
 }
 
 // Retained even though the def below no longer wires up `listModels` (no
@@ -148,11 +103,11 @@ export const codexAgentDef = {
       '--profile-v2 ': 'profileFlagIsV2',
       '--profile <': 'profileFlag',
     },
-    // Closed model list (CODEX_MODEL_OPTIONS above, Luna first = default) —
-    // no live `codex debug models` probing. `parseCodexDebugModels` above
-    // stays exported but unused here.
+    // Model khóa Luna (27/08/2026) — danh sách một phần tử, không live
+    // probing. KHÔNG khai reasoningOptions: Settings không hiện picker
+    // reasoning nữa, effort để Codex CLI tự quyết theo default của nó.
+    // `parseCodexDebugModels` above stays exported but unused here.
     fallbackModels: [...CODEX_MODEL_OPTIONS],
-    reasoningOptions: [...CODEX_REASONING_OPTIONS],
     // Prompt is delivered via stdin pipe (gated by `promptViaStdin: true`
     // below) to avoid Windows `spawn ENAMETOOLONG` while keeping Codex on
     // its structured JSON stream. Recent Codex CLI versions reject a bare
@@ -228,17 +183,12 @@ export const codexAgentDef = {
       if (runtimeContext.cwd) {
         args.push('-C', runtimeContext.cwd);
       }
-      // Model follows the user's Settings choice (options.model) ONLY when
-      // it is one of CODEX_MODEL_OPTIONS; anything else falls back to Luna.
-      // Reasoning effort follows options.reasoning when it's a bậc THẬT trên
-      // ladder (ultra hạ về max cho model không có bậc đó); anything else
-      // (unset, sentinel 'default', stale stored value) falls back to
-      // CODEX_DEFAULT_REASONING. Codex accepts `-c key=value` config
-      // overrides; reasoning effort is exposed as `model_reasoning_effort`.
+      // Model khóa Luna (27/08/2026): mọi options.model — kể cả Sol/Terra
+      // còn lưu trong agentModels từ trước — đều resolve về Luna. Reasoning
+      // effort KHÔNG đẩy xuống CLI (không còn `-c model_reasoning_effort`):
+      // Codex tự dùng default của model như khi mới cài CLI.
       const modelId = resolveCodexModel(options.model);
-      const effort = resolveCodexReasoning(modelId, options.reasoning);
       args.push('--model', modelId);
-      args.push('-c', `model_reasoning_effort="${effort}"`);
       // Layer OD's per-run MCP profile on top of the user's base
       // ~/.codex/config.toml. The daemon writes the file at
       // `$CODEX_HOME/<name>.config.toml` BEFORE buildArgs is called

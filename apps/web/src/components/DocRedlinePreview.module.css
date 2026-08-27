@@ -82,7 +82,10 @@
   min-width: 0;
   height: 100%;
   overflow: auto;
-  padding: 20px 24px;
+  /* padding-top 0: thanh công cụ sticky (.docToolbarWp3) đứng ngay đầu cột và
+     tự mang padding của nó — cột mà còn đệm trên thì thanh bị hụt khỏi mép
+     khi ở vị trí tĩnh (margin âm kéo lên vùng bị overflow cắt). */
+  padding: 0 24px 20px;
 }
 
 /* Panel chi tiết change/note dựng cạnh phải (xem AnnotationDetailPanel). Nền
@@ -103,6 +106,43 @@
   flex: 0 0 auto;
   padding: 10px 16px;
   border-top: 1px solid var(--border, #e1e5eb);
+}
+
+/* Cụm nút chân panel: hành động CHÍNH (Chỉnh đề xuất / Lưu) mang màu nhấn,
+   hành động phụ (Bỏ / Hủy) viền thường — hai nút trơ cùng kiểu cạnh nhau
+   ("Sửa | Bỏ") bắt người dùng đọc chữ mới biết nút nào là gì. */
+.panelFooter {
+  gap: 8px;
+}
+.panelBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border: 1px solid var(--border, #e1e5eb);
+  border-radius: 8px;
+  background: var(--bg-panel, #fff);
+  color: var(--text, #1a1a1a);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.panelBtn:hover:not(:disabled) {
+  border-color: var(--accent, #0066b3);
+  color: var(--accent, #0066b3);
+}
+.panelBtn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.panelBtnPrimary {
+  border-color: var(--accent, #0066b3);
+  background: var(--accent, #0066b3);
+  color: #fff;
+}
+.panelBtnPrimary:hover:not(:disabled) {
+  opacity: 0.92;
+  color: #fff;
 }
 
 /* Màn hẹp: không còn chỗ cho hai cột — panel nổi lên trên mép phải như một
@@ -634,6 +674,45 @@
   font-size: 11px;
 }
 
+/* Nút bật chế độ "Tự chỉnh" — thứ DUY NHẤT hiện ở dải toolbar khi chưa bật:
+   mặc định màn preview để ĐỌC + duyệt đề xuất, sáu nút thao tác chỉ hiện khi
+   người dùng chủ động vào chế độ. Màu nhấn để đọc ra "đây là lối vào một chế
+   độ", không phải một nút thao tác ngang hàng. */
+.editModeToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border: 1px solid var(--accent, #0066b3);
+  border-radius: 7px;
+  background: var(--accent, #0066b3);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.editModeToggle:hover {
+  opacity: 0.92;
+}
+
+/* Nút "Xong" thoát chế độ — đẩy sang mép phải toolbar, tách khỏi dàn nút
+   thao tác để không bấm nhầm. */
+.editModeExit {
+  margin-left: auto;
+  padding: 4px 12px;
+  border: 1px solid var(--border, #e1e5eb);
+  border-radius: 7px;
+  background: var(--bg-subtle, #f5f6f8);
+  color: var(--text, #1a1a1a);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.editModeExit:hover {
+  border-color: var(--accent, #0066b3);
+  color: var(--accent, #0066b3);
+}
+
 .userToolbar button,
 .annotationComposer button {
   border: 1px solid var(--border, #e1e5eb);
@@ -660,6 +739,28 @@
 .toolbarError {
   color: var(--red, #dc2626);
   font-size: 11px;
+}
+
+/* Nhóm nút Tự chỉnh theo LOẠI (Thay đổi / Nhận xét) — nhãn nhóm nói trước mục
+   tạo ra sẽ hiện ở tab nào, ăn khớp với hai tab của DocRedlineModeControls. */
+.toolbarGroup {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px 3px 4px;
+  border: 1px dashed var(--border, #e1e5eb);
+  border-radius: 8px;
+}
+.toolbarGroupLabel {
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--bg-subtle, #f5f6f8);
+  color: var(--text-soft, #4b5563);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
 }
 
 .annotationComposer {
@@ -879,17 +980,134 @@
   overflow: auto;
 }
 
-/* Nhãn "Đã chỉnh" cạnh tiêu đề panel: nội dung đề xuất không còn là bản của
-   agent — người đọc phải thấy điều đó trước cả khi đọc diff. */
-.badgeEdited {
+/* Nhãn nguồn gốc cạnh tiêu đề panel — "Agent đề xuất" / "Bạn tự chỉnh" /
+   "Agent đề xuất · bạn đã chỉnh": ai viết nội dung này phải đọc ra được trước
+   cả khi đọc diff. Bản có bàn tay người dùng (originBadgeUser) mang màu nhấn
+   để tách khỏi đề xuất agent thuần. */
+.originBadge {
   margin-left: 8px;
   padding: 1px 7px;
   border-radius: 999px;
   font-size: 10px;
   font-weight: 600;
   vertical-align: 2px;
+  white-space: nowrap;
+  color: var(--text-soft, #4b5563);
+  background: var(--bg-subtle, #f5f6f8);
+  border: 1px solid var(--border, #e1e5eb);
+}
+.originBadgeUser {
   color: var(--accent, #0066b3);
-  background: color-mix(in srgb, var(--accent, #0066b3) 12%, transparent);
+  border-color: color-mix(in srgb, var(--accent, #0066b3) 45%, var(--border, #e1e5eb));
+  background: color-mix(in srgb, var(--accent, #0066b3) 10%, var(--bg-subtle, #f5f6f8));
+}
+
+/* Bình luận trong panel chi tiết — kiểu BONG BÓNG hội thoại: chữ trước, dòng
+   meta (thời gian + xoá) mờ bên dưới; góc trên-trái bo nhỏ hơn để đọc ra
+   "một lượt nói", tách khỏi các khối dữ liệu vuông vức (.detailPre) ở trên. */
+.commentList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.commentItem {
+  padding: 8px 10px 6px;
+  border: 1px solid var(--border, #e1e5eb);
+  border-radius: 10px;
+  border-top-left-radius: 3px;
+  background: var(--bg-subtle, #f5f6f8);
+}
+.commentText {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.commentMeta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 4px;
+  color: var(--text-muted, #6b7280);
+  font-size: 10px;
+}
+/* Nút xoá ẩn mình (mờ, không nền) — hiện rõ khi rê chuột vào bong bóng, đỏ
+   khi rê vào chính nó; không tranh mắt với nội dung bình luận. */
+.commentDelete {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted, #6b7280);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.45;
+}
+.commentItem:hover .commentDelete {
+  opacity: 1;
+}
+.commentDelete:hover:not(:disabled) {
+  background: var(--bg-panel, #fff);
+  color: var(--red, #dc2626);
+}
+/* Ô nhập + Gửi: khuôn composer chat — input bo tròn, KHÔNG tay kéo resize
+   (chiều cao cố định gọn, pre-wrap vẫn xuống dòng được khi gõ dài), nút Gửi
+   màu nhấn cùng ngôn ngữ .editModeToggle. */
+.commentComposer {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+  margin-top: 6px;
+}
+.commentInput {
+  flex: 1;
+  min-width: 0;
+  height: 36px;
+  min-height: 36px;
+  max-height: 120px;
+  resize: none;
+  padding: 8px 11px;
+  border: 1px solid var(--border, #e1e5eb);
+  border-radius: 10px;
+  background: var(--bg-panel, #fff);
+  color: var(--text, #1a1a1a);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.4;
+}
+.commentInput:focus {
+  outline: none;
+  border-color: var(--accent, #0066b3);
+  box-shadow: 0 0 0 2px var(--bg-subtle, #f5f6f8);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent, #0066b3) 18%, transparent);
+}
+.commentSend {
+  flex: none;
+  align-self: stretch;
+  padding: 0 14px;
+  border: 1px solid var(--accent, #0066b3);
+  border-radius: 10px;
+  background: var(--accent, #0066b3);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.commentSend:hover:not(:disabled) {
+  opacity: 0.92;
+}
+.commentSend:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
 /* Textarea chỉnh nội dung đề xuất (chế độ Sửa của panel). `font: inherit` +
@@ -1122,12 +1340,13 @@
   display: flex;
   justify-content: flex-end;
   /* Lớp nền phủ cho thanh sticky: không có nó thì chữ tài liệu cuộn XUYÊN QUA
-     sau lưng cụm Thay đổi/Nhận xét + Trước/Sau. Margin âm trải nền hết bề
-     ngang .docCol (nuốt padding 20px/24px của cột), padding bù lại đúng chỗ
-     cũ cho controls. Dòng background thứ hai (color-mix, kính mờ + blur) đè
-     lên dòng nền đặc ở trên — Chromium cũ bỏ qua color-mix thì vẫn còn nền
-     đặc var(--bg), không bao giờ rơi về trong suốt. */
-  margin: -20px -24px 12px;
+     sau lưng cụm Thay đổi/Nhận xét + Trước/Sau. Margin âm ngang trải nền hết
+     bề ngang .docCol (nuốt padding 24px của cột — cột không còn padding-top,
+     xem .docCol), padding bù lại đúng chỗ cũ cho controls. Dòng background
+     thứ hai (color-mix, kính mờ + blur) đè lên dòng nền đặc ở trên — Chromium
+     cũ bỏ qua color-mix thì vẫn còn nền đặc var(--bg), không bao giờ rơi về
+     trong suốt. */
+  margin: 0 -24px 12px;
   padding: 12px 24px 10px;
   border-bottom: 1px solid var(--border, #e1e5eb);
   background: var(--bg, #fff);

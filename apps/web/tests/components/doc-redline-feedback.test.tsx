@@ -44,7 +44,7 @@ vi.mock('../../src/providers/registry', () => ({
 }));
 vi.mock('../../src/components/Icon', () => ({ Icon: () => null }));
 
-const { DocRedlinePreview, parseDocChangesFile } = await import('../../src/components/DocRedlinePreview');
+const { DocRedlinePreview, parseDocChangesFile, narrowEditedLines } = await import('../../src/components/DocRedlinePreview');
 
 const FILE = {
   name: 'docs-review/review/docs/urd.md',
@@ -95,6 +95,17 @@ function latestSidecarWrite(): { schemaVersion: number; annotations: Array<Recor
   return JSON.parse(request.content);
 }
 
+function latestNotesWrite(): Array<Record<string, unknown>> {
+  const call = [...fetchMock.mock.calls].reverse().find((args) => {
+    const init = args[1] as RequestInit | undefined;
+    const body = JSON.parse(String(init?.body ?? '{}')) as { name?: string };
+    return body.name?.endsWith('.notes.json');
+  });
+  if (!call) throw new Error('missing notes write');
+  const request = JSON.parse(String((call[1] as RequestInit).body)) as { content: string };
+  return JSON.parse(request.content);
+}
+
 /** wp-doc-redline-nondestructive: khẳng định KHÔNG có lệnh ghi nào nhắm vào
  *  `file.name` (đuôi `.md`) — tài liệu không bao giờ bị ghi lại. */
 function expectNoMdWrite() {
@@ -121,6 +132,8 @@ describe('Docs Review annotations and confirmation', () => {
     const { container, getByRole } = render(<DocRedlinePreview projectId="p1" file={FILE} />);
     await waitFor(() => expect(container.querySelector('mark[data-change-id="agent-1"]')).not.toBeNull());
 
+    // Toolbar tự chỉnh mặc định ẨN — phải bật chế độ "Tự chỉnh" trước.
+    fireEvent.click(getByRole('button', { name: 'Tự chỉnh' }));
     selectText(container, 'Người dùng nhập OTP.');
     fireEvent.click(getByRole('button', { name: 'Sửa đoạn chọn' }));
     fireEvent.change(getByRole('textbox', { name: 'Nội dung mới' }), {
@@ -150,6 +163,7 @@ describe('Docs Review annotations and confirmation', () => {
     const { container, getByRole } = render(<DocRedlinePreview projectId="p1" file={FILE} />);
     await waitFor(() => expect(container.querySelector('mark[data-change-id="agent-1"]')).not.toBeNull());
 
+    fireEvent.click(getByRole('button', { name: 'Tự chỉnh' }));
     selectText(container, 'Người dùng nhập OTP.');
     fireEvent.click(getByRole('button', { name: button }));
     if (replacement) {
@@ -201,9 +215,12 @@ describe('Docs Review annotations and confirmation', () => {
       expect(el, 'phải mở panel chi tiết của agent-1').not.toBeNull();
       return el as HTMLElement;
     });
+    // Nguồn gốc phải đọc ra được ngay ở đầu panel: đề xuất agent chưa ai đụng.
+    expect(dialog.textContent).toContain('Agent đề xuất');
+    expect(dialog.textContent).not.toContain('bạn đã chỉnh');
     const btn = (label: string) =>
-      Array.from(dialog.querySelectorAll('button')).find((b) => b.textContent === label)!;
-    fireEvent.click(btn('Sửa'));
+      Array.from(dialog.querySelectorAll('button')).find((b) => b.textContent?.includes(label))!;
+    fireEvent.click(btn('Chỉnh đề xuất'));
 
     const textarea = dialog.querySelector<HTMLTextAreaElement>('textarea[aria-label="Nội dung sửa"]');
     expect(textarea, 'bấm Sửa phải mở textarea nội dung đề xuất').not.toBeNull();
@@ -223,12 +240,169 @@ describe('Docs Review annotations and confirmation', () => {
       before: 'Người dùng nhập mã xác thực.',
     });
     expectNoMdWrite();
-    // Lưu thành công thì thoát chế độ sửa — panel quay về diff với nội dung mới.
-    await waitFor(() => expect(dialog.querySelector('textarea')).toBeNull());
+    // Lưu thành công thì thoát chế độ sửa — panel quay về diff với nội dung
+    // mới (chỉ còn ô "Bình luận mới" luôn hiện, không còn textarea sửa), và
+    // badge nguồn gốc chuyển sang "Agent đề xuất · bạn đã chỉnh".
+    await waitFor(() => expect(dialog.querySelector('textarea[aria-label="Nội dung sửa"]')).toBeNull());
+    expect(dialog.textContent).toContain('Agent đề xuất · bạn đã chỉnh');
+  });
+
+  // Regression: listener uỷ quyền của cột chỉ gắn lại theo `loading`, nên nếu
+  // nó gọi thẳng openAnnotationDetail (closure đóng băng) thì change vừa tạo
+  // trong phiên tra vào mảng `changes` cũ → click mark mới không mở panel.
+  // Fix = openAnnotationDetailRef luôn trỏ bản mới nhất.
+  it('click mark của change NGƯỜI DÙNG vừa tạo trong phiên mở được panel chi tiết', async () => {
+    const { container, baseElement, getByRole } = render(<DocRedlinePreview projectId="p1" file={FILE} />);
+    await waitFor(() => expect(container.querySelector('mark[data-change-id="agent-1"]')).not.toBeNull());
+
+    fireEvent.click(getByRole('button', { name: 'Tự chỉnh' }));
+    selectText(container, 'Người dùng nhập OTP.');
+    fireEvent.click(getByRole('button', { name: 'Sửa đoạn chọn' }));
+    fireEvent.change(getByRole('textbox', { name: 'Nội dung mới' }), {
+      target: { value: 'Người dùng nhập OTP gồm 6 chữ số.' },
+    });
+    fireEvent.click(getByRole('button', { name: 'Lưu thay đổi' }));
+
+    const newMark = await waitFor(() => {
+      const m = Array.from(container.querySelectorAll<HTMLElement>('mark[data-change-id]')).find(
+        (el) => el.dataset.changeId !== 'agent-1' && !el.dataset.changeId?.startsWith('ref:'),
+      );
+      expect(m, 'phải có mark của change user mới tạo').toBeTruthy();
+      return m!;
+    });
+    fireEvent.click(newMark);
+    // Nội dung MỚI hiện qua EditDiffBlock (diff mức TỪ — câu bị tách thành
+    // run same/del/add), nên chỉ khẳng định phần chữ ĐƯỢC THÊM, không phải
+    // nguyên câu liền mạch. Badge nguồn gốc = "Bạn tự chỉnh" (origin user).
+    await waitFor(() => {
+      expect(baseElement.querySelector('[role="dialog"]')?.textContent).toContain('gồm 6 chữ số');
+    });
+    expect(baseElement.querySelector('[role="dialog"]')?.textContent).toContain('Bạn tự chỉnh');
+  });
+
+  // Composer "Sửa đoạn chọn" prefill nội dung thay thế = đoạn đã chọn (chỉnh
+  // tại chỗ), và narrowEditedLines thu hẹp change về đúng DÒNG thật sự đổi —
+  // vùng bôi trong preview và nội dung panel phải kể cùng một chuyện.
+  it('prefill "Sửa đoạn chọn" bằng chính đoạn đã chọn + chặn lưu khi chưa đổi gì', async () => {
+    const { container, getByRole } = render(<DocRedlinePreview projectId="p1" file={FILE} />);
+    await waitFor(() => expect(container.querySelector('mark[data-change-id="agent-1"]')).not.toBeNull());
+    fireEvent.click(getByRole('button', { name: 'Tự chỉnh' }));
+    selectText(container, 'Người dùng nhập OTP.');
+    fireEvent.click(getByRole('button', { name: 'Sửa đoạn chọn' }));
+    const textarea = getByRole('textbox', { name: 'Nội dung mới' }) as HTMLTextAreaElement;
+    expect(textarea.value).toBe('Người dùng nhập OTP.');
+    fireEvent.click(getByRole('button', { name: 'Lưu thay đổi' }));
+    await waitFor(() => expect(container.textContent).toContain('Nội dung mới chưa thay đổi'));
+    expect(() => latestSidecarWrite()).toThrow();
+  });
+
+  it('narrowEditedLines thu hẹp về đúng dòng đổi, giữ nguyên khi thuần thêm/xoá dòng', () => {
+    expect(narrowEditedLines('dòng một\ndòng hai\ndòng ba', 'dòng một\ndòng hai SỬA\ndòng ba')).toEqual({
+      before: 'dòng hai',
+      quote: 'dòng hai SỬA',
+    });
+    // Đổi nhiều dòng liền nhau: giữ trọn cụm đổi.
+    expect(narrowEditedLines('a\nb\nc\nd', 'a\nB\nC\nd')).toEqual({ before: 'b\nc', quote: 'B\nC' });
+    // Thuần xoá một dòng (vế quote rỗng sau khi cắt) → giữ nguyên vùng chọn.
+    expect(narrowEditedLines('a\nb\nc', 'a\nc')).toEqual({ before: 'a\nb\nc', quote: 'a\nc' });
+    // Một dòng đơn đổi chữ: không có gì để cắt.
+    expect(narrowEditedLines('câu cũ', 'câu mới')).toEqual({ before: 'câu cũ', quote: 'câu mới' });
+  });
+
+  // Bình luận: hội thoại bên lề trên MỘT change/note — ghi field `comments`
+  // vào sidecar qua đúng đường saveAction, KHÔNG sinh event (events là lịch
+  // sử nội dung đề xuất), và .md không bao giờ bị đụng.
+  it('thêm rồi xoá bình luận trên một chỗ sửa: ghi comments vào sidecar, không event, không .md', async () => {
+    const { container, baseElement } = render(<DocRedlinePreview projectId="p1" file={FILE} />);
+    await waitFor(() => expect(container.querySelector('mark[data-change-id="agent-1"]')).not.toBeNull());
+    fireEvent.click(container.querySelector('mark[data-change-id="agent-1"]')!);
+    const dialog = await waitFor(() => {
+      const el = baseElement.querySelector('[role="dialog"]');
+      expect(el).not.toBeNull();
+      return el as HTMLElement;
+    });
+
+    const input = () => dialog.querySelector<HTMLTextAreaElement>('textarea[aria-label="Bình luận mới"]')!;
+    expect(input(), 'panel phải có ô nhập bình luận').not.toBeNull();
+    fireEvent.change(input(), { target: { value: 'Cần đối chiếu lại với BA.' } });
+    fireEvent.click(Array.from(dialog.querySelectorAll('button')).find((b) => b.textContent === 'Gửi')!);
+
+    await waitFor(() => expect(latestSidecarWrite().annotations[0]?.comments).toMatchObject([
+      { text: 'Cần đối chiếu lại với BA.' },
+    ]));
+    expect(latestSidecarWrite().events).toEqual([]);
+    expectNoMdWrite();
+    // Panel hiện bình luận + đếm, và ô nhập được xoá trắng sau khi gửi.
+    await waitFor(() => expect(dialog.textContent).toContain('Bình luận (1)'));
+    expect(dialog.textContent).toContain('Cần đối chiếu lại với BA.');
+    expect(input().value).toBe('');
+
+    fireEvent.click(dialog.querySelector('button[aria-label="Xoá bình luận"]')!);
+    // Xoá bình luận cuối cùng: field `comments` biến mất khỏi sidecar (không
+    // giữ mảng rỗng), panel quay về "Bình luận" không số đếm.
+    await waitFor(() => expect(latestSidecarWrite().annotations[0]?.comments).toBeUndefined());
+    await waitFor(() => expect(dialog.textContent).not.toContain('Bình luận (1)'));
+  });
+
+  // Tự chỉnh THUỘC hệ loại Thay đổi/Nhận xét: "Tô đoạn chọn" tạo một NHẬN XÉT
+  // và preview tự chuyển sang tab Nhận xét để mục vừa tạo hiện ra ngay.
+  it('"Tô đoạn chọn" ghi vào notes.json và tự chuyển sang tab Nhận xét', async () => {
+    const { container, getByRole, getAllByRole } = render(<DocRedlinePreview projectId="p1" file={FILE} />);
+    await waitFor(() => expect(container.querySelector('mark[data-change-id="agent-1"]')).not.toBeNull());
+    fireEvent.click(getByRole('button', { name: 'Tự chỉnh' }));
+    // Toolbar nhóm nút theo đúng hai loại của hệ tab.
+    expect(getByRole('group', { name: 'Tạo thay đổi' }).textContent).toContain('Sửa đoạn chọn');
+    expect(getByRole('group', { name: 'Tạo nhận xét' }).textContent).toContain('Tô đoạn chọn');
+
+    selectText(container, 'Người dùng nhập OTP.');
+    // jsdom không tự bắn selectionchange khi addRange — bắn tay để nút
+    // "Tô đoạn chọn" (gate theo selection) bật lên như trên trình duyệt thật.
+    fireEvent(document, new Event('selectionchange'));
+    const highlightBtn = getByRole('button', { name: 'Tô đoạn chọn' }) as HTMLButtonElement;
+    await waitFor(() => expect(highlightBtn.disabled).toBe(false));
+    fireEvent.click(highlightBtn);
+    fireEvent.click(getByRole('button', { name: 'Lưu thay đổi' }));
+
+    await waitFor(() => expect(latestNotesWrite().at(-1)).toMatchObject({
+      origin: 'user',
+      anchor: 'Người dùng nhập OTP.',
+    }));
+    expectNoMdWrite();
+    // Đang đứng ở tab "Thay đổi" lúc tạo — sau khi lưu phải TỰ chuyển sang
+    // "Nhận xét" và mark của note vừa tạo hiện ra không cần bấm tab.
+    await waitFor(() => {
+      const selected = getAllByRole('tab').find((tab) => tab.getAttribute('aria-selected') === 'true');
+      expect(selected?.textContent).toContain('Nhận xét');
+    });
+    await waitFor(() => expect(container.querySelector('mark[data-change-id^="note:"]')).not.toBeNull());
+  });
+
+  it('tạo user edit khi đang ở tab Nhận xét thì tự quay về tab Thay đổi', async () => {
+    const { container, getByRole, getAllByRole } = render(<DocRedlinePreview projectId="p1" file={FILE} />);
+    await waitFor(() => expect(container.querySelector('mark[data-change-id="agent-1"]')).not.toBeNull());
+    fireEvent.click(getAllByRole('tab').find((tab) => tab.textContent?.includes('Nhận xét'))!);
+
+    fireEvent.click(getByRole('button', { name: 'Tự chỉnh' }));
+    selectText(container, 'Người dùng nhập OTP.');
+    fireEvent.click(getByRole('button', { name: 'Sửa đoạn chọn' }));
+    fireEvent.change(getByRole('textbox', { name: 'Nội dung mới' }), {
+      target: { value: 'Người dùng nhập OTP gồm 6 chữ số.' },
+    });
+    fireEvent.click(getByRole('button', { name: 'Lưu thay đổi' }));
+
+    await waitFor(() => expect(latestSidecarWrite().annotations.at(-1)).toMatchObject({ origin: 'user' }));
+    await waitFor(() => {
+      const selected = getAllByRole('tab').find((tab) => tab.getAttribute('aria-selected') === 'true');
+      expect(selected?.textContent).toContain('Thay đổi');
+    });
   });
 
   it('does not expose workflow completion inside an individual document preview', async () => {
-    const { queryByRole } = render(<DocRedlinePreview projectId="p1" file={FILE} />);
+    const { getByRole, queryByRole } = render(<DocRedlinePreview projectId="p1" file={FILE} />);
+    // Mặc định chỉ có nút vào chế độ "Tự chỉnh"; bật lên mới thấy dàn nút.
+    await waitFor(() => expect(queryByRole('button', { name: 'Tự chỉnh' })).toBeTruthy());
+    expect(queryByRole('button', { name: 'Sửa đoạn chọn' })).toBeNull();
+    fireEvent.click(getByRole('button', { name: 'Tự chỉnh' }));
     await waitFor(() => expect(queryByRole('button', { name: 'Sửa đoạn chọn' })).toBeTruthy());
     expect(queryByRole('button', { name: 'Xác nhận hoàn tất' })).toBeNull();
   });

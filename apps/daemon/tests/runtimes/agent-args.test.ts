@@ -537,23 +537,21 @@ test('kilo fetchModels falls back to fallbackModels when detection fails', async
   assert.equal(kilo.fallbackModels.length, 1);
 });
 
-// ---- fixed model / user-chosen reasoning (19/08/2026, revised 21/08) ------
-// Codex CLI stays pinned to Luna (`gpt-5.6-luna`) regardless of
-// `options.model` — including stale/legacy values ('default', an old stored
-// model id, etc). Reasoning effort is a USER choice since 21/08/2026:
-// `options.reasoning` is honored when it's on the ladder
-// (codex.reasoningOptions), anything else falls back to the default `high`.
+// ---- model khóa Luna, reasoning theo default CLI (27/08/2026) -------------
+// Codex CLI ghim `gpt-5.6-luna` bất kể `options.model` (kể cả Sol/Terra hay
+// giá trị stale), và KHÔNG đẩy `model_reasoning_effort` xuống CLI nữa —
+// effort do Codex tự quyết theo default của model như khi mới cài CLI.
 
-test('codex buildArgs pins --model gpt-5.6-luna but honors a valid options.reasoning', () => {
-  const cases: Array<{ options: Record<string, string>; effort: string }> = [
-    { options: {}, effort: 'high' },
-    { options: { model: 'gpt-5.5', reasoning: 'low' }, effort: 'low' },
-    { options: { reasoning: 'max' }, effort: 'max' },
-    // stale/legacy stored values fall back to the default
-    { options: { model: 'default', reasoning: 'default' }, effort: 'high' },
-    { options: { reasoning: 'totally-invalid' }, effort: 'high' },
+test('codex buildArgs pins --model gpt-5.6-luna and never passes reasoning effort', () => {
+  const cases: Array<Record<string, string>> = [
+    {},
+    { model: 'gpt-5.5', reasoning: 'low' },
+    { reasoning: 'max' },
+    { model: 'gpt-5.6-sol', reasoning: 'ultra' },
+    { model: 'default', reasoning: 'default' },
+    { reasoning: 'totally-invalid' },
   ];
-  for (const { options, effort } of cases) {
+  for (const options of cases) {
     const args = codex.buildArgs(
       '',
       [],
@@ -580,8 +578,8 @@ test('codex buildArgs pins --model gpt-5.6-luna but honors a valid options.reaso
     );
     assert.deepEqual(
       reasoningEntries,
-      [`model_reasoning_effort="${effort}"`],
-      `options=${JSON.stringify(options)}, args=${JSON.stringify(args)}`,
+      [],
+      `must not pass reasoning effort; options=${JSON.stringify(options)}, args=${JSON.stringify(args)}`,
     );
   }
 });

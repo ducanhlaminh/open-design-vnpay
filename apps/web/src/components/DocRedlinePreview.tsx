@@ -83,6 +83,8 @@ export interface DocRedlineChange {
    *  shape để không phải parse lại khi màn hình có chỗ hiển thị. */
   doc_refs?: string[];
   reason: string;
+  /** Bình luận người dùng trên chỗ sửa này — xem `DocAnnotationComment`. */
+  comments?: DocAnnotationComment[];
   /** `'system'` = sinh bởi một bước tự động KHÔNG phải LLM review (ví dụ
    *  `flows/<id>/ux-review.json` viết lại sơ đồ mermaid) — khác `'agent'`
    *  (LLM review) và `'user'` (người dùng tự sửa), nhưng dùng chung mọi cơ chế
@@ -103,10 +105,26 @@ export interface DocRedlineChange {
  *  của daemon. Note là phát hiện KHÔNG sửa được bằng cách sửa chữ (sai
  *  R-OVERLAY, component ngoài danh mục, thiếu cả một màn, sơ đồ rỗng), nên nó
  *  không có `before`/`quote` — chỉ có `anchor` để định vị vào tài liệu. */
+/** Một bình luận người dùng gắn vào MỘT change/note — lưu ngay trong phần tử
+ *  tương ứng của `.changes.json`/`.notes.json` (field `comments`), cùng đường
+ *  ghi non-destructive `saveAction` như mọi thao tác khác. Không có `author`:
+ *  mọi bình luận đều do người dùng viết từ panel (agent/daemon không ghi
+ *  field này), thêm field chỉ để lặp lại điều đó là mở đường dữ liệu mâu
+ *  thuẫn. */
+export interface DocAnnotationComment {
+  id: string;
+  text: string;
+  at: number;
+}
+
 export interface DocRedlineNote {
   id: string;
   kind: DocRedlineChangeKind;
   severity: DocRedlineSeverity;
+  /** Ai tạo nhận xét — file cũ không có field này thì coi là của agent (mọi
+   *  note dr-review sinh đều từ agent; note người dùng chỉ mới ghi origin từ
+   *  khi panel hiện nguồn gốc). */
+  origin?: 'agent' | 'user';
   rule_id?: string;
   /** Nguyên văn một đoạn trong bản GỐC để neo nhận xét vào đúng chỗ. Khi note
    *  mang `tableCells`, đây là MỘT dòng mã nguồn duy nhất nằm trong bảng — chỉ
@@ -125,6 +143,8 @@ export interface DocRedlineNote {
   doc_refs?: string[];
   finding: string;
   suggestion: string;
+  /** Bình luận người dùng trên nhận xét này — xem `DocAnnotationComment`. */
+  comments?: DocAnnotationComment[];
   status?: 'dismissed' | 'edited';
   sectionIndex?: number;
   sectionHeading?: string;
@@ -262,6 +282,24 @@ function claimUniqueId(id: string, seen: Set<string>): string {
   return out;
 }
 
+/** Đọc mảng `comments` của một change/note — cùng tinh thần khoan dung như
+ *  phần còn lại của parser: phần tử hỏng bị bỏ qua, mảng rỗng/không phải mảng
+ *  quy về `undefined` (không giữ `[]` để round-trip file không phình field
+ *  rỗng). */
+function parseComments(raw: unknown): DocAnnotationComment[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: DocAnnotationComment[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const c = item as Record<string, unknown>;
+    if (typeof c.id !== 'string' || !c.id.trim()) continue;
+    if (typeof c.text !== 'string' || !c.text.trim()) continue;
+    if (typeof c.at !== 'number' || !Number.isFinite(c.at)) continue;
+    out.push({ id: c.id, text: c.text, at: c.at });
+  }
+  return out.length > 0 ? out : undefined;
+}
+
 /** Parse a `*.changes.json` file's raw text into a change list. Tolerant of a
  *  PARTLY malformed array — a bad element is skipped, not fatal — because the
  *  point of this view is to show whatever reasons ARE readable, not to gate
@@ -306,6 +344,7 @@ export function parseDocChangesFile(raw: string): { changes: DocRedlineChange[];
         ? c.doc_refs.filter((ref): ref is string => typeof ref === 'string' && !!ref.trim())
         : undefined,
       reason: typeof c.reason === 'string' && c.reason.trim() ? c.reason : 'Người dùng tự chỉnh tài liệu.',
+      comments: parseComments(c.comments),
       origin: c.origin === 'user' ? 'user' : c.origin === 'system' ? 'system' : 'agent',
       operation: c.operation === 'add' || c.operation === 'edited' || c.operation === 'delete'
         ? c.operation
@@ -379,6 +418,7 @@ export function parseDocNotes(raw: string): DocRedlineNote[] | null {
       severity: (typeof n.severity === 'string' && SEV_SET.has(n.severity)
         ? n.severity
         : 'minor') as DocRedlineSeverity,
+      origin: n.origin === 'user' ? 'user' : undefined,
       rule_id: typeof n.rule_id === 'string' && n.rule_id.trim() ? n.rule_id : undefined,
       anchor: typeof n.anchor === 'string' ? n.anchor : '',
       tableCells: parseTableCells(n.tableCells),
@@ -387,6 +427,7 @@ export function parseDocNotes(raw: string): DocRedlineNote[] | null {
         : undefined,
       finding: n.finding,
       suggestion: typeof n.suggestion === 'string' ? n.suggestion : '',
+      comments: parseComments(n.comments),
       status: n.status === 'dismissed' ? 'dismissed' : n.status === 'edited' ? 'edited' : undefined,
       sectionIndex: typeof n.sectionIndex === 'number' && Number.isInteger(n.sectionIndex) && n.sectionIndex >= 0 ? n.sectionIndex : undefined,
       sectionHeading: typeof n.sectionHeading === 'string' ? n.sectionHeading : undefined,
@@ -507,6 +548,26 @@ export function changeHighlightSource(
   const op = changeOp(c);
   const raw = (op === 'add' ? c.anchor : c.before)?.trim();
   return raw ? { op, text: raw } : null;
+}
+
+/** Thu hẹp một chỗ SỬA của người dùng về đúng phần THẬT SỰ đổi, mức DÒNG: bôi
+ *  ba dòng nhưng chỉ chỉnh một thì change chỉ nên ôm dòng đó — không thì vùng
+ *  bôi trong preview (neo trên `before` đã thu hẹp qua khớp mờ) và nội dung
+ *  panel (hiện nguyên `before` ba dòng) kể hai chuyện khác nhau. Cắt phần đầu/
+ *  cuối GIỐNG HỆT nhau giữa hai bản; rơi về nguyên vẹn khi phần còn lại rỗng
+ *  một vế (thuần thêm/xoá dòng — thu hẹp nữa là mất neo hoặc mất nội dung). */
+export function narrowEditedLines(before: string, quote: string): { before: string; quote: string } {
+  const b = before.split('\n');
+  const q = quote.split('\n');
+  let start = 0;
+  while (start < b.length && start < q.length && b[start] === q[start]) start++;
+  let endB = b.length;
+  let endQ = q.length;
+  while (endB > start && endQ > start && b[endB - 1] === q[endQ - 1]) { endB--; endQ--; }
+  const narrowedBefore = b.slice(start, endB).join('\n');
+  const narrowedQuote = q.slice(start, endQ).join('\n');
+  if (!narrowedBefore.trim() || !narrowedQuote.trim()) return { before, quote };
+  return { before: narrowedBefore, quote: narrowedQuote };
 }
 
 /** Một "Bảng thành phần" là change `kind: 'component'` KHÔNG có `before` (chỉ
@@ -1029,6 +1090,18 @@ export function DocRedlinePreview({
   // composer (composer mở SAU khi đã chọn xong, dùng lại y hệt `draft`).
   const [headingPickerOpen, setHeadingPickerOpen] = useState(false);
   const [headingPickerValue, setHeadingPickerValue] = useState('');
+  // Chế độ "Tự chỉnh": sáu nút tạo annotation của NGƯỜI DÙNG ẩn sau một nút
+  // bật/tắt — mặc định màn preview chỉ để ĐỌC + duyệt đề xuất của agent,
+  // không bày cả dàn nút thao tác. Thoát chế độ dọn sạch mọi nháp/composer
+  // đang mở để không còn composer mồ côi dưới toolbar đã ẩn.
+  const [userEditMode, setUserEditMode] = useState(false);
+  function exitUserEditMode() {
+    setUserEditMode(false);
+    setDraft(null); setDraftError('');
+    setTableCellDraft(null); setTableCellError('');
+    setTextHighlightDraft(null); setTextHighlightError('');
+    setHeadingPickerOpen(false); setHeadingPickerValue('');
+  }
   // Session-only: các id đã "Bỏ" mà còn hoàn tác được TRONG PHIÊN NÀY. Không
   // còn snapshot text để hoàn tác (wp-doc-redline-nondestructive: dismiss chỉ
   // đổi `status`, không sửa `.md`) — hoàn tác chỉ cần set lại `status: 'active'`.
@@ -1495,6 +1568,16 @@ export function DocRedlinePreview({
   // không có gì xảy ra". Uỷ quyền cho phần tử cột thì cột luôn có mặt suốt vòng
   // đời khung nhìn, còn `closest()` tìm ra mark tại chính lúc bấm, nên không
   // còn khoảnh khắc nào một mark đang hiện mà chưa nhận được click.
+  //
+  // Listener chỉ gắn lại theo `loading` nên MỌI closure nó giữ đều đóng băng ở
+  // render đó — gọi thẳng `openAnnotationDetail` là gọi bản cũ, tra vào mảng
+  // `changes`/`notes` cũ: change/note NGƯỜI DÙNG vừa tạo trong phiên tra không
+  // ra và panel không mở. Ref này luôn được trỏ lại bản mới nhất mỗi render để
+  // cú bấm nào cũng chạy đúng dữ liệu hiện tại.
+  const openAnnotationDetailRef = useRef<(id: string) => void>(() => {});
+  useEffect(() => {
+    openAnnotationDetailRef.current = openAnnotationDetail;
+  });
   useEffect(() => {
     const container = docColRef.current;
     if (!container) return;
@@ -1513,7 +1596,7 @@ export function DocRedlinePreview({
       if (target?.closest?.('button')) return;
       const id = mark?.dataset.changeId ?? ownerBlock?.dataset.redlineOwner;
       if (!id) return;
-      openAnnotationDetail(id);
+      openAnnotationDetailRef.current(id);
     };
     container.addEventListener('click', fn);
     return () => container.removeEventListener('click', fn);
@@ -1712,6 +1795,40 @@ export function DocRedlinePreview({
     return saveAction(c.id, () => updateChange(c, { quote: text, status: 'edited' }, 'edit'));
   }
 
+  /** Thêm/xoá BÌNH LUẬN trên một change/note — cùng đường ghi non-destructive
+   *  `saveAction` (chỉ sửa field `comments` của phần tử trong sidecar), KHÔNG
+   *  ghi event: `DocReviewAnnotationEvent['type']` là lịch sử của NỘI DUNG đề
+   *  xuất (create/edit/dismiss/restore), bình luận là hội thoại bên lề, tự
+   *  mang timestamp riêng. */
+  async function addAnnotationComment(target: AnnotationDetailTarget, text: string): Promise<boolean> {
+    const trimmed = text.trim();
+    if (!trimmed) return false;
+    const comment: DocAnnotationComment = { id: uid('comment'), text: trimmed, at: Date.now() };
+    if (target.kind === 'change') {
+      const c = target.change;
+      return saveAction(c.id, () => updateChange(c, { comments: [...(c.comments ?? []), comment] }));
+    }
+    const noteId = target.note.id;
+    return saveAction(`${NOTE_ID_PREFIX}${noteId}`, () => ({
+      notes: notes.map((item) => item.id === noteId ? { ...item, comments: [...(item.comments ?? []), comment] } : item),
+    }));
+  }
+
+  async function deleteAnnotationComment(target: AnnotationDetailTarget, commentId: string): Promise<boolean> {
+    const without = (list: DocAnnotationComment[] | undefined) => {
+      const next = (list ?? []).filter((comment) => comment.id !== commentId);
+      return next.length > 0 ? next : undefined;
+    };
+    if (target.kind === 'change') {
+      const c = target.change;
+      return saveAction(c.id, () => updateChange(c, { comments: without(c.comments) }));
+    }
+    const noteId = target.note.id;
+    return saveAction(`${NOTE_ID_PREFIX}${noteId}`, () => ({
+      notes: notes.map((item) => item.id === noteId ? { ...item, comments: without(item.comments) } : item),
+    }));
+  }
+
   async function dismissChange(c: DocRedlineChange) {
     if (c.status === 'dismissed') {
       if (!undoableIds.has(c.id)) return;
@@ -1833,7 +1950,16 @@ export function DocRedlinePreview({
       return;
     }
     setDraftError('');
-    setDraft({ operation, selected, replacement: '', reason: '', kind: defaultUserKind(operation) });
+    // Sửa: prefill nội dung thay thế = chính đoạn đã chọn, để người dùng CHỈNH
+    // TẠI CHỖ (đổi một dòng trong ba dòng đã bôi) thay vì gõ lại từ đầu — lúc
+    // lưu `narrowEditedLines` sẽ thu hẹp change về đúng phần thật sự đổi.
+    setDraft({
+      operation,
+      selected,
+      replacement: operation === 'edited' ? selected : '',
+      reason: '',
+      kind: defaultUserKind(operation),
+    });
   }
 
   /** wp4.yaml mục 2: "Thêm sau mục…" — cùng composer với "Thêm sau đoạn
@@ -1865,8 +1991,17 @@ export function DocRedlinePreview({
     let quote: string | undefined;
     let anchor: string | undefined;
     if (draft.operation === 'edited') {
-      before = draft.selected;
-      quote = replacement;
+      if (replacement === draft.selected.trim()) {
+        setDraftError('Nội dung mới chưa thay đổi so với đoạn đã chọn.');
+        return;
+      }
+      // Bôi nhiều dòng nhưng chỉ chỉnh một phần → change chỉ ôm phần thật sự
+      // đổi (xem narrowEditedLines). Phần thu hẹp phải còn neo được (khớp mờ,
+      // cùng ngưỡng lúc bôi) — không thì giữ nguyên vùng chọn đầy đủ.
+      const narrowed = narrowEditedLines(draft.selected, replacement);
+      const anchorable = annotationHighlightSegments(narrowed.before).length > 0;
+      before = anchorable ? narrowed.before : draft.selected;
+      quote = anchorable ? narrowed.quote : replacement;
     } else if (draft.operation === 'delete') {
       before = draft.selected;
     } else {
@@ -1889,10 +2024,14 @@ export function DocRedlinePreview({
       ...(quote ? { quote, initialQuote: quote } : {}),
       ...(anchor ? { anchor } : {}),
     };
-    await saveAction(id, () => ({
+    const ok = await saveAction(id, () => ({
       changes: [...changes, change],
       events: [...events, eventFor(id, 'create', change)],
     }));
+    // Tự chỉnh THUỘC hệ loại Thay đổi/Nhận xét: Sửa/Xoá/Thêm tạo một CHỖ SỬA
+    // — nếu đang đứng ở tab "Nhận xét" thì chuyển về "Thay đổi" để mục vừa
+    // tạo hiện ra ngay, thay vì chỉ thấy con số trên tab kia nhích lên.
+    if (ok) changePreviewMode('changes');
   }
 
   /** wp-table-highlight.yaml (Q2): lưu nháp "tô ô bảng" thành MỘT note
@@ -1906,13 +2045,16 @@ export function DocRedlinePreview({
       id,
       kind: 'component',
       severity: 'minor',
+      origin: 'user',
       anchor: tableCellDraft.anchor,
       tableCells: { cells: tableCellDraft.cells },
       finding: tableCellDraft.reason.trim() || 'Người dùng tự đánh dấu ô trong bảng.',
       suggestion: '',
     };
     const ok = await saveAction(id, () => ({ notes: [...notes, note] }));
-    if (ok) setTableCellDraft(null);
+    // Cùng lý do nhánh cuối `createUserAnnotation`: "Tô ô bảng" tạo một NHẬN
+    // XÉT — chuyển sang tab "Nhận xét" để thấy ngay ô vừa tô.
+    if (ok) { setTableCellDraft(null); changePreviewMode('notes'); }
   }
 
   /** wp-text-highlight.yaml: heading (h1..h6) gần nhất đứng TRƯỚC vùng chọn
@@ -1974,13 +2116,15 @@ export function DocRedlinePreview({
       id,
       kind: 'ux-writing',
       severity: 'minor',
+      origin: 'user',
       anchor: textHighlightDraft.selected,
       finding: textHighlightDraft.reason.trim() || 'Người dùng tự đánh dấu đoạn này.',
       suggestion: '',
       ...(textHighlightDraft.sectionHeading ? { sectionHeading: textHighlightDraft.sectionHeading } : {}),
     };
     const ok = await saveAction(id, () => ({ notes: [...notes, note] }));
-    if (ok) setTextHighlightDraft(null);
+    // "Tô đoạn chọn" cũng tạo một NHẬN XÉT — chuyển tab như "Tô ô bảng".
+    if (ok) { setTextHighlightDraft(null); changePreviewMode('notes'); }
   }
 
   // Sơ đồ không đóng góp vào `anchored` qua text highlight. Mermaid lấy owner
@@ -2014,7 +2158,20 @@ export function DocRedlinePreview({
   const navigationPosition = getNavigationPosition(navigationItems, selectedId);
   function navigate(direction: 'previous' | 'next') {
     const id = getAdjacentNavigationId(navigationItems, selectedId, direction);
-    if (id) selectFromList(id);
+    if (!id) return;
+    selectFromList(id);
+    // Panel chi tiết đang mở thì phải ĐI THEO mục vừa điều hướng tới — không
+    // thì Trước/Sau cuộn tài liệu mà panel vẫn kể chuyện của mục cũ. Mục
+    // enrichment (sơ đồ/bảng thành phần) không có nội dung panel (xem
+    // openAnnotationDetail) — điều hướng tới nó thì ĐÓNG panel thay vì để
+    // panel đứng im với nội dung sai.
+    if (detailPanel) {
+      const target = resolveAnnotationDetail(id, changes, notes);
+      const blocked =
+        target?.kind === 'change' &&
+        (target.change.kind === 'flow-diagram' || isComponentTableChange(target.change));
+      setDetailPanel(target && !blocked ? { id } : null);
+    }
   }
 
   async function printDocument(): Promise<void> {
@@ -2118,48 +2275,71 @@ export function DocRedlinePreview({
                 </span>
               </div>
             )}
+            {!userEditMode ? (
+              <div className={styles.userToolbar}>
+                <button type="button" className={styles.editModeToggle ?? ''} onClick={() => setUserEditMode(true)}>
+                  <span aria-hidden="true">✎</span> Tự chỉnh
+                </button>
+                <span className={styles.userToolbarHint}>Bật để tự Sửa/Xoá/Thêm/Tô trên tài liệu</span>
+              </div>
+            ) : (
             <div className={styles.userToolbar}>
               <span className={styles.userToolbarHint}>Bôi đen một đoạn để tự chỉnh:</span>
-              <button type="button" onClick={() => startUserAnnotation('edited')}>Sửa đoạn chọn</button>
-              <button type="button" onClick={() => startUserAnnotation('delete')}>Xoá đoạn chọn</button>
-              <button type="button" onClick={() => startUserAnnotation('add')}>Thêm sau đoạn chọn</button>
-              {/* wp4.yaml mục 2: bắt đầu từ một heading thay vì bôi đen — cùng
-                  composer "Thêm sau đoạn chọn" (`startHeadingAnnotation` chỉ
-                  đổi nguồn `selected`). */}
-              <button
-                type="button"
-                disabled={headings.length === 0}
-                title={headings.length === 0 ? 'Tài liệu không có mục nào (dòng bắt đầu #)' : undefined}
-                onClick={() => setHeadingPickerOpen((open) => !open)}
-              >
-                Thêm sau mục…
-              </button>
-              {/* wp-table-highlight.yaml (Q2): kéo bôi các Ô trong một bảng —
-                  đường MỚI song song với ba nút bôi-đen-chữ ở trên, chỉ bật
-                  khi vùng đang chọn thật sự nằm trong một <table>. */}
-              <button
-                type="button"
-                disabled={!selectionInTable}
-                title={selectionInTable ? undefined : 'Bôi đen vài ô trong một bảng để bật nút này'}
-                onClick={startTableCellHighlight}
-              >
-                Tô ô bảng
-              </button>
-              {/* wp-text-highlight.yaml: đánh dấu/ghi chú một đoạn CHỮ, neo
-                  KHỚP MỜ — song song "Tô ô bảng", KHÔNG đòi đoạn duy nhất
-                  trong mã nguồn (khác ba nút Sửa/Xoá/Thêm ở trên). */}
-              <button
-                type="button"
-                disabled={!selectionNonEmpty}
-                title={selectionNonEmpty ? undefined : 'Bôi đen một đoạn chữ trong tài liệu để bật'}
-                onClick={startTextHighlight}
-              >
-                Tô đoạn chọn
-              </button>
+              {/* Sáu nút nhóm theo đúng hai LOẠI của hệ Thay đổi/Nhận xét:
+                  Sửa/Xoá/Thêm ghi vào changes.json (tab "Thay đổi"), Tô ô
+                  bảng/Tô đoạn chọn ghi vào notes.json (tab "Nhận xét") — nhãn
+                  nhóm nói trước mục sẽ hiện ở tab nào, và sau khi lưu preview
+                  tự chuyển sang tab đó (xem các hàm create*). */}
+              <span className={styles.toolbarGroup ?? ''} role="group" aria-label="Tạo thay đổi">
+                <span className={styles.toolbarGroupLabel ?? ''}>Thay đổi</span>
+                <button type="button" onClick={() => startUserAnnotation('edited')}>Sửa đoạn chọn</button>
+                <button type="button" onClick={() => startUserAnnotation('delete')}>Xoá đoạn chọn</button>
+                <button type="button" onClick={() => startUserAnnotation('add')}>Thêm sau đoạn chọn</button>
+                {/* wp4.yaml mục 2: bắt đầu từ một heading thay vì bôi đen — cùng
+                    composer "Thêm sau đoạn chọn" (`startHeadingAnnotation` chỉ
+                    đổi nguồn `selected`). */}
+                <button
+                  type="button"
+                  disabled={headings.length === 0}
+                  title={headings.length === 0 ? 'Tài liệu không có mục nào (dòng bắt đầu #)' : undefined}
+                  onClick={() => setHeadingPickerOpen((open) => !open)}
+                >
+                  Thêm sau mục…
+                </button>
+              </span>
+              <span className={styles.toolbarGroup ?? ''} role="group" aria-label="Tạo nhận xét">
+                <span className={styles.toolbarGroupLabel ?? ''}>Nhận xét</span>
+                {/* wp-table-highlight.yaml (Q2): kéo bôi các Ô trong một bảng —
+                    đường MỚI song song với ba nút bôi-đen-chữ ở trên, chỉ bật
+                    khi vùng đang chọn thật sự nằm trong một <table>. */}
+                <button
+                  type="button"
+                  disabled={!selectionInTable}
+                  title={selectionInTable ? undefined : 'Bôi đen vài ô trong một bảng để bật nút này'}
+                  onClick={startTableCellHighlight}
+                >
+                  Tô ô bảng
+                </button>
+                {/* wp-text-highlight.yaml: đánh dấu/ghi chú một đoạn CHỮ, neo
+                    KHỚP MỜ — song song "Tô ô bảng", KHÔNG đòi đoạn duy nhất
+                    trong mã nguồn (khác ba nút Sửa/Xoá/Thêm ở trên). */}
+                <button
+                  type="button"
+                  disabled={!selectionNonEmpty}
+                  title={selectionNonEmpty ? undefined : 'Bôi đen một đoạn chữ trong tài liệu để bật'}
+                  onClick={startTextHighlight}
+                >
+                  Tô đoạn chọn
+                </button>
+              </span>
               {draftError && !draft ? <span className={styles.toolbarError}>{draftError}</span> : null}
               {tableCellError && !tableCellDraft ? <span className={styles.toolbarError}>{tableCellError}</span> : null}
               {textHighlightError && !textHighlightDraft ? <span className={styles.toolbarError}>{textHighlightError}</span> : null}
+              <button type="button" className={styles.editModeExit ?? ''} onClick={exitUserEditMode}>
+                Xong
+              </button>
             </div>
+            )}
             {headingPickerOpen ? (
               <div className={styles.headingPicker ?? ''} role="group" aria-label="Chọn mục để thêm sau">
                 <select
@@ -2426,12 +2606,15 @@ export function DocRedlinePreview({
                   undoable={undoableIds.has(id)}
                   dismissed={dismissed}
                   edited={isChange && target.change.status === 'edited'}
+                  origin={(isChange ? target.change.origin : target.note.origin) === 'user' ? 'user' : 'agent'}
                   onClose={() => setDetailPanel(null)}
                   onDismiss={() => { if (isChange) void dismissChange(target.change); else void dismissNote(target.note); }}
                   onOpenRef={(ref, i) => openRefModal(`${REF_ID_PREFIX}${id}:${i}`, ref)}
                   onSaveEdit={isChange && changeOp(target.change) !== 'del'
                     ? (text) => editChangeQuote(target.change, text)
                     : undefined}
+                  onAddComment={(text) => addAnnotationComment(target, text)}
+                  onDeleteComment={(commentId) => deleteAnnotationComment(target, commentId)}
                 />
               );
             })() : null}
@@ -2606,10 +2789,13 @@ function AnnotationDetailPanel({
   undoable,
   dismissed,
   edited,
+  origin,
   onClose,
   onDismiss,
   onOpenRef,
   onSaveEdit,
+  onAddComment,
+  onDeleteComment,
 }: {
   target: AnnotationDetailTarget;
   busy: boolean;
@@ -2618,6 +2804,10 @@ function AnnotationDetailPanel({
   dismissed: boolean;
   /** `status === 'edited'`: nội dung đề xuất đã được người dùng chỉnh lại. */
   edited: boolean;
+  /** Ai tạo annotation này — 'system' (enrichment) không bao giờ mở panel nên
+   *  gom về 'agent' ở chỗ gọi. Cùng `edited` tạo ra ba nhãn nguồn gốc: Bạn tự
+   *  chỉnh / Agent đề xuất / Agent đề xuất · bạn đã chỉnh. */
+  origin: 'agent' | 'user';
   onClose: () => void;
   onDismiss: () => void;
   /** Bấm một đoạn `doc_refs` (bằng chứng viện dẫn) trong panel — mở cửa sổ
@@ -2630,6 +2820,11 @@ function AnnotationDetailPanel({
    *  quả saveAction để panel biết thoát chế độ sửa hay giữ textarea cho người
    *  dùng sửa tiếp khi ghi lỗi. */
   onSaveEdit?: (text: string) => Promise<boolean>;
+  /** Thêm một bình luận vào change/note đang mở (ghi vào field `comments`
+   *  trong sidecar — xem `addAnnotationComment` ở cha). Trả kết quả saveAction
+   *  để panel biết xoá trắng ô nhập hay giữ lại chữ khi ghi lỗi. */
+  onAddComment: (text: string) => Promise<boolean>;
+  onDeleteComment: (commentId: string) => Promise<boolean>;
 }) {
   const c = target.kind === 'change' ? target.change : null;
   const n = target.kind === 'note' ? target.note : null;
@@ -2639,15 +2834,21 @@ function AnnotationDetailPanel({
     : 'Nhận xét';
   const ruleId = c?.rule_id ?? n?.rule_id;
   const docRefs = c?.doc_refs ?? n?.doc_refs ?? [];
-  // Chế độ chỉnh nội dung đề xuất — reset khi panel chuyển sang annotation
-  // khác (bấm một vùng bôi khác trong lúc đang sửa dở).
+  const comments = (c ? c.comments : n?.comments) ?? [];
+  // Chế độ chỉnh nội dung đề xuất + ô nhập bình luận — reset khi panel chuyển
+  // sang annotation khác (bấm một vùng bôi khác trong lúc đang sửa/gõ dở).
   const annotationId = c ? c.id : `${NOTE_ID_PREFIX}${n!.id}`;
   const [editing, setEditing] = useState(false);
   const [editText, setEditText] = useState('');
-  useEffect(() => { setEditing(false); }, [annotationId]);
+  const [commentText, setCommentText] = useState('');
+  useEffect(() => { setEditing(false); setCommentText(''); }, [annotationId]);
   async function saveEdit() {
     if (!onSaveEdit || !editText.trim()) return;
     if (await onSaveEdit(editText)) setEditing(false);
+  }
+  async function submitComment() {
+    if (!commentText.trim()) return;
+    if (await onAddComment(commentText)) setCommentText('');
   }
   return (
     <aside className={styles.detailPanel ?? ''} role="dialog" aria-label={title}>
@@ -2655,7 +2856,11 @@ function AnnotationDetailPanel({
         <div className={styles.modalTitleWrap}>
           <span className={styles.modalTitle}>
             {title}
-            {edited ? <span className={styles.badgeEdited ?? ''}>Đã chỉnh</span> : null}
+            <span
+              className={`${styles.originBadge ?? ''} ${origin === 'user' || edited ? styles.originBadgeUser ?? '' : ''}`}
+            >
+              {origin === 'user' ? 'Bạn tự chỉnh' : edited ? 'Agent đề xuất · bạn đã chỉnh' : 'Agent đề xuất'}
+            </span>
           </span>
           {ruleId ? <span className={styles.modalQuote}>{ruleId}</span> : null}
         </div>
@@ -2721,26 +2926,79 @@ function AnnotationDetailPanel({
             </div>
           </>
         ) : null}
+        {/* Bình luận: hội thoại bên lề trên change/note này — không đổi nội
+            dung đề xuất, không sinh event, chỉ ghi `comments` vào sidecar. */}
+        <p className={styles.detailLabel ?? ''}>Bình luận{comments.length > 0 ? ` (${comments.length})` : ''}</p>
+        {comments.length > 0 ? (
+          <ul className={styles.commentList ?? ''}>
+            {comments.map((comment) => (
+              <li key={comment.id} className={styles.commentItem ?? ''}>
+                <p className={styles.commentText ?? ''}>{comment.text}</p>
+                <div className={styles.commentMeta ?? ''}>
+                  <span>{new Date(comment.at).toLocaleString('vi-VN')}</span>
+                  <button
+                    type="button"
+                    className={styles.commentDelete ?? ''}
+                    disabled={busy}
+                    aria-label="Xoá bình luận"
+                    title="Xoá bình luận"
+                    onClick={() => void onDeleteComment(comment.id)}
+                  >
+                    ×
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+        <div className={styles.commentComposer ?? ''}>
+          <textarea
+            className={styles.commentInput ?? ''}
+            aria-label="Bình luận mới"
+            placeholder="Viết bình luận…"
+            value={commentText}
+            disabled={busy}
+            onChange={(ev) => setCommentText(ev.target.value)}
+          />
+          <button
+            type="button"
+            className={styles.commentSend ?? ''}
+            disabled={busy || !commentText.trim()}
+            onClick={() => void submitComment()}
+          >
+            {busy ? 'Đang lưu...' : 'Gửi'}
+          </button>
+        </div>
         {error ? <p className={styles.error}>{error}</p> : null}
       </div>
-      <div className={styles.modalActions}>
+      <div className={`${styles.modalActions} ${styles.panelFooter ?? ''}`}>
         {editing ? (
           <>
-            <button type="button" disabled={busy || !editText.trim()} onClick={() => void saveEdit()}>
+            <button
+              type="button"
+              className={`${styles.panelBtn ?? ''} ${styles.panelBtnPrimary ?? ''}`}
+              disabled={busy || !editText.trim()}
+              onClick={() => void saveEdit()}
+            >
               {busy ? 'Đang lưu...' : 'Lưu'}
             </button>
-            <button type="button" disabled={busy} onClick={() => setEditing(false)}>
+            <button type="button" className={styles.panelBtn ?? ''} disabled={busy} onClick={() => setEditing(false)}>
               Hủy
             </button>
           </>
         ) : (
           <>
             {onSaveEdit && !dismissed ? (
-              <button type="button" disabled={busy} onClick={() => { setEditText(c?.quote ?? ''); setEditing(true); }}>
-                Sửa
+              <button
+                type="button"
+                className={`${styles.panelBtn ?? ''} ${styles.panelBtnPrimary ?? ''}`}
+                disabled={busy}
+                onClick={() => { setEditText(c?.quote ?? ''); setEditing(true); }}
+              >
+                <span aria-hidden="true">✎</span> Chỉnh đề xuất
               </button>
             ) : null}
-            <button type="button" disabled={busy} onClick={onDismiss}>
+            <button type="button" className={styles.panelBtn ?? ''} disabled={busy} onClick={onDismiss}>
               {busy ? 'Đang lưu...' : dismissed ? 'Hoàn tác' : 'Bỏ'}
             </button>
           </>
