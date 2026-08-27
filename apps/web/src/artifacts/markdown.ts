@@ -9,6 +9,7 @@ function escapeHtml(value: string): string {
 
 const LINK_TOKEN_PREFIX = 'ODMDLINKTOKEN';
 const CODE_TOKEN_PREFIX = 'ODMDCODETOKEN';
+const BREAK_TOKEN_PREFIX = 'ODMDBREAKTOKEN';
 
 function formatInline(raw: string): string {
   const linkTokens = new Map<string, string>();
@@ -47,13 +48,19 @@ function formatInline(raw: string): string {
     return token;
   });
 
-  let out = escapeHtml(withLinkTokens);
+  // Confluence ingest uses literal <br> tags inside GFM table cells because a
+  // physical newline would terminate the row. Preserve only this inert tag;
+  // every other raw HTML fragment still goes through escapeHtml below.
+  const withBreakTokens = withLinkTokens.replace(/<br\s*\/?>/gi, (_m) => `${BREAK_TOKEN_PREFIX}X`);
+
+  let out = escapeHtml(withBreakTokens);
   out = out.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
   out = out.replace(/__([^_]+)__/g, '<strong>$1</strong>');
   out = out.replace(/\*([^*]+)\*/g, '<em>$1</em>');
   out = out.replace(/_([^_]+)_/g, '<em>$1</em>');
   out = out.replace(/ODMDCODETOKEN\d+X/g, (token) => codeTokens.get(token) ?? token);
   out = out.replace(/ODMDLINKTOKEN\d+X/g, (token) => linkTokens.get(token) ?? token);
+  out = out.replace(/ODMDBREAKTOKENX/g, '<br>');
   return out;
 }
 
@@ -150,6 +157,56 @@ function alignAttr(align: Align): string {
   return align === null ? '' : ` style="text-align:${align}"`;
 }
 
+function renderTableMarkup(headers: string[], aligns: Align[], bodyRows: string[][], nested = false): string {
+  const headHtml = headers
+    .map((cell, idx) => `<th${alignAttr(aligns[idx] ?? null)}>${formatInline(cell)}</th>`)
+    .join('');
+  const bodyHtml = bodyRows
+    .map((row) => {
+      const cells = row
+        .slice(0, headers.length)
+        .map((cell, idx) => `<td${alignAttr(aligns[idx] ?? null)}>${nested ? formatInline(cell) : formatTableCell(cell)}</td>`)
+        .join('');
+      const missing = Math.max(0, headers.length - row.length);
+      const pad = Array.from({ length: missing }, (_, idx) => `<td${alignAttr(aligns[row.length + idx] ?? null)}></td>`).join('');
+      return `<tr>${cells}${pad}</tr>`;
+    })
+    .join('');
+  const nestedClass = nested ? ' md-table-wrap--nested' : '';
+  return `<div class="md-table-wrap${nestedClass}"><table class="md-table"><thead><tr>${headHtml}</tr></thead><tbody>${bodyHtml}</tbody></table></div>`;
+}
+
+/**
+ * Confluence can place a table inside a cell of another table. Markdown has no
+ * native nested-table syntax, so ingest serializes the inner rows as escaped
+ * pipes separated by <br>. Recover that deterministic shape for preview.
+ */
+function formatTableCell(raw: string): string {
+  const fragments = raw.split(/<br\s*\/?>/i);
+  const start = fragments.findIndex((fragment, index) => {
+    const next = fragments[index + 1];
+    return /^\s*\|/.test(fragment) && next !== undefined && parseAlignRow(next) !== null;
+  });
+  if (start < 0) return formatInline(raw);
+
+  const tableLines: string[] = [];
+  for (const fragment of fragments.slice(start)) {
+    if (/^\s*\|/.test(fragment) || tableLines.length === 0) {
+      tableLines.push(fragment);
+    } else {
+      // A hard break inside one nested cell (rather than between two rows).
+      tableLines[tableLines.length - 1] += `<br>${fragment}`;
+    }
+  }
+  const aligns = parseAlignRow(tableLines[1] ?? '');
+  if (!aligns) return formatInline(raw);
+  const headers = splitCells(tableLines[0] ?? '');
+  if (headers.length === 0 || headers.length !== aligns.length) return formatInline(raw);
+  const rows = tableLines.slice(2).filter((line) => line.includes('|')).map(splitCells);
+  const prefix = fragments.slice(0, start).join('<br>');
+  return `${prefix ? `${formatInline(prefix)}<br>` : ''}${renderTableMarkup(headers, aligns, rows, true)}`;
+}
+
 function fencedCodeMarker(line: string): '```' | '~~~' | null {
   const match = /^\s*(```|~~~)/.exec(line);
   return (match?.[1] as '```' | '~~~' | undefined) ?? null;
@@ -237,21 +294,7 @@ export function renderMarkdownToSafeHtml(markdown: string): string {
         bodyRows.push(splitCells(row));
         i += 1;
       }
-      const headHtml = headers
-        .map((cell, idx) => `<th${alignAttr(aligns[idx] ?? null)}>${formatInline(cell)}</th>`)
-        .join('');
-      const bodyHtml = bodyRows
-        .map((row) => {
-          const cells = row
-            .slice(0, headers.length)
-            .map((cell, idx) => `<td${alignAttr(aligns[idx] ?? null)}>${formatInline(cell)}</td>`)
-            .join('');
-          const missing = Math.max(0, headers.length - row.length);
-          const pad = Array.from({ length: missing }, (_, idx) => `<td${alignAttr(aligns[row.length + idx] ?? null)}></td>`).join('');
-          return `<tr>${cells}${pad}</tr>`;
-        })
-        .join('');
-      out.push(`<div class="md-table-wrap"><table class="md-table"><thead><tr>${headHtml}</tr></thead><tbody>${bodyHtml}</tbody></table></div>`);
+      out.push(renderTableMarkup(headers, aligns, bodyRows));
       continue;
     }
 

@@ -48,6 +48,43 @@ describe('renderMarkdownToSafeHtml', () => {
     expect(out).not.toContain('<script>');
   });
 
+  it('preserves safe Confluence hard breaks while escaping other raw html', () => {
+    const out = renderMarkdownToSafeHtml('Dòng một<br>Dòng hai<img src=x onerror=alert(1)>');
+    expect(out).toContain('Dòng một<br>Dòng hai');
+    expect(out).toContain('&lt;img src=x onerror=alert(1)&gt;');
+    expect(out).not.toContain('<img');
+  });
+
+  it('recovers a Confluence nested table encoded as escaped pipes inside an outer table cell', () => {
+    const md = [
+      '| ID | Mô tả |',
+      '| --- | --- |',
+      '| BR-12 | \\| Loại SIM \\| NCC \\|<br>\\| --- \\| --- \\|<br>\\| Việt Nam \\| INFIGATE \\|<br>\\| Quốc tế \\| DIGILIFE \\| |',
+    ].join('\n');
+
+    const out = renderMarkdownToSafeHtml(md);
+
+    expect(out.match(/<table class="md-table">/g)).toHaveLength(2);
+    expect(out).toContain('md-table-wrap--nested');
+    expect(out).toContain('<th>Loại SIM</th><th>NCC</th>');
+    expect(out).toContain('<td>Việt Nam</td><td>INFIGATE</td>');
+    expect(out).not.toContain('\\| Loại SIM');
+    expect(out).not.toContain('&lt;br&gt;');
+  });
+
+  it('keeps a hard break inside a recovered nested-table cell', () => {
+    const md = [
+      '| Trường | Nội dung |',
+      '| --- | --- |',
+      '| Chi tiết | Mở đầu<br>\\| STT \\| Giá trị \\|<br>\\| --- \\| --- \\|<br>\\| 1 \\| Dòng một<br>Dòng hai \\| |',
+    ].join('\n');
+
+    const out = renderMarkdownToSafeHtml(md);
+
+    expect(out).toContain('Mở đầu<br><div class="md-table-wrap md-table-wrap--nested">');
+    expect(out).toContain('<td>Dòng một<br>Dòng hai</td>');
+  });
+
   it('renders a same-origin image (project raw URL) inline as <img>, not a stray "!"', () => {
     const out = renderMarkdownToSafeHtml('![minh họa](/api/projects/p1/raw/docs/attachments/x.png)');
     expect(out).toContain('<img src="/api/projects/p1/raw/docs/attachments/x.png" alt="minh họa" class="md-doc-image" loading="lazy">');
