@@ -6,7 +6,7 @@
 // hai file, hai câu hỏi khác nhau.
 //
 // wp-doc-redline-nondestructive: rail đã bỏ hẳn — bấm vào MỘT vùng bôi
-// thường (không phải `ref:…`) mở `AnnotationDetailModal` của chính change/note
+// thường (không phải `ref:…`) mở `AnnotationDetailPanel` của chính change/note
 // đó (xem `openAnnotationDetail`); nút "Bằng chứng viện dẫn" NẰM TRONG modal
 // đó (không còn khối "Chi tiết ▾" ở rail riêng). Bấm nút đó mới mở CỬA SỔ
 // tham chiếu (`refModal`) — hai cửa sổ có thể mở đồng thời (mỗi cái một

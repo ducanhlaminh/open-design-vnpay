@@ -7,7 +7,7 @@
 // KHÁC (không trùng agent-1) để các test "tạo annotation người dùng" bôi đen.
 //
 // Rail đã bỏ hẳn: mọi hành động (Bỏ/Hoàn tác một chỗ sửa) giờ nằm trong
-// `AnnotationDetailModal` mở ra khi bấm mark, không còn trong thẻ
+// `AnnotationDetailPanel` mở ra khi bấm mark, không còn trong thẻ
 // `[data-change-item]`. Tính năng "sửa TRỰC TIẾP nội dung quote của một chỗ
 // sửa agent đã có, giữ initialQuote làm baseline" (nút "Sửa"/ô "Nội dung sửa"
 // trong thẻ) đã KHÔNG CÒN ĐƯỜNG NÀO tới nó trong kiến trúc mới — đó là một

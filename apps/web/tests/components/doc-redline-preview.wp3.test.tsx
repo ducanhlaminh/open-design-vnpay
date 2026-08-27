@@ -5,7 +5,7 @@
 // `comp/` ("Bảng thành phần"), B1/B2/N1 (wp3b.yaml), khuôn thẻ 3-dòng (F).
 //
 // wp-doc-redline-nondestructive: rail/thẻ bên phải đã bị BỎ HẲN (thay bằng
-// modal chi tiết mở khi bấm vùng bôi — xem AnnotationDetailModal trong
+// panel chi tiết cạnh phải mở khi bấm vùng bôi — xem AnnotationDetailPanel trong
 // component). Enrichment (`flow-diagram`/bảng thành phần `component`) KHÔNG
 // có modal — nó giữ nguyên tương tác riêng (toggle Gốc/Đề xuất, bảng inline).
 // Những test cũ đo RIÊNG rail-card của enrichment (nhãn "Bảng thành phần",

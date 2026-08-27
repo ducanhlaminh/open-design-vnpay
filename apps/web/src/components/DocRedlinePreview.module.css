@@ -1,10 +1,10 @@
 /*
  * DocRedlinePreview — MỘT cột tài liệu duy nhất (bản GỐC, không bao giờ bị
  * ghi lại), có bôi highlight tại chỗ cho từng phép Thêm/Sửa/Xoá. Rail cố định
- * bên phải liệt kê mọi chỗ sửa ĐÃ BỎ HẲN (wp-doc-redline-nondestructive) —
- * bấm vào một vùng bôi mở MODAL chi tiết (`.modal*`/`.detail*` bên dưới) thay
- * vì cuộn sang thẻ trong rail. Panel đáy trượt lên (rail ẩn/hiện, phím tắt
- * "]") cũng đã bỏ theo — cột tài liệu luôn chiếm toàn bộ bề ngang.
+ * liệt kê mọi chỗ sửa ĐÃ BỎ HẲN (wp-doc-redline-nondestructive) — bấm vào một
+ * vùng bôi mở PANEL chi tiết cạnh phải (`.detailPanel` + `.modal*`/`.detail*`
+ * bên dưới; từng là modal giữa màn nhưng modal che mất tài liệu). Panel đáy
+ * trượt lên (rail ẩn/hiện, phím tắt "]") cũng đã bỏ theo.
  *
  * The doc column reuses the shared global `.markdown-rendered` typography
  * (styles/viewer/code.css) — same treatment as MarkdownViewer — so only the
@@ -66,11 +66,58 @@
 }
 
 
+/* Hàng ngang tài liệu + panel chi tiết bên phải. Hai cột cuộn ĐỘC LẬP: mở
+   panel không được làm tài liệu mất vị trí cuộn — đó là toàn bộ lý do chi
+   tiết nằm ở panel thay vì modal che giữa màn. */
+.docRow {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  align-items: stretch;
+  position: relative;
+}
+
 .docCol {
+  flex: 1 1 auto;
   min-width: 0;
   height: 100%;
   overflow: auto;
   padding: 20px 24px;
+}
+
+/* Panel chi tiết change/note dựng cạnh phải (xem AnnotationDetailPanel). Nền
+   ĐẶC (`--bg`) cùng lý do với .modal: đây là chỗ đọc chữ dày, kính mờ làm chữ
+   tài liệu phía sau xuyên qua. Dùng lại .modalHead/.modalBody/.modalActions
+   bên trong — cùng một giải phẫu đầu-thân-chân, chỉ khác chỗ đứng. */
+.detailPanel {
+  flex: 0 0 340px;
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--border, #e1e5eb);
+  background: var(--bg);
+  overflow: hidden;
+}
+.detailPanel .modalActions {
+  flex: 0 0 auto;
+  padding: 10px 16px;
+  border-top: 1px solid var(--border, #e1e5eb);
+}
+
+/* Màn hẹp: không còn chỗ cho hai cột — panel nổi lên trên mép phải như một
+   drawer, tài liệu vẫn nguyên bề ngang phía dưới. */
+@media (max-width: 900px) {
+  .detailPanel {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    height: auto;
+    width: min(85vw, 340px);
+    box-shadow: -12px 0 32px rgba(0, 0, 0, 0.18);
+    z-index: 30;
+  }
 }
 /* Vùng bôi được cuộn tới không được nằm sát mép trên — `.strip` phía trên sẽ
    che mất mép của nó (cùng lý do như scrollMarginTop trong DsShowcasePreview). */
@@ -806,7 +853,7 @@
   font-weight: 700;
   margin-right: 4px;
 }
-/* wp-doc-redline-nondestructive: đoạn "Xoá" trong modal chi tiết (AnnotationDetailModal)
+/* wp-doc-redline-nondestructive: đoạn "Xoá" trong panel chi tiết (AnnotationDetailPanel)
    và khối "Nguyên bản" khi EditDiffBlock rơi về layout hai khối cũ — gạch
    ngang để nhất quán với chính vùng bôi trong tài liệu (HL_DEL_INLINE_STYLE). */
 .detailStrike {

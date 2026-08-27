@@ -4,7 +4,7 @@
 // popover với mã kỹ thuật/giải thích/trích đoạn criteria) đã GỠ BỎ CÓ CHỦ Ý
 // cùng đợt bỏ rail — nó sống trong khối "Chi tiết ▾" của thẻ rail, và rail đã
 // bỏ hẳn (xem docblock đầu DocRedlinePreview.tsx). `rule_id` giờ chỉ hiện như
-// MỘT CHUỖI THUẦN ở đầu `AnnotationDetailModal` (không nhãn dịch, không
+// MỘT CHUỖI THUẦN ở đầu `AnnotationDetailPanel` (không nhãn dịch, không
 // tooltip, không popover, không fetch nội dung criteria/rules.md) — không có
 // đường thay thế non-destructive nào được yêu cầu cho phần "dịch nhãn/giải
 // thích" của tính năng cũ, nên toàn bộ 5 test gốc của file này (đo popover,

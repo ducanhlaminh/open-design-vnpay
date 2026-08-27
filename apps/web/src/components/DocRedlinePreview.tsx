@@ -9,16 +9,18 @@
 //   - Sửa/Xóa neo theo `before` (đoạn gốc bị đề xuất đổi/bỏ, còn nguyên).
 //   - Thêm neo theo `anchor` (điểm chèn, cũng là chữ gốc).
 //   - `quote` (nội dung MỚI được đề xuất) không còn tồn tại trong tài liệu nên
-//     KHÔNG neo được vào đâu — nó chỉ hiện trong modal chi tiết khi bấm vào
-//     vùng bôi (xem `changeHighlightSource`/`AnnotationDetailModal`).
+//     KHÔNG neo được vào đâu — nó chỉ hiện trong panel chi tiết khi bấm vào
+//     vùng bôi (xem `changeHighlightSource`/`AnnotationDetailPanel`).
 // Bảng/sơ đồ do một bước enrichment tự động sinh (`kind: 'flow-diagram'`, hoặc
 // `component` không `before` với `rule_id` bắt đầu `comp/`) là nội dung THẬT
 // sự đã nằm trong tài liệu — không thuộc cơ chế đề xuất trên, nên vẫn neo theo
-// `quote` (chữ đã render thật) như trước và KHÔNG mở modal khi bấm vào.
+// `quote` (chữ đã render thật) như trước và KHÔNG mở panel khi bấm vào.
 //
-// KHÔNG còn thẻ rail bên phải: bấm một vùng bôi (hoặc một note) mở MODAL hiện
-// nội dung (Thêm=chữ mới; Sửa=gốc→mới; Xóa=đoạn bị đề xuất bỏ; note=phát hiện)
-// kèm lý do — thay cho panel cuộn-nhảy hai chiều trước đây.
+// Bấm một vùng bôi (hoặc một note) mở PANEL chi tiết dựng cạnh phải cột tài
+// liệu, hiện nội dung (Thêm=chữ mới; Sửa=gốc→mới; Xóa=đoạn bị đề xuất bỏ;
+// note=phát hiện) kèm lý do. Từng là modal giữa màn (đợt bỏ rail
+// wp-doc-redline-nondestructive) nhưng modal che mất tài liệu — quay lại
+// right panel để vừa đọc chi tiết vừa thấy vùng bôi trong ngữ cảnh.
 //
 // `<mark>` được chèn vào CHUỖI HTML đã render, trước khi React nhận (xem
 // injectHighlights trong runtime/doc-highlight.ts). Không chèn vào mã nguồn
@@ -742,7 +744,7 @@ const HL_REF_INLINE_STYLE = 'background-color:transparent;color:inherit;border-b
 const EMPTY_SET: ReadonlySet<string> = new Set<string>();
 
 /** Kết quả tra cứu một id mark (`data-change-id`) về đúng change/note nó
- *  thuộc về, để mở modal chi tiết (xem `AnnotationDetailModal`). */
+ *  thuộc về, để mở panel chi tiết (xem `AnnotationDetailPanel`). */
 export type AnnotationDetailTarget =
   | { kind: 'change'; change: DocRedlineChange }
   | { kind: 'note'; note: DocRedlineNote };
@@ -750,7 +752,7 @@ export type AnnotationDetailTarget =
 /** wp-doc-redline-nondestructive: tra id mark → change/note tương ứng, THUẦN
  *  (nhận `changes`/`notes` làm tham số thay vì đọc state, để test được không
  *  cần dựng React) — id tiền tố `ref:` (vùng viện dẫn) trả `null`: nó không
- *  có modal riêng, click vào nó mở LẠI `refModal` sẵn có (xem
+ *  có panel riêng, click vào nó mở LẠI `refModal` sẵn có (xem
  *  `openAnnotationDetail` trong component). */
 export function resolveAnnotationDetail(
   id: string,
@@ -1046,10 +1048,11 @@ export function DocRedlinePreview({
   // cửa sổ để người đọc biết mình đang được chỉ tới cái gì).
   const [refModal, setRefModal] = useState<{ markId: string; label: string } | null>(null);
   const modalDocRef = useRef<HTMLDivElement | null>(null);
-  // wp-doc-redline-nondestructive: modal chi tiết một CHANGE/NOTE (id mark) —
-  // thay cho panel/thẻ rail đã bỏ. Xem `openAnnotationDetail`/
-  // `AnnotationDetailModal`.
-  const [detailModal, setDetailModal] = useState<{ id: string } | null>(null);
+  // wp-doc-redline-nondestructive: chi tiết một CHANGE/NOTE (id mark), hiện
+  // trong PANEL cạnh phải của cột tài liệu (không phải modal — tài liệu vẫn
+  // đọc được trong lúc panel mở). Xem `openAnnotationDetail`/
+  // `AnnotationDetailPanel`.
+  const [detailPanel, setDetailPanel] = useState<{ id: string } | null>(null);
   const printArticleRef = useRef<HTMLElement | null>(null);
   const [printBusy, setPrintBusy] = useState(false);
 
@@ -1586,12 +1589,12 @@ export function DocRedlinePreview({
     setRefModal({ markId, label });
   }
 
-  /** Bấm một vùng bôi trong tài liệu: mở modal chi tiết của change/note chủ.
-   *  Vùng VIỆN DẪN (`ref:<ownerId>:<i>`) quy về chính thẻ đã viện dẫn nó —
-   *  người đọc bấm vào một đoạn gạch chấm là đang hỏi "ai nhắc tới chỗ này?",
-   *  nên câu trả lời là thẻ chủ, không phải một cửa sổ riêng cho tham chiếu.
-   *  Enrichment (sơ đồ/bảng thành phần) không có modal — bấm vào đó không làm
-   *  gì, vì nó không thuộc hệ đề xuất/duyệt. */
+  /** Bấm một vùng bôi trong tài liệu: mở panel chi tiết (cạnh phải) của
+   *  change/note chủ. Vùng VIỆN DẪN (`ref:<ownerId>:<i>`) quy về chính thẻ đã
+   *  viện dẫn nó — người đọc bấm vào một đoạn gạch chấm là đang hỏi "ai nhắc
+   *  tới chỗ này?", nên câu trả lời là thẻ chủ, không phải một cửa sổ riêng
+   *  cho tham chiếu. Enrichment (sơ đồ/bảng thành phần) không có panel — bấm
+   *  vào đó không làm gì, vì nó không thuộc hệ đề xuất/duyệt. */
   function openAnnotationDetail(id: string) {
     const ownerId = id.startsWith(REF_ID_PREFIX)
       ? // bỏ tiền tố rồi cắt hậu tố `:<số>`. KHÔNG dùng split(':') — ownerId của
@@ -1601,11 +1604,11 @@ export function DocRedlinePreview({
     const target = resolveAnnotationDetail(ownerId, changes, notes);
     if (!target) return;
     // Luôn CHỌN (nháy sáng/cuộn tới) mark được bấm, kể cả sơ đồ/bảng — chỉ
-    // riêng MODAL chi tiết là không mở cho hai loại nội dung làm giàu này
+    // riêng PANEL chi tiết là không mở cho hai loại nội dung làm giàu này
     // (chúng đã có tương tác riêng: toggle Gốc/Đề xuất, bảng inline).
     setSelectedId(ownerId);
     if (target.kind === 'change' && (target.change.kind === 'flow-diagram' || isComponentTableChange(target.change))) return;
-    setDetailModal({ id: ownerId });
+    setDetailPanel({ id: ownerId });
   }
 
   // Modal vừa mở: cuộn tới đoạn được viện dẫn trong BẢN SAO tài liệu của modal
@@ -1631,19 +1634,19 @@ export function DocRedlinePreview({
     for (const mark of marks) setClass(mark, activeClass, true);
   }, [refModal]);
 
-  // Escape đóng modal (tham chiếu lẫn chi tiết). Gắn ở `document` chứ không ở
-  // phần tử modal: tiêu điểm có thể đang nằm ở nút Đóng, ở vùng cuộn, hay chưa
-  // ở đâu cả.
+  // Escape đóng cả cửa sổ tham chiếu lẫn panel chi tiết. Gắn ở `document` chứ
+  // không ở phần tử: tiêu điểm có thể đang nằm ở nút Đóng, ở vùng cuộn, hay
+  // chưa ở đâu cả.
   useEffect(() => {
-    if (!refModal && !detailModal) return;
+    if (!refModal && !detailPanel) return;
     const onKey = (ev: KeyboardEvent) => {
       if (ev.key !== 'Escape') return;
       setRefModal(null);
-      setDetailModal(null);
+      setDetailPanel(null);
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [refModal, detailModal]);
+  }, [refModal, detailPanel]);
 
   // Làm nổi tất cả mark của change đang được chọn. Chạy lại theo `docHtml` vì
   // HTML mới nghĩa là mark mới, chưa mang class nào.
@@ -2268,6 +2271,7 @@ export function DocRedlinePreview({
                 </div>
               </div>
             ) : null}
+            <div className={styles.docRow ?? ''}>
             <div className={styles.docCol} ref={docColRef}>
                 <div className={`${styles.docToolbarWp3 ?? ''} ${styles.modeToolbar ?? ''}`}>
                   <DocRedlineModeControls
@@ -2397,6 +2401,26 @@ export function DocRedlinePreview({
                   ),
                 )}
               </div>
+            {detailPanel ? (() => {
+              const target = resolveAnnotationDetail(detailPanel.id, changes, notes);
+              if (!target) return null;
+              const isChange = target.kind === 'change';
+              const id = isChange ? target.change.id : `${NOTE_ID_PREFIX}${target.note.id}`;
+              const dismissed = isChange ? target.change.status === 'dismissed' : target.note.status === 'dismissed';
+              return (
+                <AnnotationDetailPanel
+                  target={target}
+                  busy={busyId === id}
+                  error={errorById[id]}
+                  undoable={undoableIds.has(id)}
+                  dismissed={dismissed}
+                  onClose={() => setDetailPanel(null)}
+                  onDismiss={() => { if (isChange) void dismissChange(target.change); else void dismissNote(target.note); }}
+                  onOpenRef={(ref, i) => openRefModal(`${REF_ID_PREFIX}${id}:${i}`, ref)}
+                />
+              );
+            })() : null}
+            </div>
           </div>
         )}
       </div>
@@ -2468,33 +2492,6 @@ export function DocRedlinePreview({
         </div>
       ) : null}
 
-      {detailModal ? (() => {
-        const target = resolveAnnotationDetail(detailModal.id, changes, notes);
-        if (!target) return null;
-        const isChange = target.kind === 'change';
-        const id = isChange ? target.change.id : `${NOTE_ID_PREFIX}${target.note.id}`;
-        const dismissed = isChange ? target.change.status === 'dismissed' : target.note.status === 'dismissed';
-        return (
-          <div
-            className={styles.modalBackdrop}
-            role="presentation"
-            onClick={(ev) => {
-              if (ev.target === ev.currentTarget) setDetailModal(null);
-            }}
-          >
-            <AnnotationDetailModal
-              target={target}
-              busy={busyId === id}
-              error={errorById[id]}
-              undoable={undoableIds.has(id)}
-              dismissed={dismissed}
-              onClose={() => setDetailModal(null)}
-              onDismiss={() => { if (isChange) void dismissChange(target.change); else void dismissNote(target.note); }}
-              onOpenRef={(ref, i) => openRefModal(`${REF_ID_PREFIX}${id}:${i}`, ref)}
-            />
-          </div>
-        );
-      })() : null}
     </div>
   );
 }
@@ -2564,18 +2561,21 @@ function HighlightFilters({
 
 
 
-/** Modal chi tiết của MỘT change/note — thay cho rail/thẻ đã bỏ (xem docblock
- *  đầu file). Nội dung THEO PHÉP SỬA: Thêm hiện nội dung mới; Sửa hiện
+/** PANEL chi tiết của MỘT change/note, dựng cạnh phải cột tài liệu (không
+ *  phải modal: tài liệu vẫn thấy được và giữ nguyên vị trí cuộn trong lúc đọc
+ *  lý do/diff — đó là lý do quay lại right panel). Vẫn mang role="dialog"
+ *  (dialog KHÔNG-modal theo ARIA) vì nó là cửa sổ nội dung đóng/mở theo cú
+ *  bấm vùng bôi. Nội dung THEO PHÉP SỬA: Thêm hiện nội dung mới; Sửa hiện
  *  gốc→đề xuất; Xoá hiện đúng đoạn đề xuất bỏ (đoạn này vẫn CÒN NGUYÊN trong
  *  tài liệu, chỉ được tô/gạch ngang tại chỗ — không có văn bản nào bị ghi lại
- *  qua modal này). Note hiện phát hiện + đề xuất. `reason` (change) luôn hiện
+ *  qua panel này). Note hiện phát hiện + đề xuất. `reason` (change) luôn hiện
  *  ở cuối; note không có trường lý do riêng nên không có khối này.
  *
  *  Chữ hiển thị NGUYÊN VĂN (`white-space: pre-wrap` qua class `detailPre`),
  *  KHÔNG dùng `dangerouslySetInnerHTML`: nội dung ở đây là markdown THÔ lấy
  *  thẳng từ `changes.json`/`notes.json`, chưa qua renderMarkdownToSafeHtml —
  *  dựng làm HTML sẽ vừa thừa bước vừa hiện sai cú pháp `**`/`#` còn nguyên. */
-function AnnotationDetailModal({
+function AnnotationDetailPanel({
   target,
   busy,
   error,
@@ -2607,7 +2607,7 @@ function AnnotationDetailModal({
   const ruleId = c?.rule_id ?? n?.rule_id;
   const docRefs = c?.doc_refs ?? n?.doc_refs ?? [];
   return (
-    <div className={styles.modal} role="dialog" aria-modal="true" aria-label={title}>
+    <aside className={styles.detailPanel ?? ''} role="dialog" aria-label={title}>
       <div className={styles.modalHead}>
         <div className={styles.modalTitleWrap}>
           <span className={styles.modalTitle}>{title}</span>
@@ -2662,7 +2662,7 @@ function AnnotationDetailModal({
           {busy ? 'Đang lưu...' : dismissed ? 'Hoàn tác' : 'Bỏ'}
         </button>
       </div>
-    </div>
+    </aside>
   );
 }
 
