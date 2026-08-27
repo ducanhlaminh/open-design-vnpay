@@ -1243,3 +1243,53 @@ test('renderCompositionDraft: el.why dài (~130 ký tự) trong cột "Vai trò 
   const originalWords = new Set(longWhy.split(' '));
   for (const w of roleWords) assert.ok(originalWords.has(w), `từ "${w}" bị cắt giữa chừng trong cột vai trò`);
 });
+
+/* ── WP dr-review-screen-flow: kickoff "Thước đo luồng" ───────────────────── */
+
+test('buildEnrichKickoff: screenFlow có màn/cạnh → nêu 3 dạng rule_id (flowchart#edgeKey, screens#KEY, ux-review#UX-id) + cấm review sơ đồ gốc', () => {
+  const text = buildEnrichKickoff({
+    screenFlow: {
+      variant: 'improved',
+      findingsCount: 2,
+      screensInSection: [{ key: 'prd__6.4.1', name: 'Nhập thông tin', cell: 'od-6-4-1' }],
+      edgesInSection: [{ key: 'od-6-4-1→od-n1', label: 'Tiếp tục', fromName: 'Nhập thông tin', toName: 'Xác nhận đơn hàng' }],
+      outcomes: [{ cell: 'od-fail', label: 'Thanh toán lỗi', kind: 'error' }],
+    },
+  });
+  assert.ok(text.includes('Thước đo luồng: Luồng màn hình bản Cải thiện'));
+  assert.ok(text.includes('review/_screen-flow-context.json'));
+  assert.ok(text.includes('«Nhập thông tin» (prd__6.4.1, cell od-6-4-1)'));
+  assert.ok(text.includes('`od-6-4-1→od-n1` Nhập thông tin → Xác nhận đơn hàng [Tiếp tục]'));
+  assert.ok(text.includes('«Thanh toán lỗi» (lỗi, cell od-fail)'));
+  assert.ok(text.includes('flows/SCREEN-FLOW.flowchart.json#<edgeKey>'));
+  assert.ok(text.includes('flows/SCREEN-FLOW/screens.json#<KEY>'));
+  assert.ok(text.includes('flows/SCREEN-FLOW/ux-review.json#<UX-id>'));
+  assert.ok(text.includes('KHÔNG review sơ đồ gốc'));
+  assert.ok(text.includes('KHÔNG lặp lại'));
+  // Có nội dung → cảnh báo chung về cách sửa lát vẫn nối thêm như mọi đoạn khác.
+  assert.ok(text.includes('KHÔNG dùng lệnh shell'));
+});
+
+test('buildEnrichKickoff: screenFlow original → KHÔNG có phép (4) ux-review', () => {
+  const text = buildEnrichKickoff({
+    screenFlow: {
+      variant: 'original',
+      findingsCount: 0,
+      screensInSection: [{ key: 'prd__6.1.1', name: 'Trang chủ', cell: 'od-6-1-1' }],
+      edgesInSection: [],
+      outcomes: [],
+    },
+  });
+  assert.ok(text.includes('bản Nguyên bản'));
+  assert.ok(text.includes('flows/SCREEN-FLOW.flowchart.json#<edgeKey>'));
+  assert.ok(!text.includes('ux-review.json#<UX-id>'));
+});
+
+test('buildEnrichKickoff: screenFlow section không có màn/cạnh → chỉ dòng ngắn', () => {
+  const text = buildEnrichKickoff({
+    screenFlow: { variant: 'original', findingsCount: 0, screensInSection: [], edgesInSection: [], outcomes: [] },
+  });
+  assert.ok(text.includes('Thước đo luồng: Luồng màn hình bản Nguyên bản'));
+  assert.ok(text.includes('Section này không có màn của luồng'));
+  assert.ok(!text.includes('flowchart.json#<edgeKey>'));
+});

@@ -181,6 +181,15 @@ import { renderHtmlToPdf } from './bas/drawio-render.js';
 import { finalizeFlowUx, prepareFlowUxInputs, type FlowIndexEntry } from './flow-ux/index.js';
 import { validateMockups, MOCKUP_INPUTS_FILE, MOCKUP_CSS_FILE } from './screen-mockups.js';
 import { SCREEN_FLOW_CELLS_FILE, SCREEN_FLOW_ID, finalizeScreenFlowXml, saveScreenFlowEdit } from './flow-ux/screen-flow-xml.js';
+// WP dr-review-screen-flow: Luồng màn hình bản ĐÃ CHỌN làm thước đo đối chiếu
+// của dr-review (thay nguồn màn comp/ và nhánh thay sơ đồ SCREEN-FLOW).
+import {
+  SCREEN_FLOW_FLOWCHART_REF,
+  SCREEN_FLOW_SCREENS_REF,
+  loadScreenFlowReviewContext,
+  mapScreenFlowToPage,
+  writeScreenFlowReviewContext,
+} from './flow-ux/screen-flow-review.js';
 import {
   finalizeScreenFlowImprove,
   hasProposedEditedMarker,
@@ -697,6 +706,7 @@ import {
   buildEnrichKickoff,
   inferredScreenReviewFinding,
   type ReviewScreenReference,
+  type ScreenFlowKickoffInput,
 } from './docs-review-enrich.js';
 import {
   collectComponentCatalog,
@@ -19017,7 +19027,36 @@ export async function startServer({
           for (const name of compNames) {
             if (name.toLowerCase().endsWith('.screen.json')) set.add(path.posix.join('comp', name));
           }
+          // WP dr-review-screen-flow: hai file của Luồng màn hình bản đã chọn
+          // làm rule_id (kèm mảnh `#<KEY>` / `#<from→to>` — validator bỏ mảnh
+          // khi kiểm tồn tại). ux-review.json đã vào set ở vòng lặp trên.
+          for (const rel of [SCREEN_FLOW_SCREENS_REF, SCREEN_FLOW_FLOWCHART_REF]) {
+            const exists = await fs.promises
+              .stat(path.join(cwd, rel))
+              .then(() => true)
+              .catch(() => false);
+            if (exists) set.add(rel);
+          }
           return set;
+        })();
+        // WP dr-review-screen-flow: file nội bộ → tập id có thật (mảnh `#` của
+        // rule_id) để validator CẢNH BÁO (không chặn) khi agent trỏ UX-id lạ.
+        const internalFindingIds = await (async () => {
+          const map = new Map<string, Set<string>>();
+          for (const rel of internalRefs) {
+            if (!rel.endsWith('/ux-review.json')) continue;
+            const raw = await fs.promises.readFile(path.join(cwd, rel), 'utf8').catch(() => null);
+            if (raw == null) continue;
+            try {
+              const doc = JSON.parse(raw) as { findings?: Array<{ id?: unknown }> };
+              const ids = new Set<string>();
+              for (const f of doc.findings ?? []) if (typeof f?.id === 'string' && f.id) ids.add(f.id);
+              map.set(rel, ids);
+            } catch {
+              /* file hỏng → không có tập id → không cảnh báo */
+            }
+          }
+          return map as ReadonlyMap<string, ReadonlySet<string>>;
         })();
         // WP19a: criteria/components-guide.md (đóng băng ở khối docs-comp,
         // xem freeze phía trên — cùng cwd "docs-review" nên đã có mặt ở đây
@@ -19045,6 +19084,18 @@ export async function startServer({
           .readFile(path.join(cwd, 'flows', 'index.json'), 'utf8')
           .then((raw) => JSON.parse(raw) as FlowIndexEntry[])
           .catch(() => [] as FlowIndexEntry[]);
+        // WP dr-review-screen-flow: Luồng màn hình bản ĐÃ CHỌN (selection.json;
+        // vắng = original) là thước đo đối chiếu tài liệu — null khi dự án
+        // chưa chạy dr-flow (không có as-is.drawio) → hành vi y hệt trước WP.
+        // Ghi `review/_screen-flow-context.json` mỗi lần fan-out chạy (bằng
+        // chứng + web đọc). `screenFlowDescribedKeys` gom màn đã định vị được
+        // mục mô tả trên MỌI trang cho dòng tổng kết summary.md.
+        const screenFlowCtx = await loadScreenFlowReviewContext(cwd).catch((error) => {
+          console.debug('[docs-review] screen-flow context skipped:', error);
+          return null;
+        });
+        if (screenFlowCtx) await writeScreenFlowReviewContext(cwd, screenFlowCtx);
+        const screenFlowDescribedKeys = new Set<string>();
         /** `flows/index.json`/`comp/index.json` ghi path tương đối từ
          *  workflowRoot giống hệt `DocPage.mdPath` (cả hai đều
          *  `path.relative(cwd, …).replace(/\\/g, '/')`) — chuẩn hoá cho chắc
@@ -19234,6 +19285,12 @@ export async function startServer({
           // isCompositionOwnedChange ở khối C.
           const sysChanges: DocChange[] = [];
           const tablesBySection = new Map<number, Array<{ key: string; draftBlock: string; change: DocChange }>>();
+          // WP dr-review-screen-flow — phép đối chiếu (1) daemon làm: màn của
+          // Luồng màn hình bản đã chọn không định vị được mục trong trang →
+          // note gap (gộp vào `notes` cấp trang ở khối C). `screenFlowBySection`
+          // = màn/cạnh/kết cục thuộc từng section cho kickoff (phép 2–4 agent).
+          let screenFlowNotes: DocNote[] = [];
+          const screenFlowBySection = new Map<number, ScreenFlowKickoffInput>();
 
           // Cắt trang thành lát TRƯỚC khi chạy: mỗi section có file riêng nên
           // chúng chạy song song được. Đọc từ bản CLONE (không phải bản gốc) vì
@@ -19388,6 +19445,33 @@ export async function startServer({
                 }
               }
 
+              // WP dr-review-screen-flow: nguồn màn cho enrich khi comp/ vắng
+              // = màn của Luồng màn hình bản đã chọn thuộc trang này. Kickoff
+              // (màn/cạnh/kết cục theo section) dựng cho MỌI section của MỌI
+              // trang khi có thước đo — section không có màn nhận dòng ngắn để
+              // agent biết KHÔNG review sơ đồ gốc BA. Note gap (phép 1) chỉ khi
+              // compIndex vắng — có comp/ thì `inferredGapNotes` cũ đã lo và
+              // bảng cấu thành vẫn theo comp như trước.
+              if (screenFlowCtx) {
+                const mapping = mapScreenFlowToPage(screenFlowCtx, { pageSrc: pg.mdPath, sections, pageLines, original: cloneText });
+                for (const list of mapping.placedBySection.values()) for (const s of list) screenFlowDescribedKeys.add(s.key);
+                if (!compIndex) screenFlowNotes = mapping.gapNotes;
+                for (const sec of sections) {
+                  screenFlowBySection.set(sec.index, {
+                    variant: screenFlowCtx.variant,
+                    findingsCount: screenFlowCtx.findings.length,
+                    screensInSection: (mapping.placedBySection.get(sec.index) ?? []).map((s) => ({ key: s.key, name: s.name, cell: s.cell })),
+                    edgesInSection: (mapping.edgesBySection.get(sec.index) ?? []).map((e) => ({
+                      key: e.key,
+                      ...(e.label ? { label: e.label } : {}),
+                      ...(e.fromName ? { fromName: e.fromName } : {}),
+                      ...(e.toName ? { toName: e.toName } : {}),
+                    })),
+                    outcomes: mapping.outcomesBySection.get(sec.index) ?? [],
+                  });
+                }
+              }
+
               // Sơ đồ mermaid (flows) chạy SAU bảng — xem comment thứ tự ở
               // trên. replaceDiagramInSlice định vị fence bằng NỘI DUNG thân
               // mermaid (findMermaidFence, không phải chỉ số dòng) nên đọc lại
@@ -19399,6 +19483,11 @@ export async function startServer({
               for (const flow of flowIndex) {
                 try {
                   if (normEnrichSrc(flow.source) !== thisPageSrc) continue;
+                  // WP dr-review-screen-flow, quyết định 1: sơ đồ gốc BA KHÔNG
+                  // review nữa — không thay thân sơ đồ SCREEN-FLOW trong lát,
+                  // không change flow-diagram cho nó. Thước đo là bản đã chọn
+                  // (kickoff ở trên). Flow khác (docs-flow-ux cũ) giữ nguyên.
+                  if (flow.id === SCREEN_FLOW_ID) continue;
                   const asIsRel = flow.files?.asIs;
                   const proposedRel = flow.files?.proposed;
                   const reviewRelPath = flow.files?.review;
@@ -19531,6 +19620,7 @@ export async function startServer({
                   pageDiagramChanged: otherChangedFlowIds.length > 0 ? otherChangedFlowIds.map((flowId) => ({ flowId })) : undefined,
                   screensInThisSlice: screensBySection.get(sec.index),
                   unplacedScreens: unplacedScreens.length > 0 ? unplacedScreens : undefined,
+                  screenFlow: screenFlowBySection.get(sec.index),
                 });
                 if (text) enrichKickoffBySection.set(sec.index, text);
               }
@@ -19762,6 +19852,7 @@ export async function startServer({
                     ],
                     criteriaAnchors,
                     internalRefs,
+                    { findingIds: internalFindingIds, onWarning: (message) => warnings.push(message) },
                   ),
                 );
 
@@ -19886,7 +19977,9 @@ export async function startServer({
                     ...(!anchor || !original.includes(anchor) ? { anchor_unresolved: true as const } : {}),
                   };
                 });
-              notes = [...keptNotes, ...inferredGapNotes];
+              // WP dr-review-screen-flow: note gap phép (1) từ Luồng màn hình
+              // bản đã chọn (chỉ khi comp/ vắng — xem khối enrich).
+              notes = [...keptNotes, ...inferredGapNotes, ...screenFlowNotes];
 
               // Cổng unique TOÀN TRANG — lưới cuối, đặt TRƯỚC nhánh
               // đạt/hỏng (writeFile ở dưới đọc `errors.length` để quyết định
@@ -20116,8 +20209,21 @@ export async function startServer({
           return 'idle' as const;
         }
 
-        // Merge: daemon-owned, no LLM.
-        const { index, summaryMd } = mergeChangeReports(results);
+        // Merge: daemon-owned, no LLM. WP dr-review-screen-flow: kèm dòng
+        // "Luồng màn hình đối chiếu … · Màn có mục mô tả a/b" khi có thước đo.
+        const { index, summaryMd } = mergeChangeReports(
+          results,
+          screenFlowCtx
+            ? {
+                screenFlow: {
+                  variant: screenFlowCtx.variant,
+                  findingsCount: screenFlowCtx.findings.length,
+                  screensDescribed: screenFlowDescribedKeys.size,
+                  screensTotal: screenFlowCtx.screens.filter((s) => !s.removedByProposal).length,
+                },
+              }
+            : undefined,
+        );
 
         const anySucceeded = results.some((r) => r.status === 'succeeded');
         const incompleteResults = results.filter(

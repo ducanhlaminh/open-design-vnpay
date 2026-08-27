@@ -2236,3 +2236,58 @@ describe('WP-redline-id-namespace — dedupeNotes chạy trên notes ĐÃ namesp
     assert.equal(out[0]!.id, 's00-n1');
   });
 });
+
+/* ── WP dr-review-screen-flow: rule_id có mảnh `#` + flows/… cho gap/edge-case ── */
+
+test('validateRuleIds: rule_id flows/… có mảnh # — kiểm tồn tại theo phần trước #; gap/edge-case hợp lệ; ux-writing vẫn bị chặn', () => {
+  const internalRefs = new Set(['flows/SCREEN-FLOW/screens.json', 'flows/SCREEN-FLOW.flowchart.json', 'flows/SCREEN-FLOW/ux-review.json']);
+  const ok = validateRuleIds(
+    [
+      { id: 'n1', kind: 'gap', rule_id: 'flows/SCREEN-FLOW/screens.json#prd__6.4.1' },
+      { id: 'n2', kind: 'edge-case', rule_id: 'flows/SCREEN-FLOW/screens.json#prd__6.4.1' },
+      { id: 'c1', kind: 'flow', rule_id: 'flows/SCREEN-FLOW.flowchart.json#od-6-4-1→od-n1' },
+      { id: 'c2', kind: 'flow', rule_id: 'flows/SCREEN-FLOW/ux-review.json#UX-01' },
+    ],
+    new Set<string>(),
+    internalRefs,
+  );
+  assert.deepEqual(ok, []);
+  const blocked = validateRuleIds([{ id: 'c3', kind: 'ux-writing', rule_id: 'flows/SCREEN-FLOW/ux-review.json#UX-01' }], new Set<string>(), internalRefs);
+  assert.equal(blocked.length, 1);
+  assert.match(blocked[0]!, /c3/);
+  assert.match(blocked[0]!, /'gap' hoặc 'edge-case'/);
+  const missing = validateRuleIds([{ id: 'c4', kind: 'flow', rule_id: 'flows/SCREEN-FLOW/khong-co.json#x' }], new Set<string>(), internalRefs);
+  assert.equal(missing.length, 1);
+  assert.match(missing[0]!, /không tồn tại trong nguồn kết quả nội bộ/);
+});
+
+test('validateRuleIds: mảnh #UX-id không có trong ux-review → CẢNH BÁO (onWarning), không lỗi', () => {
+  const internalRefs = new Set(['flows/SCREEN-FLOW/ux-review.json']);
+  const findingIds = new Map([['flows/SCREEN-FLOW/ux-review.json', new Set(['UX-01'])]]);
+  const warnings: string[] = [];
+  const errors = validateRuleIds(
+    [
+      { id: 'c1', kind: 'flow', rule_id: 'flows/SCREEN-FLOW/ux-review.json#UX-01' },
+      { id: 'c2', kind: 'flow', rule_id: 'flows/SCREEN-FLOW/ux-review.json#UX-99' },
+    ],
+    new Set<string>(),
+    internalRefs,
+    { findingIds, onWarning: (m) => warnings.push(m) },
+  );
+  assert.deepEqual(errors, []);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0]!, /c2/);
+  assert.match(warnings[0]!, /UX-99/);
+});
+
+test('mergeChangeReports: opts.screenFlow → summary.md có dòng "Luồng màn hình đối chiếu … · Màn có mục mô tả a/b" + index.screen_flow; không opts → dòng cũ nguyên văn', () => {
+  const results = [
+    { slug: 'a', page: 'A', docPath: 'docs/a.md', reviewPath: 'review/docs/a.md', status: 'succeeded' as const, changes: [], notes: [] },
+  ];
+  const withSf = mergeChangeReports(results, { screenFlow: { variant: 'improved', findingsCount: 4, screensDescribed: 5, screensTotal: 8 } });
+  assert.match(withSf.summaryMd, /Sơ đồ đã thay: 0 · Bảng thành phần đã chèn: 0 · Luồng màn hình đối chiếu: Cải thiện \(4 finding\) · Màn có mục mô tả: 5\/8\n\n/);
+  assert.deepEqual((withSf.index as any).screen_flow, { variant: 'improved', findings: 4, screens_described: 5, screens_total: 8 });
+  const without = mergeChangeReports(results);
+  assert.match(without.summaryMd, /Sơ đồ đã thay: 0 · Bảng thành phần đã chèn: 0\n\n/);
+  assert.equal((without.index as any).screen_flow, undefined);
+});

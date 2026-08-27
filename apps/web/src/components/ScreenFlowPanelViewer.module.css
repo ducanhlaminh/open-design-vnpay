@@ -1,0 +1,109 @@
+/* ScreenFlowPanelViewer — sơ đồ Luồng màn hình bản đã chọn trong right panel
+   của DocRedlinePreview (WP dr-review-screen-flow). Overlay `.fullscreen`
+   tái dùng đúng kiểu FlowUxReviewPreview.module.css (portal lên body,
+   position fixed + 100dvh). */
+
+.root {
+  margin: 10px 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.title {
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-soft, #4b5563);
+}
+
+.badge {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border, #e1e5eb);
+  background: var(--bg-subtle, #eef1f5);
+  color: var(--text-muted, #57544e);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.zoomBtn {
+  margin-left: auto;
+  border: 1px solid var(--border, #e1e5eb);
+  border-radius: 6px;
+  background: var(--bg, #fff);
+  color: var(--text-muted, #57544e);
+  font-size: 11.5px;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+.zoomBtn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.frame {
+  position: relative;
+  height: 300px;
+  border: 1px solid var(--border, #e1e5eb);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--bg, #fff);
+}
+
+.viewer {
+  width: 100%;
+  height: 100%;
+}
+
+.hint {
+  margin: 8px 0 0;
+  color: var(--text-muted, #6b7280);
+  font-size: 11.5px;
+  font-style: italic;
+  line-height: 1.5;
+}
+
+.fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+  background: var(--bg, #fff);
+  color: var(--text, #1a1916);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100vh;
+  height: 100dvh;
+}
+
+.fsHead {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px 8px;
+  border-bottom: 1px solid var(--border, #e1e5eb);
+  background: var(--bg-subtle, #eef1f5);
+}
+.fsSpacer {
+  flex: 1 1 auto;
+}
+.fsBody {
+  flex: 1 1 auto;
+  min-height: 0;
+  position: relative;
+}
+.fsBody .viewer {
+  height: 100%;
+}

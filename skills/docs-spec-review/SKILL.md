@@ -3,19 +3,20 @@ name: docs-spec-review
 description: |
   Terminal stage of the `docs-review` workflow (pipeline `dr-review`) — an
   INDEPENDENT workflow from `docs-to-ui` and `docs-to-prd`, with its own docs
-  ingest run (`dr-docs`) and its own component audit run (`dr-comp`), never
-  sharing output with either. The daemon has
-  ALREADY cloned every ingested page into `review/docs/<same path>.md` before
-  this skill runs (no LLM needed for that step). Review ONE SECTION of one
-  page's CLONE (the daemon fans out per heading-section) against an optional
-  user-supplied set of criteria (`criteria/*.md` — rule text + a component
-  list) across five lenses: ux-writing, flow, gap, edge-case, component. The
-  `component` lens is NOT re-derived here — the upstream `dr-comp` stage
-  ("Màn hình → Component") already mapped every screen of the feature to the
-  Design System and wrote `comp/<SCREEN-KEY>.screen.json` (index in
-  `comp/index.json`); read those files and turn each element whose document
-  declaration disagrees with the DS proposal (`docType` ≠ `ds.component`, or
-  `ds: null` with a `why`) into a note. Embedded mockups/screenshots are illustrative
+  ingest run (`dr-docs`) and its own screen-flow stages (`dr-flow` = "Luồng
+  màn hình", `dr-flow-improve` = "Cải thiện luồng"), never sharing output with
+  either. The daemon has ALREADY cloned every ingested page into
+  `review/docs/<same path>.md` before this skill runs (no LLM needed for that
+  step). Review ONE SECTION of one page's CLONE (the daemon fans out per
+  heading-section) against an optional user-supplied set of criteria
+  (`criteria/*.md` — rule text + a component list) across five lenses:
+  ux-writing, flow, gap, edge-case, component. The measuring stick for the
+  `flow` lens is the SELECTED screen flow (`flows/SCREEN-FLOW/selection.json`,
+  absent = original) summarised by the daemon in
+  `review/_screen-flow-context.json` — the BA's original diagram inside the
+  document is NOT reviewed any more. The `component` lens only runs when the
+  project has `comp/` (kickoff says so) or `criteria/components.md`.
+  Embedded mockups/screenshots are illustrative
   only and must not be opened or used as evidence for flow, gap, edge-case, or
   component findings. Do NOT edit the slice text — declare every proposed
   Thêm/Sửa/Xóa as an entry (before/quote/anchor/reason) in a
@@ -111,23 +112,25 @@ tài liệu.
   danh sách component hợp lệ (cho nhóm component bên dưới). **Thiếu
   `criteria/` hoàn toàn KHÔNG phải lỗi** — dùng bộ mặc định ngay dưới đây thay
   vì dừng lại.
-- **Sơ đồ luồng đề xuất (chỉ khi kickoff nhắc):** trước khi bạn chạy, daemon đã
-  tự đối chiếu `flows/index.json` với trang của bạn và — nếu lát cắt của bạn
-  chứa sơ đồ ` ```mermaid ` của luồng đó — tự thay thân sơ đồ bằng
-  `flows/<id>/proposed.mmd` và đổi dòng caption ngay trong lát bạn sắp đọc.
-  Kickoff nêu đích danh khi việc này xảy ra với lát của bạn, hoặc khi sơ đồ
-  của CẢ TRANG đã đổi dù lát của bạn không chứa sơ đồ — đọc
-  `flows/<id>/ux-review.json` (`summary` + `findings`) để biết đổi gì. Xem
-  Bước 1 nhóm flow và Bước 2.
-- **Bảng "Cấu thành màn hình" đã nằm sẵn trong lát (chỉ khi kickoff nhắc):**
-  daemon TỰ CHÈN bảng này vào lát của bạn TRƯỚC KHI bạn chạy — nguồn là
-  `comp/<KEY>.screen.json` cho một màn hình cụ thể nằm trong lát của bạn,
-  chèn ngay sau mockup của màn. Kickoff nêu đích danh `<KEY>` và tên màn
-  (dòng tiêu đề đậm «Cấu thành màn hình (Design System) — <tên màn>»). Đây là
-  enrichment DO DAEMON DỰNG — bạn KHÔNG chèn, KHÔNG sửa bảng này (kể cả hai
-  cột "Vai trò / dùng để" và "Ghi chú" mà trước đây bạn được sửa trực tiếp);
-  nội dung bảng mâu thuẫn với tài liệu thì ghi **note** (xem Bước 4), không
-  sửa ô và không khai change.
+- **Luồng màn hình bản ĐÃ CHỌN — ĐỌC ĐẦU TIÊN (file nhỏ):**
+  `review/_screen-flow-context.json` — daemon dựng từ `flows/SCREEN-FLOW/`
+  theo `selection.json` (vắng = `original`): `variant`
+  (`original`|`improved`), `diagram` (file + trang draw.io đang dùng),
+  `screens[]` (key/name/anchorText/cell, màn `provenance: "proposed"` chỉ có
+  ở bản cải thiện), `edges[]` (`key` = `<from>→<to>`, label, fromName/toName),
+  `outcomes[]` (kết cục thành công/lỗi/kết thúc) và `findings[]` (UX-xx của
+  bản cải thiện; original → rỗng). Đây là **thước đo duy nhất** cho nhóm
+  flow/edge-case (xem Bước 1). Kickoff đã trích sẵn màn/cạnh/kết cục THUỘC
+  section của bạn — file này chỉ để tra thêm ngữ cảnh (tên node hai đầu cạnh,
+  finding). **File không tồn tại** (dự án chưa chạy dr-flow) → không có thước
+  đo luồng: nhóm flow chỉ còn luật mặc định `default#flow`.
+- **Sơ đồ gốc BA vẽ trong tài liệu KHÔNG review nữa** (ảnh/attachment
+  draw.io, fence mermaid): không nhận xét, không đề xuất sửa thân sơ đồ.
+- **Chỉ khi kickoff nhắc (dự án có `comp/`):** bảng "Cấu thành màn hình" đã
+  nằm sẵn trong lát (daemon chèn từ `comp/<KEY>.screen.json`) — KHÔNG sửa,
+  KHÔNG khai change; mâu thuẫn với tài liệu thì ghi note (Bước 4). Sơ đồ
+  mermaid của flow KHÁC (không phải SCREEN-FLOW) có thể đã bị daemon thay bằng
+  `flows/<id>/proposed.mmd` — kickoff nêu đích danh, không tự sửa fence/caption.
 - **Chỉ đọc file `criteria/` có thật** — liệt kê thư mục `criteria/` trước,
   thiếu file nào (`rules.md`, `components.md`…) thì bỏ qua, đừng thử đọc rồi
   báo lỗi.
@@ -159,12 +162,10 @@ Mỗi tiêu chí ở đây có một **định danh riêng** (cột `rule_id`) �
 - **edge-case** (`default#edge-case`)**:** state lỗi, state rỗng, state
   loading, giới hạn dữ liệu (validation, độ dài, số lượng) không được nêu ở
   nơi một hành động có thể thất bại.
-- **component:** nhóm này KHÔNG lấy tiêu chí từ bộ mặc định — nó lấy từ
-  **kết quả có sẵn** của bước `dr-comp` ở `comp/<SCREEN-KEY>.screen.json`
-  (danh sách màn ở `comp/index.json`; xem Bước 1, nhóm 5), nên nó KHÔNG có
-  `default#` nào. Không có file `comp/…` thì quay về luật cũ: **BỎ QUA nhóm
-  này** khi `criteria/` không cung cấp danh sách component — không có gì để
-  đối chiếu thì đừng đoán.
+- **component:** nhóm này KHÔNG có `default#` nào — chỉ chạy khi có
+  `comp/<SCREEN-KEY>.screen.json` (kickoff nhắc) hoặc `criteria/components.md`
+  (xem Bước 1, nhóm 5). Không có cả hai thì **BỎ QUA nhóm này** — không có gì
+  để đối chiếu thì đừng đoán.
 
 Bảy định danh trên là TẬP ĐÓNG — daemon đối chiếu và một `default#…` bịa ra
 làm hỏng cả trang, y như một anchor bịa trong `criteria/`.
@@ -204,63 +205,41 @@ theo đúng 5 nhóm:
 1. **ux-writing** — mơ hồ ai làm gì, thuật ngữ không nhất quán, viết tắt tối
    nghĩa, nhãn nút/thông báo không nói rõ hành động hoặc hậu quả. KHÔNG soi
    chính tả (xem Hard rules).
-2. **flow** — luồng thao tác có logic, có điểm kết thúc. Kickoff báo sơ đồ
-   luồng của TRANG đã đổi (xem Bước 0) thì đối chiếu câu mô tả nhánh trong lát
-   của bạn với bản mới (`flows/<id>/proposed.mmd`, findings ở
-   `flows/<id>/ux-review.json`) — câu nào mô tả một nhánh đã đổi mà không còn
-   khớp thì đề xuất sửa, `kind: "flow"`, `rule_id: "flows/<id>/ux-review.json"`.
-   Đây là nhóm DUY NHẤT được dùng rule_id dạng `flows/…` — xem Hard rules cho
-   sơ đồ chính nó (bạn không được tự sửa fence/caption, chỉ đề xuất sửa CHỮ mô
-   tả).
-3. **gap** — thiếu mô tả cho một tính năng/màn hình đã được nhắc tới.
-4. **edge-case** — thiếu state lỗi/rỗng/loading/giới hạn.
-5. **component** — **ĐỌC KẾT QUẢ CÓ SẴN, KHÔNG SUY LẠI TỪ ĐẦU.** Bước
-   `dr-comp` ("Màn hình → Component") chạy trước bạn đã map từng màn hình của
-   feature (lấy từ bước Đánh giá luồng UX) sang Design System và ghi
-   `comp/<SCREEN-KEY>.screen.json` (SCREEN-KEY = `<tên-file-md>__<mã màn>`;
-   danh sách ở `comp/index.json`, trường `source` cho biết màn thuộc trang
-   nào). Mở các file của màn **thuộc trang và section của bạn**, và với mỗi
-   `element` mà tài liệu khai một kiểu khác đề xuất DS — `docType` có mà khác
-   `ds.component`, hoặc `ds: null` kèm `why` (DS không có thứ tài liệu đòi) —
-   **GỘP** thành note theo đúng luật dưới đây, ở Bước 4. Đo trên một dự án
-   thật: ghi MỘT note MỖI element làm 44/57 note của một trang là note trùng
-   nhau, trong đó 8 note giống hệt từng chữ "Dùng Text Field State=Default" —
-   nên luật bây giờ là GỘP, không phải một note một element:
+2. **flow** — đối chiếu CHỮ trong lát với **Luồng màn hình bản đã chọn**
+   (kickoff "Thước đo luồng" + `review/_screen-flow-context.json`, Bước 0).
+   Bốn phép đối chiếu — phép (1) daemon ĐÃ làm, bạn làm (2)(3)(4):
 
-   - **Nhóm theo đích đề xuất, không theo element.** Mọi element trong CÙNG
-     section có CÙNG đích đề xuất — cùng `ds.component` + `ds.variant`, hoặc
-     cùng `ds: null` với cùng hướng fallback — ghi thành **ĐÚNG MỘT note**.
-   - `anchor` = `label` của element **ĐẦU TIÊN** trong nhóm (nguyên văn, phải
-     tìm thấy trong bản GỐC).
-   - `finding` liệt kê MỌI trường/element bị ảnh hưởng trong nhóm — kể tên tối
-     đa 6, còn lại rút gọn thành "+N trường khác".
-   - `suggestion` ghi **một lần** cho cả nhóm.
-   - **KHÔNG ghi note component chỉ để LẶP LẠI thông tin đã nằm trong bảng
-     "Cấu thành màn hình" của cùng màn** (daemon đã tự chèn bảng đó — xem Bước
-     0). Note component chỉ tồn tại khi có **MÂU THUẪN thật** (`docType` ≠
-     `ds.component`, hoặc `ds: null` kèm `why`) mà bảng không chở được, hoặc
-     khi cần giải thích dài hơn một ô bảng cho phép.
+   | # | Đối chiếu | Ai | Kết quả |
+   | --- | --- | --- | --- |
+   | 1 | Màn trong luồng ↔ mục tài liệu | **daemon** (đã ghi note gap `sys-screen-flow-*`) | **KHÔNG lặp lại** |
+   | 2 | Cạnh (chuyển màn / điều kiện rẽ nhánh) ↔ câu điều hướng trong chữ | bạn | lệch → **change** `kind: "flow"`, `rule_id: "flows/SCREEN-FLOW.flowchart.json#<edgeKey>"` (`edgeKey` = `<from>→<to>` như kickoff liệt kê) |
+   | 3 | Kết cục / nhánh lỗi có trong luồng ↔ hành vi tài liệu mô tả | bạn | thiếu → **note** `kind: "edge-case"`, `rule_id: "flows/SCREEN-FLOW/screens.json#<KEY>"` (màn liên quan tới kết cục đó) |
+   | 4 | (chỉ bản `improved`) finding `UX-xx` ↔ chữ | bạn | chữ chưa phản ánh → **change** `kind: "flow"`, `rule_id: "flows/SCREEN-FLOW/ux-review.json#<UX-id>"` |
 
-   | Trường của note | Lấy từ |
-   | --- | --- |
-   | `kind` | luôn là `"component"` |
-   | `anchor` | `label` của element ĐẦU TIÊN trong nhóm |
-   | `rule_id` | `criteria/components.md#<ds.anchor>` nếu có `ds`; không có thì bỏ trống |
-   | `finding` | liệt kê các trường/element bị ảnh hưởng trong nhóm (tối đa 6, quá thì "+N trường khác") — dựa trên `why` của element |
-   | `suggestion` | component/biến thể DS đề xuất (`ds.component` + `ds.variant`), hoặc `fallback` của vai trò trong `comp/_role-map.json` |
-
-   Element có `docType` trùng `ds.component`, hoặc không có `docType` và có
-   `ds` → **không ghi gì** (không có mâu thuẫn). Element thuộc màn nằm ngoài
-   section của bạn → để cho lượt chạy của section đó.
-
-   **Vì sao đọc file thay vì tự phán:** `dr-comp` đã map màn hình vào Design
-   System một lần cho cả feature. Một nguồn dữ liệu duy nhất giữ kết luận nhất
-   quán giữa các section mà không biến ảnh minh hoạ thành hướng thiết kế.
-
-   **Không có file `comp/…`** (dự án chạy từ trước khi có bước `dr-comp`) →
-   quay về luật cũ: chỉ làm nhóm này khi `criteria/` có danh sách component,
-   không có thì **bỏ qua hoàn toàn** (không tạo change/note nào thuộc nhóm
-   `component`) — không có gì để đối chiếu thì đừng đoán.
+   - Chỉ dùng màn/cạnh/kết cục CÓ trong kickoff/context — **không phát minh**
+     màn, cạnh hay nhánh ngoài đó. Section không có màn của luồng (kickoff nói
+     rõ) → nhóm này chỉ còn luật mặc định `default#flow` (điểm bắt đầu/kết
+     thúc, bước có hành động mà thiếu kết quả).
+   - **KHÔNG nhận xét sơ đồ gốc BA** vẽ trong tài liệu (ảnh, attachment
+     draw.io, fence mermaid) — quyết định sản phẩm: sơ đồ gốc không review.
+   - `rule_id` dạng `flows/…` chỉ dành cho kind `flow` / `gap` / `edge-case`
+     (+ `flow-diagram` của daemon) — xem Hard rules.
+3. **gap** — thiếu mô tả cho một tính năng/màn hình đã được nhắc tới. Màn của
+   luồng không có mục mô tả thì daemon đã ghi (phép 1) — không lặp.
+4. **edge-case** — thiếu state lỗi/rỗng/loading/giới hạn; kết cục lỗi của
+   luồng mà chữ không mô tả → phép (3) ở trên.
+5. **component** — **chỉ khi có `comp/` (kickoff nhắc) hoặc
+   `criteria/components.md`; không có → bỏ qua hoàn toàn** (không change/note
+   nào thuộc nhóm này). Khi có `comp/<SCREEN-KEY>.screen.json` cho màn thuộc
+   section của bạn: element mà tài liệu khai khác đề xuất DS (`docType` ≠
+   `ds.component`, hoặc `ds: null` kèm `why`) → **GỘP theo đích đề xuất**
+   thành ĐÚNG MỘT note/nhóm (`kind: "component"`, `anchor` = `label` element
+   đầu nhóm, `rule_id: "criteria/components.md#<ds.anchor>"` nếu có `ds`,
+   `finding` kể tối đa 6 trường rồi "+N trường khác", `suggestion` một lần).
+   Không lặp lại nội dung đã có trong bảng "Cấu thành màn hình"; element khớp
+   DS hoặc thuộc màn ngoài section → không ghi gì. Chỉ có
+   `criteria/components.md` (không `comp/`) → dùng nó làm danh mục đóng để
+   soát tên component tài liệu nhắc.
 
 Với mỗi tiêu chí có trong `criteria/*.md`, ghi lại `rule_id` (định danh của
 rule đó trong file criteria — ví dụ heading hoặc số thứ tự) để trace được đề
@@ -287,8 +266,8 @@ xuất vì rule nào.
 - **TUYỆT ĐỐI không đụng bảng "Cấu thành màn hình" hay fence ` ```mermaid `/
   dòng caption `*flow-diagram — …*`** dù bạn thấy chúng sai/thiếu — đây là
   enrichment do daemon dựng (xem Bước 0). Mâu thuẫn với bảng thì ghi note (Bước
-  4); câu chữ mô tả nhánh luồng lệch với sơ đồ mới thì khai `kind: "flow"`
-  (Bước 1/3) — không tự sửa sơ đồ.
+  4); câu chữ mô tả điều hướng lệch với Luồng màn hình bản đã chọn thì khai
+  `kind: "flow"` (Bước 1/3) — không tự sửa/đề xuất sửa sơ đồ nào.
 - **CẤM chèn bất kỳ chuỗi chú giải nào** (ví dụ `[Rà soát …]`) vào bất cứ đâu
   — nhận xét không diễn đạt được bằng một cặp `before`/`quote` thì đi vào
   `notes.json` (Bước 4).
@@ -361,10 +340,9 @@ sửa bảng này và KHÔNG khai change nào cho nó (xem Bước 2). Nội dun
 thuẫn với tài liệu theo cách không diễn đạt được bằng một cặp `before`/`quote`
 thì ghi **note** `rule_id: "comp/<KEY>.screen.json"` (Bước 4).
 
-**`kind: "flow-diagram"` là CỦA DAEMON, không phải của bạn.** Sơ đồ đề xuất ở
-Bước 0/2 do daemon tự thay và tự khai change — bạn **KHÔNG được tự tạo** một
-change kind này dù bạn thấy lát của mình chứa sơ đồ đã đổi; daemon đánh hỏng
-cả trang nếu phát hiện. Câu chữ mô tả nhánh luồng đổi theo sơ đồ mới thì khai
+**`kind: "flow-diagram"` là CỦA DAEMON, không phải của bạn.** Bạn **KHÔNG
+được tự tạo** một change kind này; daemon đánh hỏng cả trang nếu phát hiện.
+Câu chữ mô tả điều hướng lệch với Luồng màn hình bản đã chọn thì khai
 `kind: "flow"` (xem Bước 1, nhóm flow), không phải `flow-diagram`.
 
 - `kind`: một trong `ux-writing` | `flow` | `gap` | `edge-case` | `component`
@@ -529,14 +507,26 @@ là mảng rỗng, không phải lỗi.
     khi dự án KHÔNG có `criteria/` (bộ mặc định nằm trong chính skill này, nó
     không phụ thuộc thư mục criteria), nên một `default#` bịa ra làm hỏng
     trang y như một anchor bịa.
-- **CẤM tự vẽ/sửa/đề xuất sửa sơ đồ mermaid hay dòng caption của nó** (fence
-  ` ```mermaid ` và `*flow-diagram — …*` ngay dưới) — kể cả khi bạn thấy sơ đồ
-  sai hoặc thiếu nhánh. Đó là việc của bước Đánh giá luồng UX (`dr-flow`),
-  daemon đã tự thay bằng bản đề xuất trước khi bạn chạy (xem Bước 0). Câu chữ
-  mô tả luồng lệch với sơ đồ mới thì khai `kind: "flow"` (Bước 1/3, đây cũng
-  chỉ là đề xuất, không sửa gì trên đĩa).
-- **Bảng "Cấu thành màn hình" — daemon tự chèn (Bước 0) và TỰ QUẢN LÝ toàn bộ
-  nội dung của nó, kể cả hai cột "Vai trò / dùng để" và "Ghi chú".** Bạn KHÔNG
+  - **`rule_id` nguồn nội bộ `flows/…` có mảnh `#`** — phần trước `#` là file
+    CÓ THẬT trong workflow, phần sau là id trong file (web dùng để tô cell trên
+    sơ đồ). Đúng ba dạng:
+    `flows/SCREEN-FLOW/screens.json#<KEY>` (màn — kind `gap`/`edge-case`),
+    `flows/SCREEN-FLOW.flowchart.json#<from>→<to>` (cạnh, mũi tên unicode `→` —
+    kind `flow`),
+    `flows/SCREEN-FLOW/ux-review.json#<UX-id>` (finding bản cải thiện — kind
+    `flow`). `flows/…` chỉ hợp lệ cho kind `flow` / `flow-diagram` / `gap` /
+    `edge-case`; dùng cho `ux-writing`/`component` là lỗi cứng. `UX-id` không
+    có trong ux-review chỉ bị cảnh báo, nhưng KEY/edgeKey phải lấy đúng từ
+    kickoff/context — không bịa.
+- **CẤM tự vẽ/sửa/đề xuất sửa bất kỳ sơ đồ nào** (sơ đồ gốc BA trong tài
+  liệu, fence ` ```mermaid ` và caption `*flow-diagram — …*`, sơ đồ Luồng màn
+  hình) — kể cả khi bạn thấy sơ đồ sai hoặc thiếu nhánh. Sơ đồ gốc BA KHÔNG
+  review; sơ đồ Luồng màn hình là việc của `dr-flow`/`dr-flow-improve`. Câu
+  chữ lệch với Luồng màn hình bản đã chọn thì khai `kind: "flow"` (Bước 1/3,
+  đây cũng chỉ là đề xuất, không sửa gì trên đĩa).
+- **Bảng "Cấu thành màn hình" (chỉ dự án có `comp/`) — daemon tự chèn (Bước
+  0) và TỰ QUẢN LÝ toàn bộ nội dung của nó, kể cả hai cột "Vai trò / dùng để"
+  và "Ghi chú".** Bạn KHÔNG
   sửa bảng này và KHÔNG khai change nào cho nó (xem Bước 2/3). Nội dung mâu
   thuẫn với tài liệu theo cách không diễn đạt được bằng `before`/`quote` thì
   ghi note `rule_id: "comp/<KEY>.screen.json"` (Bước 4).

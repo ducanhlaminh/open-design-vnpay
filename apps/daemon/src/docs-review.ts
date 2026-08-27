@@ -1288,19 +1288,35 @@ export function collectCriteriaAnchors(files: Array<{ name: string; text: string
  *      trỏ vào `criteria/` mà trỏ vào một file kết quả daemon tự dựng (sơ đồ
  *      luồng, bảng thành phần — xem WP2): KHÔNG đối chiếu với `anchors` dù
  *      dự án có `criteria/` hay không. Vẫn kiểm được hai thứ bằng máy:
- *        - kind đúng chỗ — `flows/…` chỉ hợp lệ cho kind `flow` hoặc
- *          `flow-diagram`; `comp/…` chỉ hợp lệ cho kind `component` (cùng tinh
- *          thần với luật `criteria/components.md#…` ở (b) trên).
+ *        - kind đúng chỗ — `flows/…` chỉ hợp lệ cho kind `flow`, `flow-diagram`,
+ *          `gap`, `edge-case` (WP dr-review-screen-flow nới thêm gap/edge-case:
+ *          màn thiếu mục mô tả, kết cục không mô tả); `comp/…` chỉ hợp lệ cho
+ *          kind `component` (cùng tinh thần với luật `criteria/components.md#…`
+ *          ở (b) trên).
  *        - tồn tại thật — nếu gọi kèm `internalRefs` (tập rule_id có file thật
- *          trên đĩa) thì rule_id phải nằm trong tập đó; không truyền
+ *          trên đĩa) thì PHẦN TRƯỚC `#` của rule_id phải nằm trong tập đó
+ *          (mảnh `#<id>` là id trong file — web dùng để tô cell); không truyền
  *          `internalRefs` thì bỏ qua kiểm tra tồn tại (giữ hàm này pure, không
- *          tự đọc đĩa). */
+ *          tự đọc đĩa). Mảnh `#` không có trong `opts.findingIds` của file →
+ *          chỉ cảnh báo qua `opts.onWarning`, không chặn. */
 export function validateRuleIds(
   entries: Array<{ id: string; kind: DocChangeKind; rule_id?: string }>,
   anchors: Set<string>,
   internalRefs?: Set<string>,
+  opts?: {
+    /** WP dr-review-screen-flow: file nội bộ → tập id có thật trong file
+     *  (vd `flows/SCREEN-FLOW/ux-review.json` → {UX-01, …}). Mảnh `#id` không
+     *  có trong tập → CẢNH BÁO qua `onWarning` (không chặn). */
+    findingIds?: ReadonlyMap<string, ReadonlySet<string>>;
+    onWarning?: (message: string) => void;
+  },
 ): string[] {
   const errors: string[] = [];
+  // WP dr-review-screen-flow — hợp đồng rule_id có mảnh `#` cho nguồn nội bộ:
+  // phần trước `#` = file thật (kiểm tồn tại), phần sau = id trong file (web
+  // tô cell). `flows/…` nay hợp lệ cho cả kind gap/edge-case (màn thiếu mục,
+  // kết cục không mô tả), không chỉ flow/flow-diagram.
+  const FLOWS_KINDS: ReadonlySet<DocChangeKind> = new Set(['flow', 'flow-diagram', 'gap', 'edge-case']);
 
   // (c) trước early-return: bộ mặc định không đọc `criteria/` nên không được
   // hưởng ngoại lệ "thiếu criteria/ thì bỏ qua" bên dưới.
@@ -1322,9 +1338,9 @@ export function validateRuleIds(
     const isCompRef = ruleId.startsWith('comp/');
     if (!isFlowsRef && !isCompRef) continue;
 
-    if (isFlowsRef && entry.kind !== 'flow' && entry.kind !== 'flow-diagram') {
+    if (isFlowsRef && !FLOWS_KINDS.has(entry.kind)) {
       errors.push(
-        `"${entry.id}" dùng rule_id "${ruleId}" cho kind "${entry.kind}": rule_id "flows/…" là nguồn kết quả nội bộ, chỉ được làm rule_id cho kind 'flow' hoặc 'flow-diagram'.`,
+        `"${entry.id}" dùng rule_id "${ruleId}" cho kind "${entry.kind}": rule_id "flows/…" là nguồn kết quả nội bộ, chỉ được làm rule_id cho kind 'flow', 'flow-diagram', 'gap' hoặc 'edge-case'.`,
       );
     }
     if (isCompRef && entry.kind !== 'component') {
@@ -1332,8 +1348,13 @@ export function validateRuleIds(
         `"${entry.id}" dùng rule_id "${ruleId}" cho kind "${entry.kind}": rule_id "comp/…" là nguồn kết quả nội bộ, chỉ được làm rule_id cho kind 'component'.`,
       );
     }
-    if (internalRefs && !internalRefs.has(ruleId)) {
+    const hashAt = ruleId.indexOf('#');
+    const fileRef = hashAt >= 0 ? ruleId.slice(0, hashAt) : ruleId;
+    const fragment = hashAt >= 0 ? ruleId.slice(hashAt + 1) : '';
+    if (internalRefs && !internalRefs.has(fileRef)) {
       errors.push(`"${entry.id}" có rule_id không tồn tại trong nguồn kết quả nội bộ: "${ruleId}"`);
+    } else if (fragment && opts?.findingIds?.has(fileRef) && !opts.findingIds.get(fileRef)!.has(fragment)) {
+      opts.onWarning?.(`"${entry.id}" có rule_id "${ruleId}": id "${fragment}" không có trong ${fileRef} — giữ, nhưng web sẽ không tô được cell.`);
     }
   }
 
@@ -1386,7 +1407,22 @@ export interface DocPageResult {
 /** Merge per-page results into the index.json manifest + a human summary.md,
  *  in Vietnamese — same shape/spirit as prd-review-fanout's mergePageReports
  *  but keyed by change kind/severity instead of image verdicts. */
-export function mergeChangeReports(results: DocPageResult[]): { index: unknown; summaryMd: string } {
+export interface MergeReportsScreenFlow {
+  variant: 'original' | 'improved';
+  /** Số finding UX của bản cải thiện (original: 0). */
+  findingsCount: number;
+  /** Màn của luồng đã định vị được mục mô tả trong tài liệu / tổng màn (không tính màn bị đề xuất bỏ). */
+  screensDescribed: number;
+  screensTotal: number;
+}
+
+export function mergeChangeReports(
+  results: DocPageResult[],
+  opts?: {
+    /** WP dr-review-screen-flow: Luồng màn hình bản đã chọn làm thước đo — chỉ có khi dự án đã chạy dr-flow. */
+    screenFlow?: MergeReportsScreenFlow;
+  },
+): { index: unknown; summaryMd: string } {
   // Sơ đồ luồng do DAEMON tự dựng lại (kind 'flow-diagram', origin 'system') —
   // xem systemChangesPath. DocChange không có trường trạng thái riêng
   // (dismissed/…), nên "còn hiệu lực" ở đây = có mặt trong `r.changes`; không
@@ -1429,11 +1465,22 @@ export function mergeChangeReports(results: DocPageResult[]): { index: unknown; 
   const diagrams_updated = results.reduce((n, r) => n + diagramsUpdatedFor(r), 0);
   const composition_tables = results.reduce((n, r) => n + compositionTablesFor(r), 0);
 
+  const sf = opts?.screenFlow;
   const index = {
     schema_version: '1.0',
     kind: 'docs-spec-review-index',
     summary: { pages: results.length, changed_pages, changes, notes, diagrams_updated, composition_tables, blockers, majors, minors },
     pages,
+    ...(sf
+      ? {
+          screen_flow: {
+            variant: sf.variant,
+            findings: sf.findingsCount,
+            screens_described: sf.screensDescribed,
+            screens_total: sf.screensTotal,
+          },
+        }
+      : {}),
   };
 
   const kindLabel: Record<DocChangeKind, string> = {
@@ -1452,7 +1499,11 @@ export function mergeChangeReports(results: DocPageResult[]): { index: unknown; 
 
   let summaryMd = `# Docs → Review tài liệu\n\n`;
   summaryMd += `${results.length} trang · ${changed_pages} trang có chỗ sửa · ${changes} chỗ sửa · ${notes} nhận xét · ${blockers} nghiêm trọng · ${majors} nặng · ${minors} nhẹ\n`;
-  summaryMd += `Sơ đồ đã thay: ${diagrams_updated} · Bảng thành phần đã chèn: ${composition_tables}\n\n`;
+  summaryMd += `Sơ đồ đã thay: ${diagrams_updated} · Bảng thành phần đã chèn: ${composition_tables}`;
+  if (sf) {
+    summaryMd += ` · Luồng màn hình đối chiếu: ${sf.variant === 'improved' ? 'Cải thiện' : 'Nguyên bản'} (${sf.findingsCount} finding) · Màn có mục mô tả: ${sf.screensDescribed}/${sf.screensTotal}`;
+  }
+  summaryMd += `\n\n`;
 
   const failed = results.filter((r) => r.status === 'failed');
   if (failed.length > 0) {

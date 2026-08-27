@@ -916,6 +916,20 @@
     height: auto !important;
     max-width: 100%;
   }
+  /* WP dr-review-screen-flow B3: mục "Luồng màn hình — bản đang dùng" TRƯỚC
+     phụ lục, trang riêng nằm ngang (sơ đồ luồng rộng hơn cao) qua named page;
+     trình in không hỗ trợ `page:` thì vẫn có break-before + SVG co theo
+     bề rộng. `[hidden]` = printDocument không lấy được SVG → bỏ mục. */
+  .printScreenFlow { padding: 12mm; break-before: page; page: od-screen-flow; }
+  .printScreenFlow[hidden] { display: none !important; }
+  .printScreenFlow h2 { margin-top: 0; }
+  .printScreenFlowFrame { break-inside: avoid; }
+  .printScreenFlowFrame :global(svg) {
+    display: block;
+    width: 100% !important;
+    height: auto !important;
+    max-width: 100%;
+  }
   .printAppendix { padding: 12mm; break-before: page; }
   .printAppendix h2 { margin-top: 0; }
   .printAppendix table { width: 100%; border-collapse: collapse; font-size: 10px; }
@@ -965,6 +979,23 @@
 .detailStrike {
   text-decoration: line-through;
   opacity: .75;
+}
+/* WP dr-review-screen-flow B2: khối sơ đồ Luồng màn hình bản đã chọn trong
+   panel chi tiết (dưới lý do, trên bình luận) — viewer tự mang head/badge/nút
+   Phóng to (ScreenFlowPanelViewer.module.css). */
+.screenFlowBlock {
+  margin-top: 12px;
+  min-width: 0;
+}
+/* Host viewer in offscreen (B3) — style vị trí đặt inline ngay trên phần tử
+   (không phụ thuộc CSS Module tới nơi); ở đây chỉ chặn nó lọt vào bản in. */
+@page od-screen-flow {
+  size: A4 landscape;
+}
+@media print {
+  .printScreenFlowOffscreen {
+    display: none !important;
+  }
 }
 /* Dòng dẫn cho panel của change SƠ ĐỒ — panel không lặp lại sơ đồ (đang
    render trong tài liệu), chỉ trỏ người đọc về đó. */

@@ -45,7 +45,14 @@ import { injectHighlights, quoteSegments, type HighlightBlockTarget } from '../r
 import { wordDiff } from '../runtime/word-diff';
 import { Icon } from './Icon';
 import { MermaidDiagram } from './MermaidDiagram';
-import { DrawioViewer } from './DrawioViewer';
+import { DrawioViewer, type HighlightKind } from './DrawioViewer';
+import {
+  ScreenFlowPanelViewer,
+  SCREEN_FLOW_VARIANT_LABEL,
+  findEdgeCellId,
+  useScreenFlowDoc,
+  type ScreenFlowHighlight,
+} from './ScreenFlowPanelViewer';
 import { parseUxReview, SEVERITY_LABEL as UX_SEVERITY_LABEL, CHANGE_LABEL as UX_CHANGE_LABEL, type UxFinding } from './FlowUxReviewPreview';
 import { DocRedlineModeControls } from './DocRedlineModeControls';
 import { DocRedlineNavigation } from './DocRedlineNavigation';
@@ -576,6 +583,109 @@ export function narrowEditedLines(before: string, quote: string): { before: stri
  *  `component` "thường" (một chỗ sửa chữ nói về component, có `before`). */
 function isComponentTableChange(c: Pick<DocRedlineChange, 'kind' | 'before' | 'rule_id'>): boolean {
   return c.kind === 'component' && !c.before && !!c.rule_id?.startsWith('comp/');
+}
+
+// ── WP dr-review-screen-flow (2026-08-27) — Luồng màn hình bản đã chọn ──────
+// Hợp đồng `rule_id` có mảnh `#` (daemon + skill docs-spec-review ghi, web
+// dùng để TÔ CELL trên sơ đồ trong right panel): phần trước `#` = file thật
+// trong workflow, phần sau = id trong file. Ba dạng:
+//   - `flows/SCREEN-FLOW/ux-review.json#UX-01`  → finding UX (change kind flow)
+//   - `flows/SCREEN-FLOW/screens.json#<KEY>`    → màn (note gap / edge-case)
+//   - `flows/SCREEN-FLOW.flowchart.json#<from→to>` → cạnh (edgeKey, mũi tên
+//     unicode `→` vì flowchart.json.edges[] không có id)
+export const SCREEN_FLOW_UX_REVIEW_FILE = 'flows/SCREEN-FLOW/ux-review.json';
+export const SCREEN_FLOW_SCREENS_FILE = 'flows/SCREEN-FLOW/screens.json';
+export const SCREEN_FLOW_SCREENS_IMPROVED_FILE = 'flows/SCREEN-FLOW/screens.improved.json';
+export const SCREEN_FLOW_FLOWCHART_FILE = 'flows/SCREEN-FLOW.flowchart.json';
+
+export interface ScreenFlowRef {
+  file: 'ux-review' | 'screens' | 'flowchart';
+  id: string;
+}
+
+/** Tách `rule_id` theo hợp đồng trên → `null` khi không phải ref SCREEN-FLOW
+ *  (không có `#`, file lạ, id rỗng). `screens.improved.json#KEY` cũng nhận
+ *  (màn `provenance: proposed` chỉ có ở file đó) và gom về `screens`. */
+export function parseScreenFlowRef(ruleId: string | undefined): ScreenFlowRef | null {
+  if (!ruleId) return null;
+  const hash = ruleId.indexOf('#');
+  if (hash < 0) return null;
+  const file = ruleId.slice(0, hash).trim();
+  const id = ruleId.slice(hash + 1).trim();
+  if (!id) return null;
+  if (file === SCREEN_FLOW_UX_REVIEW_FILE) return { file: 'ux-review', id };
+  if (file === SCREEN_FLOW_SCREENS_FILE || file === SCREEN_FLOW_SCREENS_IMPROVED_FILE) return { file: 'screens', id };
+  if (file === SCREEN_FLOW_FLOWCHART_FILE) return { file: 'flowchart', id };
+  return null;
+}
+
+/** Panel chi tiết có hiện sơ đồ Luồng màn hình không: mọi change/note `kind:
+ *  'flow'` (không ref → sơ đồ không tô), hoặc bất kỳ kind nào có ref parse
+ *  được (gap/edge-case theo hợp đồng). `flow-diagram` giữ nguyên hành vi cũ
+ *  (sơ đồ đã hiện trong tài liệu). */
+function wantsScreenFlowPanel(kind: DocRedlineChangeKind, ruleId: string | undefined): boolean {
+  if (kind === 'flow-diagram') return false;
+  return kind === 'flow' || parseScreenFlowRef(ruleId) !== null;
+}
+
+/** `<from>→<to>` → hai id cell; chấp nhận cả `->` ASCII cho dữ liệu agent gõ
+ *  nhầm. `null` khi không tách được hai vế. */
+export function splitEdgeKey(edgeKey: string): { from: string; to: string } | null {
+  const m = /^(.+?)\s*(?:→|->)\s*(.+)$/.exec(edgeKey.trim());
+  if (!m) return null;
+  const from = m[1]!.trim();
+  const to = m[2]!.trim();
+  return from && to ? { from, to } : null;
+}
+
+/** `screens.json`/`screens.improved.json` v2 (`{screens:[{key, cell}]}`) →
+ *  map key → cell (null khi màn không có node riêng). Khoan dung: file
+ *  hỏng/v1 (không có `screens`) → `null`. */
+export function parseScreenCells(raw: string | null): Record<string, string | null> | null {
+  if (!raw) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  const list = parsed && typeof parsed === 'object' ? (parsed as { screens?: unknown }).screens : undefined;
+  if (!Array.isArray(list)) return null;
+  const out: Record<string, string | null> = {};
+  for (const s of list) {
+    if (!s || typeof s !== 'object') continue;
+    const key = (s as { key?: unknown }).key;
+    if (typeof key !== 'string' || !key) continue;
+    const cell = (s as { cell?: unknown }).cell;
+    out[key] = typeof cell === 'string' && cell ? cell : null;
+  }
+  return out;
+}
+
+/** Đợi viewer in offscreen của Luồng màn hình có SVG (GraphViewer đã dựng)
+ *  — cùng khuôn `waitForPrintableMermaid`: timeout fail-soft, bản in chỉ bỏ
+ *  mục Luồng màn hình chứ không chặn in. */
+async function waitForScreenFlowSvg(host: HTMLElement | null, timeoutMs = 3000): Promise<SVGElement | null> {
+  if (!host) return null;
+  const find = () => host.querySelector('svg');
+  const first = find();
+  if (first) return first;
+  const startedAt = Date.now();
+  return new Promise<SVGElement | null>((resolve) => {
+    const check = () => {
+      const svg = find();
+      if (svg) {
+        resolve(svg);
+        return;
+      }
+      if (Date.now() - startedAt >= timeoutMs) {
+        resolve(null);
+        return;
+      }
+      window.setTimeout(check, 40);
+    };
+    check();
+  });
 }
 
 /** Trích nội dung GIỮA cặp rào ```` ```mermaid ``` ```` của một change sơ đồ.
@@ -1148,6 +1258,22 @@ export function DocRedlinePreview({
   const [activeDiagramFinding, setActiveDiagramFinding] = useState<{ changeId: string; findingId: string } | null>(null);
   const printArticleRef = useRef<HTMLElement | null>(null);
   const [printBusy, setPrintBusy] = useState(false);
+  // WP dr-review-screen-flow: sơ đồ Luồng màn hình BẢN ĐÃ CHỌN (cache một lần
+  // theo project + gốc workflow, xem ScreenFlowPanelViewer.loadScreenFlowDoc)
+  // — cha cần nó cho (a) nhãn bản + mục Luồng màn hình trong bản in, (b) tìm
+  // id cạnh `from→to` trong XML trang đang hiện. `null` = không có SCREEN-FLOW
+  // (không mục in, panel hiện "Chưa có Luồng màn hình").
+  const screenFlowLoad = useScreenFlowDoc(projectId, workflowPrefix);
+  const screenFlowDoc = screenFlowLoad.status === 'ready' ? screenFlowLoad.doc : null;
+  // map KEY màn → cell (screens.json, phủ screens.improved.json khi bản
+  // improved) — nạp lazy khi panel mở tới ref `screens.json#<KEY>`.
+  // `undefined` = chưa nạp, `null` = không có/không đọc được.
+  const [screenFlowCells, setScreenFlowCells] = useState<Record<string, string | null> | null | undefined>(undefined);
+  useEffect(() => { setScreenFlowCells(undefined); }, [projectId, workflowPrefix]);
+  // Mục "Luồng màn hình — bản đang dùng" trong sheet in + host viewer in
+  // offscreen (nguồn SVG để clone vào mục đó, xem printDocument).
+  const printScreenFlowSectionRef = useRef<HTMLElement | null>(null);
+  const printScreenFlowHostRef = useRef<HTMLDivElement | null>(null);
 
   function changePreviewMode(mode: PreviewMode) {
     if (mode === previewMode) return;
@@ -1208,24 +1334,38 @@ export function DocRedlinePreview({
   // fetch cho luồng họ thật sự bấm vào. Path ghép `${workflowPrefix}/` y như
   // DrawioDiagramHost ghép proposed.drawio — flows/ nằm ở gốc workflow, KHÔNG
   // dưới review/. (Nằm SAU khai báo `changes`/`notes` — effect đọc cả hai.)
+  // WP dr-review-screen-flow: CÙNG cache phục vụ ref `flows/SCREEN-FLOW/
+  // ux-review.json#UX-xx` của change kind flow (key = phần TRƯỚC `#`, tức
+  // đường dẫn file — panel tô cell của đúng finding UX-xx).
   useEffect(() => {
     if (!detailPanel) return;
     const target = resolveAnnotationDetail(detailPanel.id, changes, notes);
-    if (!target || target.kind !== 'change' || target.change.kind !== 'flow-diagram') return;
-    const ruleId = target.change.rule_id ?? '';
-    const flowId = /^flows\/([^/]+)\/ux-review\.json$/.exec(ruleId)?.[1];
-    if (!flowId || uxFindingsByRule[ruleId] !== undefined) return;
+    if (!target) return;
+    const kind = target.kind === 'change' ? target.change.kind : target.note.kind;
+    const ruleId = (target.kind === 'change' ? target.change.rule_id : target.note.rule_id) ?? '';
+    let ruleFile: string | null = null;
+    let flowId: string | null = null;
+    if (target.kind === 'change' && kind === 'flow-diagram') {
+      flowId = /^flows\/([^/]+)\/ux-review\.json$/.exec(ruleId)?.[1] ?? null;
+      ruleFile = flowId ? ruleId : null;
+    } else if (wantsScreenFlowPanel(kind, ruleId) && parseScreenFlowRef(ruleId)?.file === 'ux-review') {
+      ruleFile = SCREEN_FLOW_UX_REVIEW_FILE;
+      flowId = 'SCREEN-FLOW';
+    }
+    if (!ruleFile || !flowId || uxFindingsByRule[ruleFile] !== undefined) return;
+    const file = ruleFile;
+    const id = flowId;
     let cancelled = false;
     void (async () => {
       let findings: UxFinding[] | null = null;
       try {
-        const raw = await fetchProjectFileText(projectId, `${workflowPrefix}/${ruleId}`);
-        const review = raw ? parseUxReview(raw, flowId) : null;
+        const raw = await fetchProjectFileText(projectId, `${workflowPrefix}/${file}`);
+        const review = raw ? parseUxReview(raw, id) : null;
         findings = review && review.findings.length > 0 ? review.findings : null;
       } catch {
         findings = null;
       }
-      if (!cancelled) setUxFindingsByRule((prev) => ({ ...prev, [ruleId]: findings }));
+      if (!cancelled) setUxFindingsByRule((prev) => ({ ...prev, [file]: findings }));
     })();
     return () => { cancelled = true; };
     // uxFindingsByRule đọc trong effect nhưng KHÔNG nằm trong deps: nó chỉ làm
@@ -1233,6 +1373,35 @@ export function DocRedlinePreview({
     // setState của nó (vô hại nhưng vô nghĩa).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [detailPanel, changes, notes, projectId, workflowPrefix]);
+
+  // Ref `flows/SCREEN-FLOW/screens.json#<KEY>` → cần map KEY → cell. Đợi
+  // biết bản đang dùng (screenFlowLoad) rồi mới nạp, để bản improved phủ
+  // thêm screens.improved.json (màn đề xuất chỉ có ở đó) đúng một lần.
+  useEffect(() => {
+    if (!detailPanel || screenFlowCells !== undefined || screenFlowLoad.status === 'loading') return;
+    const target = resolveAnnotationDetail(detailPanel.id, changes, notes);
+    if (!target) return;
+    const ruleId = target.kind === 'change' ? target.change.rule_id : target.note.rule_id;
+    if (parseScreenFlowRef(ruleId)?.file !== 'screens') return;
+    const improved = screenFlowDoc?.variant === 'improved';
+    let cancelled = false;
+    void (async () => {
+      let map: Record<string, string | null> | null = null;
+      try {
+        map = parseScreenCells(await fetchProjectFileText(projectId, `${workflowPrefix}/${SCREEN_FLOW_SCREENS_FILE}`));
+        if (improved) {
+          const extra = parseScreenCells(await fetchProjectFileText(projectId, `${workflowPrefix}/${SCREEN_FLOW_SCREENS_IMPROVED_FILE}`));
+          if (extra) map = { ...(map ?? {}), ...extra };
+        }
+      } catch {
+        map = null;
+      }
+      if (!cancelled) setScreenFlowCells(map);
+    })();
+    return () => { cancelled = true; };
+    // screenFlowCells chỉ là guard chống nạp lặp (như uxFindingsByRule trên).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detailPanel, changes, notes, projectId, workflowPrefix, screenFlowLoad.status, screenFlowDoc]);
   const events = useMemo(
     () => (changesState.status === 'ok' ? changesState.events : []),
     [changesState],
@@ -1536,6 +1705,44 @@ export function DocRedlinePreview({
     setSelectedId(changeId);
     setDetailPanel({ id: changeId });
     setActiveDiagramFinding({ changeId, findingId: f.id });
+  }
+
+  /** WP dr-review-screen-flow B2: sơ đồ Luồng màn hình bản đã chọn cho panel
+   *  của một change/note kind flow (hoặc gap/edge-case có ref SCREEN-FLOW) +
+   *  cell cần tô theo ref:
+   *   - `ux-review#UX-xx` → cells của finding theo BẢN đang dùng (original →
+   *     asIs, improved → proposed; fallback chéo), viền theo `finding.change`;
+   *   - `screens#<KEY>` → cell của màn (screens.json ∪ screens.improved.json);
+   *   - `flowchart#<from→to>` → id cạnh trong XML trang đang hiện; không thấy
+   *     → tô hai node from/to.
+   *  `undefined` = panel không hiện sơ đồ; không ref/chưa nạp → sơ đồ không tô. */
+  function screenFlowPanelFor(
+    target: AnnotationDetailTarget,
+  ): { projectId: string; workflowPrefix: string; title: string; highlight?: ScreenFlowHighlight } | undefined {
+    const kind = target.kind === 'change' ? target.change.kind : target.note.kind;
+    const ruleId = target.kind === 'change' ? target.change.rule_id : target.note.rule_id;
+    if (!wantsScreenFlowPanel(kind, ruleId)) return undefined;
+    const base = { projectId, workflowPrefix, title: 'Luồng màn hình' };
+    const ref = parseScreenFlowRef(ruleId);
+    if (!ref) return base;
+    if (ref.file === 'ux-review') {
+      const findings = uxFindingsByRule[SCREEN_FLOW_UX_REVIEW_FILE];
+      const f = Array.isArray(findings) ? findings.find((x) => x.id === ref.id) : undefined;
+      if (!f?.cells) return base;
+      const cells = screenFlowDoc?.variant === 'original'
+        ? f.cells.asIs ?? f.cells.proposed ?? []
+        : f.cells.proposed ?? f.cells.asIs ?? [];
+      const hlKind: HighlightKind | undefined = f.change && f.change !== 'none' ? f.change : undefined;
+      return { ...base, highlight: { cells, ...(hlKind ? { kind: hlKind } : {}) } };
+    }
+    if (ref.file === 'screens') {
+      const cell = screenFlowCells?.[ref.id];
+      return cell ? { ...base, highlight: { cells: [cell] } } : base;
+    }
+    const edge = splitEdgeKey(ref.id);
+    if (!edge) return base;
+    const edgeId = screenFlowDoc ? findEdgeCellId(screenFlowDoc.xml, screenFlowDoc.page, edge.from, edge.to) : null;
+    return { ...base, highlight: { cells: edgeId ? [edgeId] : [edge.from, edge.to] } };
   }
 
   // Panel đóng/chuyển sang mục khác thì bỏ chọn finding — không để sơ đồ giữ
@@ -1849,6 +2056,9 @@ export function DocRedlinePreview({
     if (!refModal && !detailPanel) return;
     const onKey = (ev: KeyboardEvent) => {
       if (ev.key !== 'Escape') return;
+      // Overlay "Phóng to" của Luồng màn hình đang mở (WP dr-review-screen-
+      // flow): Esc thuộc về nó — đóng overlay thôi, panel chi tiết giữ nguyên.
+      if (document.body.dataset.odScreenFlowFs) return;
       setRefModal(null);
       setDetailPanel(null);
     };
@@ -2310,6 +2520,27 @@ export function DocRedlinePreview({
           mermaidFrame: (styles.mermaidFrame ?? '').trim(),
           drawioFrame: (styles.drawioFrame ?? '').trim(),
         });
+      }
+
+      // WP dr-review-screen-flow B3: mục "Luồng màn hình — bản đang dùng" —
+      // clone SVG từ viewer in offscreen (cùng cơ chế clone SVG của
+      // printableArticleHtml: bỏ transform pan/zoom, width 100%). Viewer chưa
+      // dựng xong trong 3 s / không có SVG → ẨN mục, không chặn in.
+      const sfSection = printScreenFlowSectionRef.current;
+      if (sfSection) {
+        const svg = await waitForScreenFlowSvg(printScreenFlowHostRef.current);
+        const frame = sfSection.querySelector<HTMLElement>('[data-print-screen-flow-frame]');
+        if (svg && frame) {
+          const printable = svg.cloneNode(true) as SVGElement;
+          printable.style.transform = 'none';
+          printable.style.width = '100%';
+          printable.style.height = 'auto';
+          printable.style.maxWidth = '100%';
+          frame.replaceChildren(printable);
+          sfSection.hidden = false;
+        } else {
+          sfSection.hidden = true;
+        }
       }
 
       // Bật cờ trên <body> để CSS in chỉ hiện tấm sheet portal; dọn bằng
@@ -2777,6 +3008,7 @@ export function DocRedlinePreview({
                       ? (f) => toggleDiagramFinding(target.change.id, f.id)
                       : undefined
                   }
+                  screenFlow={screenFlowPanelFor(target)}
                 />
               );
             })() : null}
@@ -2805,6 +3037,20 @@ export function DocRedlinePreview({
               </section>
               {/* Safe by contract: renderMarkdownToSafeHtml escapes raw HTML. */}
               <article ref={printArticleRef} className="markdown-rendered" dangerouslySetInnerHTML={{ __html: docHtml ?? '' }} />
+              {/* WP dr-review-screen-flow B3: sơ đồ Luồng màn hình bản đã
+                  chọn — mục riêng TRƯỚC phụ lục; SVG được clone vào frame
+                  lúc bấm Xuất PDF (printDocument). Không có SCREEN-FLOW →
+                  không có mục. */}
+              {screenFlowDoc ? (
+                <section
+                  ref={printScreenFlowSectionRef}
+                  className={styles.printScreenFlow ?? ''}
+                  data-print-screen-flow={screenFlowDoc.variant}
+                >
+                  <h2>Luồng màn hình — bản {SCREEN_FLOW_VARIANT_LABEL[screenFlowDoc.variant]}</h2>
+                  <div className={styles.printScreenFlowFrame ?? ''} data-print-screen-flow-frame="true" />
+                </section>
+              ) : null}
               <section className={styles.printAppendix}>
                 <h2>Phụ lục — {modeLabel(previewMode).toLocaleLowerCase('vi')}</h2>
                 <table><thead><tr><th>STT</th><th>Loại / rule</th><th>Mức độ</th><th>Thay đổi / nhận xét</th><th>Lý do</th></tr></thead><tbody>
@@ -2815,6 +3061,25 @@ export function DocRedlinePreview({
             </div>,
             document.body,
           )}
+      {/* Viewer in OFFSCREEN của Luồng màn hình (WP dr-review-screen-flow B3):
+          GraphViewer phải được dựng trong khung có kích thước thật mới có SVG
+          để clone vào sheet in — `display: none` thì đo bằng 0. Đặt ngoài
+          viewport (fixed, left âm), portal lên body để không dính transform/
+          overflow của khung app; CSS in ẩn nó như mọi thứ khác ngoài sheet. */}
+      {screenFlowDoc && typeof document !== 'undefined'
+        ? createPortal(
+            <div
+              ref={printScreenFlowHostRef}
+              className={styles.printScreenFlowOffscreen ?? ''}
+              data-testid="screen-flow-print-host"
+              aria-hidden="true"
+              style={{ position: 'fixed', left: -20000, top: 0, width: 1400, height: 900, overflow: 'hidden', pointerEvents: 'none' }}
+            >
+              <ScreenFlowPanelViewer projectId={projectId} workflowPrefix={workflowPrefix} bare />
+            </div>,
+            document.body,
+          )
+        : null}
 
       {refModal ? (
         <div
@@ -2969,6 +3234,7 @@ function AnnotationDetailPanel({
   diagramFindings,
   activeFindingId,
   onSelectFinding,
+  screenFlow,
 }: {
   target: AnnotationDetailTarget;
   busy: boolean;
@@ -3007,6 +3273,10 @@ function AnnotationDetailPanel({
    *  bấm một thẻ finding — xem `activeDiagramFinding` ở cha. */
   activeFindingId?: string | null;
   onSelectFinding?: (f: UxFinding) => void;
+  /** WP dr-review-screen-flow B2: có mặt = panel hiện sơ đồ Luồng màn hình
+   *  bản đã chọn (dưới lý do, trên bình luận) và tô `highlight.cells`; không
+   *  `highlight` → sơ đồ không tô. Cha quyết định (xem `screenFlowPanelFor`). */
+  screenFlow?: { projectId: string; workflowPrefix: string; title: string; highlight?: ScreenFlowHighlight };
 }) {
   const c = target.kind === 'change' ? target.change : null;
   const n = target.kind === 'note' ? target.note : null;
@@ -3144,6 +3414,16 @@ function AnnotationDetailPanel({
             <p className={styles.detailLabel ?? ''}>Lý do</p>
             <p className={styles.detailPre ?? ''}>{displayText(c.reason)}</p>
           </>
+        ) : null}
+        {screenFlow ? (
+          <div className={styles.screenFlowBlock ?? ''} data-testid="panel-screen-flow">
+            <ScreenFlowPanelViewer
+              projectId={screenFlow.projectId}
+              workflowPrefix={screenFlow.workflowPrefix}
+              highlight={screenFlow.highlight}
+              title={screenFlow.title}
+            />
+          </div>
         ) : null}
         {docRefs.length > 0 ? (
           <>
