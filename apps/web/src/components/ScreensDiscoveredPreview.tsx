@@ -1,5 +1,8 @@
-// ScreensDiscoveredPreview — preview cho output của stage "Phát hiện màn hình"
-// (dr-screens, skill docs-screen-discovery): `screens-discovered.json`.
+// ScreensDiscoveredPreview — preview cho `screens-discovered.json`: danh sách
+// màn sinh cùng bước Luồng màn hình (dr-flow, skill docs-screen-flow — WP
+// dr-screens-merge 2026-08-27: daemon dẫn xuất từ screens.json v2, ĐÚNG contract
+// cũ của dr-screens/docs-screen-discovery nên preview này không đổi shape;
+// dr-screens giờ là bước ẩn chạy tay khi tài liệu không có luồng).
 //
 // Vì sao cần preview riêng (bug preview 0.8.143): trước đây Quick result của
 // stage này không có file previewable nào nên fallback liệt kê tất cả, và
@@ -16,10 +19,11 @@
 // là việc của ScreenListManager ở bước dr-comp).
 import { useMemo, useState } from 'react';
 
-// Shape theo skills/docs-screen-discovery/SKILL.md §Output. Khai LOCAL vì đây
-// là contract giữa skill (agent ghi) và daemon/preview — packages/contracts
-// không export nó. Parse khoan dung: field lạ bỏ qua, field thiếu coi như
-// rỗng (file do agent ghi, không phải daemon).
+// Shape theo skills/docs-screen-discovery/SKILL.md §Output (daemon
+// toDiscoveredDoc sinh cùng shape từ screens.json v2 của docs-screen-flow).
+// Khai LOCAL vì đây là contract giữa skill/daemon và preview — packages/
+// contracts không export nó. Parse khoan dung: field lạ bỏ qua, field thiếu
+// coi như rỗng.
 export interface DiscoveredBlock {
   name: string;
   anchorText?: string;
@@ -142,14 +146,14 @@ export function ScreensDiscoveredPreview({ doc }: { doc: ScreensDiscoveredDoc })
   return (
     <div data-testid="screens-discovered-preview" style={{ padding: 16, maxWidth: 860, margin: '0 auto', color: M.ink }}>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 4 }}>
-        <h1 style={{ fontSize: 17, fontWeight: 700, margin: 0 }}>Phát hiện màn hình</h1>
+        <h1 style={{ fontSize: 17, fontWeight: 700, margin: 0 }}>Danh sách màn hình</h1>
         <span style={{ fontSize: 12.5, color: M.soft }}>
           {totalScreens} màn · {pages.length} trang{doc.generatedAt ? ` · ${new Date(doc.generatedAt).toLocaleString('vi-VN')}` : ''}
         </span>
       </div>
       <p style={{ fontSize: 12, color: M.soft, margin: '0 0 14px' }}>
-        Danh sách màn agent nhận diện từ tài liệu — bước Màn hình → Component sẽ dùng danh sách này. Muốn thêm/bỏ/đổi tên màn, dùng nút
-        Màn hình ở bước đó.
+        Danh sách màn nhận diện từ tài liệu, sinh cùng bước Luồng màn hình (dr-flow) — bước Màn hình → Component sẽ dùng danh sách này.
+        Muốn thêm/bỏ/đổi tên màn, dùng nút Màn hình ở bước đó.
       </p>
 
       {pages.map((page) => {

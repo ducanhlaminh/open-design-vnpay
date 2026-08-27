@@ -19,7 +19,7 @@ vi.mock('../../../src/state/figma-config', () => ({
 import { PipelinesFeaturesView } from '../../../src/components/pipelines/PipelinesFeaturesView';
 import { groupByApp } from '../../../src/components/pipelines/usePipelineNav';
 
-type KnownApp = { id: string; name?: string; designSystemId?: string | null; docsReviewComponentSource?: { mode: 'app-design-system' } | { mode: 'figma-links'; links: Array<{ url: string; fileKey: string }> } };
+type KnownApp = { id: string; name?: string; designSystemId?: string | null; figmaDesignSystemSourceId?: string | null; docsReviewComponentSource?: { mode: 'app-design-system' } | { mode: 'figma-links'; links: Array<{ url: string; fileKey: string }> } };
 
 function navFor(knownApps: KnownApp[]) {
   const projects: PipelineProject[] = [];
@@ -90,11 +90,19 @@ describe('Pipelines App · DS tab', () => {
     expect(screen.queryByRole('tab', { name: /Design system/ })).toBeNull();
   });
 
-  it('App chưa chọn DS hiện meta và empty state hướng sang Sửa dự án', async () => {
+  // WP dr-mockup (2026-08-27, cô lập DS): App không có designSystemId, không
+  // có figmaDesignSystemSourceId, không figma-links → ẩn hẳn tab DS (trước
+  // hiện tab trống + nhắc "Chọn DS ở Sửa dự án"). Tab Tài liệu vẫn còn.
+  it('App chưa gắn DS/nguồn nào thì KHÔNG hiện tab DS (tab Tài liệu vẫn còn)', () => {
     renderView([{ id: 'app-1', name: 'App' }]);
-    expect(screen.getByText(/chưa chọn/)).toBeTruthy();
-    await act(async () => { fireEvent.click(screen.getByRole('tab', { name: /Design system/ })); });
-    expect(screen.getAllByText((_, node) => node?.textContent?.includes('Chọn DS ở Sửa dự án') ?? false).length).toBeGreaterThan(0);
+    expect(screen.queryByRole('tab', { name: /Design system/ })).toBeNull();
+    expect(screen.queryByText(/chưa chọn/)).toBeNull();
+    expect(screen.getByRole('tab', { name: /Tài liệu/ })).toBeTruthy();
+  });
+
+  it('App gắn nguồn Figma dùng chung (figmaDesignSystemSourceId) vẫn hiện tab DS', () => {
+    renderView([{ id: 'app-1', name: 'App', figmaDesignSystemSourceId: 'shared-figma' } as KnownApp]);
+    expect(screen.getByRole('tab', { name: /Design system/ })).toBeTruthy();
   });
 
   it('criteria 404 hiện empty state Sinh lại, không crash', async () => {

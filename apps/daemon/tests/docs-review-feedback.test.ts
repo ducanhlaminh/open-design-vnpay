@@ -206,25 +206,38 @@ describe('docs-review feedback metrics', () => {
     expect(JSON.stringify(completed.artifact)).not.toContain('private document text');
   });
 
-  it('blocks final confirmation when any flow, screen, page, or section remains uncovered', async () => {
+  it('blocks final confirmation when any flow, mockup, page, or section remains uncovered (WP dr-mockup: comp/ không còn bắt buộc)', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'od-doc-review-coverage-'));
     dirs.push(root);
     await writeCompleteCoverage(root);
     await expect(assertDocsReviewCoverageComplete(root)).resolves.toBeUndefined();
 
+    // dr-comp rời workflow: KHÔNG có comp/ vẫn xác nhận được.
+    await fs.rm(path.join(root, 'comp'), { recursive: true, force: true });
+    await expect(assertDocsReviewCoverageComplete(root)).resolves.toBeUndefined();
+
+    // Chưa chạy dr-mockup (không có mockups/index.json) → không chặn.
+    // Có mockups/index.json → mọi màn của bản đã chọn phải có file .html.
+    await fs.mkdir(path.join(root, 'mockups'), { recursive: true });
+    await fs.writeFile(path.join(root, 'mockups', 'index.json'), JSON.stringify({ schema_version: 1, screens: [] }));
+    await expect(assertDocsReviewCoverageComplete(root)).rejects.toThrow(/dr-mockup thiếu mockup cho màn: SCREEN-1/);
+    await fs.writeFile(path.join(root, 'mockups', 'SCREEN-1.html'), '<!doctype html><body data-screen="SCREEN-1"></body>');
+    await expect(assertDocsReviewCoverageComplete(root)).resolves.toBeUndefined();
+    // Màn bị bản Cải thiện đề nghị bỏ (removedByProposal) không cần mockup.
     await fs.writeFile(path.join(root, 'flows', 'index.json'), JSON.stringify([
-      { id: 'flow-ok', screens: [{ key: 'SCREEN-1' }] },
+      { id: 'flow-1', screens: [{ key: 'SCREEN-1', name: 'Screen 1' }, { key: 'SCREEN-GONE', removedByProposal: true }] },
+    ]));
+    await expect(assertDocsReviewCoverageComplete(root)).resolves.toBeUndefined();
+
+    await fs.writeFile(path.join(root, 'flows', 'index.json'), JSON.stringify([
+      { id: 'flow-ok', screens: [{ key: 'SCREEN-1' }, { key: 'SCREEN-2' }] },
       { id: 'flow-missing', screens: [] },
     ]));
-    await fs.writeFile(path.join(root, 'comp', 'index.json'), JSON.stringify({
-      screens: [],
-      failed: [{ key: 'SCREEN-1', errors: ['bad schema'] }],
-    }));
     await fs.writeFile(path.join(root, 'review', 'index.json'), JSON.stringify({
       pages: [{ status: 'succeeded', sections_total: 2, sections_failed: 1 }],
     }));
 
-    await expect(assertDocsReviewCoverageComplete(root)).rejects.toThrow(/flow-missing.*màn hình lỗi.*section lỗi/);
+    await expect(assertDocsReviewCoverageComplete(root)).rejects.toThrow(/flow-missing.*thiếu mockup cho màn: SCREEN-2.*section lỗi/);
   });
 });
 

@@ -10,6 +10,13 @@
 // Cấu hình workflow (nguồn tài liệu, platform, design system, target…) KHÔNG
 // thuộc form này; nó ở chỗ cũ (RunAllModal / RunInputModal / registry).
 //
+// WP dr-mockup (2026-08-27) — cô lập Design System: tạo App / chạy workflow
+// docs-review KHÔNG cần DS (dr-comp đã rút khỏi workflow, Mockup màn là
+// concept layout không map DS). Khối chọn nguồn component / DS / Figma DS gom
+// vào <details> "Nâng cao — Design System (tuỳ chọn)" mặc định đóng, và nút
+// Tạo KHÔNG phụ thuộc DS: chọn loại Figma mà chưa chọn nguồn thì vẫn tạo được
+// — App sinh ra không gắn nguồn nào (hint nói rõ), không còn khoá nút.
+//
 // Nhập tài liệu Confluence ngay trong màn Tạo (không phải một bước riêng sau
 // khi tạo xong): người dùng tick trang ngay lúc còn đang gõ tên App, rồi bấm
 // "Tạo" một lần — tick 0 trang vẫn tạo được bình thường (import bị bỏ qua).
@@ -96,8 +103,11 @@ export function NewAppModal({
   // mới", nếu ta lặng lẽ trả về App có sẵn thì họ tin là vừa tạo một App khác.
   const duplicate = apps.some((a) => appLabelOf(a).trim().toLowerCase() === nameTrim.toLowerCase());
   const componentSource: DocsReviewComponentSource = { mode: 'app-design-system' };
-  const canSubmit = Boolean(nameTrim) && !duplicate
-    && (sourceMode !== 'figma-design-system' || Boolean(figmaDesignSystemSourceId));
+  // Nút Tạo KHÔNG phụ thuộc DS (WP dr-mockup) — xem docblock đầu file.
+  const canSubmit = Boolean(nameTrim) && !duplicate;
+  const dsStatus = sourceMode === 'figma-design-system'
+    ? (figmaSources ?? []).find((s) => s.id === figmaDesignSystemSourceId)?.name ?? 'chưa chọn nguồn Figma'
+    : (systems ?? []).find((s) => s.id === designSystemId)?.title ?? 'không gắn';
 
   const submit = async () => {
     if (busy || !canSubmit) return;
@@ -231,6 +241,11 @@ export function NewAppModal({
         )}
       </FormField>
 
+      <details className={styles.advanced} data-testid="app-ds-advanced">
+        <summary className={styles.advancedSummary}>
+          Nâng cao — Design System (tuỳ chọn)
+          <small>{dsStatus}</small>
+        </summary>
       <FormField
         label="Nguồn đối chiếu component"
         hint="Chọn nơi ứng dụng lấy component chuẩn khi chạy bước rà soát component."
@@ -250,7 +265,14 @@ export function NewAppModal({
       </FormField>
 
       {sourceMode === 'figma-design-system' ? (
-        <FormField label="Design system Figma" hint="Chỉ hiển thị nguồn đã nạp catalog thành công. Link và token được quản lý ở trang Design system.">
+        <FormField
+          label="Design system Figma"
+          hint={
+            figmaDesignSystemSourceId
+              ? 'Chỉ hiển thị nguồn đã nạp catalog thành công. Link và token được quản lý ở trang Design system.'
+              : 'Chưa chọn nguồn → dự án tạo ra không gắn Design System (gắn sau ở màn Sửa dự án).'
+          }
+        >
           {(fieldProps) => (
             <select {...fieldProps} className={styles.sourceSelect} value={figmaDesignSystemSourceId ?? ''} onChange={(event) => setFigmaDesignSystemSourceId(event.target.value || null)}>
               <option value="">{figmaSources === null ? 'Đang tải…' : 'Chọn Design system Figma'}</option>
@@ -283,6 +305,7 @@ export function NewAppModal({
           )}
         </FormField>
       ) : null}
+      </details>
 
       <FormField
         label="Tài liệu Confluence (tùy chọn)"

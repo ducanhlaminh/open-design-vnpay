@@ -3,7 +3,9 @@ import path from 'node:path';
 
 export const SCREEN_RECOVERY_SCHEMA_VERSION = 1 as const;
 
-export type ScreenProvenance = 'document' | 'flow' | 'inferred-flow';
+// 'proposed' (WP dr-flow-improve 2026-08-27): màn chỉ có ở bản "Cải thiện"
+// của SCREEN-FLOW (addNode.screen trong patch.json) — không có anchor tài liệu.
+export type ScreenProvenance = 'document' | 'flow' | 'inferred-flow' | 'proposed';
 
 export interface ScreenDiagramEvidence {
   cellId: string;

@@ -102,9 +102,14 @@ test('ds-lab: pipeline ids resolve to their OWN workflow folder, never another w
 // any workflow's pipelineIds. Every OTHER registry id must be claimed by
 // exactly one workflow — and no id may ever be claimed by more than one
 // (the real risk `stagesForOutput`/`workflowDirForPipeline` guard against).
-const NOT_A_WORKFLOW_STAGE = new Set(['dr-confirm']);
+// WP dr-screens-merge (2026-08-27): `dr-screens` is the second one — merged
+// into dr-flow (screens.json v2), def kept for manual runs on documents that
+// have no flow to draw, hidden from the stepper/Run All exactly like dr-confirm.
+// WP dr-mockup (2026-08-27): `dr-comp` is the third — building screens against
+// the Design System is paused; def kept for manual runs, `dr-mockup` took its slot.
+const NOT_A_WORKFLOW_STAGE = new Set(['dr-confirm', 'dr-screens', 'dr-comp']);
 
-test('invariant: every PIPELINE_DEFS id belongs to EXACTLY one workflow (dr-confirm is the one documented exception)', () => {
+test('invariant: every PIPELINE_DEFS id belongs to EXACTLY one workflow (dr-confirm + dr-screens + dr-comp are the documented exceptions)', () => {
   for (const d of PIPELINE_DEFS) {
     const owners = WORKFLOWS.filter((w) => w.pipelineIds.includes(d.id));
     if (NOT_A_WORKFLOW_STAGE.has(d.id)) {

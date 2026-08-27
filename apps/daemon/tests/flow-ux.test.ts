@@ -57,27 +57,106 @@ test('patch: relabel/mark/addNode/addEdge/redirectEdge → cell tô màu + od-ch
   const cells = listCells(r.graphXml);
   const s1 = cells.find((c) => c.id === 's1')!;
   assert.equal(s1.label, 'Chọn Mua SIM → "SIM Du lịch" & tab');
-  assert.match(s1.style, /fillColor=#FFF2CC/);
+  // WP dr-flow-edit-highlight: thay đổi = viền màu, KHÔNG tô fill.
+  assert.match(s1.style, /strokeColor=#B7791F;strokeWidth=3;fontStyle=1;/);
+  assert.doesNotMatch(s1.style, /fillColor=#FFF2CC/);
   assert.deepEqual(s1.attrs, { 'od-change': 'modified', 'od-finding': 'UX-01' });
   const to = cells.find((c) => c.id === 'timeout')!;
-  assert.match(to.style, /fillColor=#F8CECC/);
+  assert.match(to.style, /strokeColor=#C0392B/);
+  assert.match(to.style, /strokeWidth=3/);
   assert.match(to.style, /dashed=1/);
+  assert.doesNotMatch(to.style, /fillColor=#F8CECC/);
   const n1 = cells.find((c) => c.id === 'od-n1')!;
   assert.equal(n1.kind, 'vertex');
-  assert.match(n1.style, /fillColor=#D5E8D4/);
+  assert.match(n1.style, /fillColor=#FFFFFF/);
+  assert.match(n1.style, /strokeColor=#1B7F3B/);
+  assert.match(n1.style, /strokeWidth=3/);
+  assert.match(n1.style, /fontStyle=1/);
   assert.ok((n1.y ?? 0) > (to.y ?? 0), 'node mới đặt dưới cell mốc');
   const e1 = cells.find((c) => c.id === 'od-e1')!;
   assert.equal(e1.source, 'timeout');
   assert.equal(e1.target, 'od-n1');
+  assert.match(e1.style, /strokeColor=#1B7F3B/);
+  assert.match(e1.style, /strokeWidth=4/);
   const e12 = cells.find((c) => c.id === 'e12')!;
   assert.equal(e12.source, 'od-n1');
   assert.deepEqual(e12.attrs, { 'od-change': 'modified', 'od-finding': 'UX-02' });
+  assert.match(e12.style, /strokeColor=#B7791F/);
+  assert.match(e12.style, /strokeWidth=4/);
   assert.ok(cells.some((c) => c.id === 'od-legend-added'), 'có legend');
+  // Legend: ô trắng viền màu theo loại, tiêu đề nêu rõ "viền màu".
+  const legendTitle = cells.find((c) => c.id === 'od-legend-title')!;
+  assert.equal(legendTitle.label, 'Chú giải đề xuất UX — viền màu');
+  const legendAdded = cells.find((c) => c.id === 'od-legend-added')!;
+  assert.match(legendAdded.style, /fillColor=#FFFFFF/);
+  assert.match(legendAdded.style, /strokeColor=#1B7F3B;strokeWidth=3;fontStyle=1;/);
+  const legendModified = cells.find((c) => c.id === 'od-legend-modified')!;
+  assert.match(legendModified.style, /fillColor=#FFFFFF/);
+  assert.match(legendModified.style, /strokeColor=#B7791F;strokeWidth=3;fontStyle=1;/);
+  const legendRemoved = cells.find((c) => c.id === 'od-legend-removed')!;
+  assert.match(legendRemoved.style, /fillColor=#FFFFFF/);
+  assert.match(legendRemoved.style, /strokeColor=#C0392B;strokeWidth=3;fontStyle=1;dashed=1;/);
   // XML còn parse được, entity không bị escape kép.
   const $ = loadGraph(r.graphXml);
   assert.equal($('object[id="s1"]').attr('label'), 'Chọn Mua SIM → &quot;SIM Du lịch&quot; &amp; tab');
   // Bản gốc không bị đụng.
   assert.equal(listCells(page.graphXml).find((c) => c.id === 's1')?.attrs, undefined);
+});
+
+test('patch: viền màu GIỮ fill cũ của template — relabel/mark trên vertex fillColor=#dae8fc vẫn #dae8fc, stroke template bị ghi đè; addNode mới fill trắng; cạnh strokeWidth=4', () => {
+  const vertex = (id: string, x: number) =>
+    `<mxCell id="${id}" value="${id}" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1"><mxGeometry x="${x}" y="100" width="160" height="60" as="geometry"/></mxCell>`;
+  const graph =
+    '<mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/>' +
+    vertex('a', 0) +
+    vertex('b', 300) +
+    vertex('c', 600) +
+    '<mxCell id="ab" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#666666;strokeWidth=1;" edge="1" parent="1" source="a" target="b"><mxGeometry relative="1" as="geometry"/></mxCell>' +
+    '</root></mxGraphModel>';
+  const r = applyPatch(graph, {
+    ops: [
+      { op: 'relabel', cell: 'a', label: 'A mới' },
+      { op: 'mark', cell: 'b', change: 'modified' },
+      { op: 'mark', cell: 'c', change: 'removed' },
+      { op: 'addNode', id: 'n', shape: 'action', label: 'Mới', near: 'c', dir: 'below' },
+      { op: 'addEdge', id: 'cn', from: 'c', to: 'n' },
+      { op: 'redirectEdge', edge: 'ab', to: 'c' },
+    ],
+  });
+  assert.equal(r.applied, 6);
+  const by = new Map(listCells(r.graphXml).map((c) => [c.id, c]));
+  // relabel → modified: giữ fill, đổi stroke template #6c8ebf → #B7791F.
+  const a = by.get('a')!;
+  assert.match(a.style, /fillColor=#dae8fc/);
+  assert.match(a.style, /strokeColor=#B7791F;strokeWidth=3;fontStyle=1;/);
+  assert.doesNotMatch(a.style, /#6c8ebf/);
+  assert.doesNotMatch(a.style, /dashed/);
+  // mark modified: y hệt relabel về style.
+  const b = by.get('b')!;
+  assert.match(b.style, /fillColor=#dae8fc/);
+  assert.match(b.style, /strokeColor=#B7791F;strokeWidth=3;fontStyle=1;/);
+  // mark removed: giữ fill + dashed + đỏ.
+  const c = by.get('c')!;
+  assert.match(c.style, /fillColor=#dae8fc/);
+  assert.match(c.style, /strokeColor=#C0392B/);
+  assert.match(c.style, /strokeWidth=3/);
+  assert.match(c.style, /dashed=1/);
+  assert.match(c.style, /fontStyle=1/);
+  // addNode: nền trắng + viền xanh đậm.
+  const n = by.get('n')!;
+  assert.match(n.style, /fillColor=#FFFFFF/);
+  assert.match(n.style, /strokeColor=#1B7F3B;strokeWidth=3;fontStyle=1;/);
+  assert.doesNotMatch(n.style, /dashed/);
+  // addEdge: xanh, width 4; redirectEdge → modified: vàng đậm, width 4, ghi đè stroke cũ.
+  const cn = by.get('cn')!;
+  assert.match(cn.style, /strokeColor=#1B7F3B;strokeWidth=4;/);
+  const ab = by.get('ab')!;
+  assert.equal(ab.target, 'c');
+  assert.match(ab.style, /strokeColor=#B7791F;strokeWidth=4;/);
+  assert.doesNotMatch(ab.style, /#666666/);
+  assert.doesNotMatch(ab.style, /strokeWidth=1;/);
+  // Không cell thay đổi nào mang palette fill cũ.
+  for (const cell of by.values()) assert.doesNotMatch(cell.style, /D5E8D4|FFF2CC|F8CECC|82B366|D6B656|B85450/);
 });
 
 test('to-flowchart: draw.io — ellipse đầu/cuối, rhombus = decision, cạnh có nhãn, screens merge', () => {

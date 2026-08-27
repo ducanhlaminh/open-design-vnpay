@@ -4,6 +4,11 @@
 //
 // Cấu hình workflow không thuộc form này (nó ở RunAllModal / RunInputModal /
 // registry), giống hai form khai sinh cạnh đây.
+//
+// WP dr-mockup (2026-08-27) — cô lập Design System: khối nguồn component / DS
+// / Figma DS gom vào <details> "Nâng cao — Design System (tuỳ chọn)" mặc định
+// đóng; nút Lưu KHÔNG phụ thuộc DS (chọn loại Figma mà chưa chọn nguồn thì
+// vẫn lưu được — không gửi nguồn nào). Xem NewAppModal.
 
 import { useEffect, useState } from 'react';
 import type { DesignSystemSummary, DocsReviewComponentSource, FigmaDesignSystemSource, ListFigmaDesignSystemSourcesResponse } from '@open-design/contracts';
@@ -101,9 +106,12 @@ export function EditAppModal({
   const sourceChanged = JSON.stringify(nextSource) !== JSON.stringify(initialSource);
   const effectiveFigmaSourceId = sourceMode === 'figma-design-system' ? figmaDesignSystemSourceId : null;
   const figmaSourceChanged = effectiveFigmaSourceId !== (app.figmaDesignSystemSourceId ?? null);
+  // Nút Lưu KHÔNG phụ thuộc DS (WP dr-mockup) — chỉ cần có thay đổi.
   const canSubmit = Boolean(nameTrim) && !duplicate
-    && (sourceMode !== 'figma-design-system' || Boolean(figmaDesignSystemSourceId) || initialSource.mode === 'figma-links')
     && (nameChanged || designSystemChanged || sourceChanged || figmaSourceChanged);
+  const dsStatus = sourceMode === 'figma-design-system'
+    ? (figmaSources ?? []).find((s) => s.id === figmaDesignSystemSourceId)?.name ?? 'chưa chọn nguồn Figma'
+    : (systems ?? []).find((s) => s.id === designSystemId)?.title ?? 'không gắn';
 
   const submit = async () => {
     if (busy || !canSubmit) return;
@@ -177,6 +185,11 @@ export function EditAppModal({
         )}
       </FormField>
 
+      <details className={styles.advanced} data-testid="app-ds-advanced">
+        <summary className={styles.advancedSummary}>
+          Nâng cao — Design System (tuỳ chọn)
+          <small>{dsStatus}</small>
+        </summary>
       <FormField
         label="Nguồn đối chiếu component"
         hint="Chọn nơi ứng dụng lấy component chuẩn khi chạy bước rà soát component."
@@ -234,6 +247,7 @@ export function EditAppModal({
           )}
         </FormField>
       ) : null}
+      </details>
 
       {error ? <FormError>{error}</FormError> : null}
 

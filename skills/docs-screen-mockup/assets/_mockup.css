@@ -1,0 +1,299 @@
+/* docs-screen-mockup — concept-layout mockup (docs-review, stage dr-mockup).
+ * Daemon copies this file ONCE per stage into `mockups/_mockup.css`; each
+ * `mockups/<SCREEN-KEY>.html` inlines it inside its own style block so the file stays
+ * self-contained (no external stylesheet). Grey regions + labels only — NO design system,
+ * NO brand colours; one accent for CTA regions. */
+:root {
+  color: #202124;
+  background: #eef0f2;
+  font-family: Arial, Helvetica, sans-serif;
+  line-height: 1.4;
+  font-size: 14px;
+}
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 320px; background: #eef0f2; }
+
+/* Frame: mobile = 390px column centered, web = 1200px page. */
+.mk-mobile, .mk-web {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 100vh;
+  margin: 0 auto;
+  padding: 12px;
+  background: #f7f8f9;
+}
+.mk-mobile { max-width: 390px; border-left: 1px solid #c9ccd1; border-right: 1px solid #c9ccd1; }
+.mk-web { max-width: 1200px; }
+.mk-row { display: flex; gap: 8px; }
+.mk-row > * { flex: 1; min-width: 0; }
+/* Web two-panel split: data-cols="1fr 2fr" / "2fr 1fr" (list-detail, form + summary). */
+.mk-row[data-cols="1fr 2fr"] > :first-child { flex: 1; }
+.mk-row[data-cols="1fr 2fr"] > :last-child { flex: 2; }
+.mk-row[data-cols="2fr 1fr"] > :first-child { flex: 2; }
+.mk-row[data-cols="2fr 1fr"] > :last-child { flex: 1; }
+
+/* Layout region: dashed box + corner label (attr(data-label)). */
+.mk-region {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-height: 56px;
+  padding: 22px 10px 10px;
+  border: 1px dashed #8a8f96;
+  background: #e3e6ea;
+  color: #2f3439;
+}
+.mk-region::before {
+  content: attr(data-label);
+  position: absolute;
+  top: 4px;
+  left: 8px;
+  color: #5c6167;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+.mk-region > .mk-region { background: #eceef1; }
+.mk-region p { margin: 0; font-size: 13px; }
+.mk-region[data-region="appbar"], .mk-region[data-region="nav"] { min-height: 44px; background: #d9dde2; }
+.mk-region[data-region="hero"] { min-height: 120px; }
+.mk-region[data-region="list"] > .mk-region { min-height: 44px; }
+.mk-region[data-region="cta"] {
+  align-items: center;
+  justify-content: center;
+  border-style: solid;
+  border-color: #2f5ea8;
+  background: #d5e2f7;
+  color: #1c3d73;
+  font-weight: 700;
+}
+
+/* Navigation: click → screen (host preview listens on data-nav). */
+[data-nav] { cursor: pointer; text-decoration: underline; text-decoration-style: dotted; }
+[data-nav]::after { content: " →"; color: #2f5ea8; }
+
+/* Proposed screen (provenance: proposed) — blue frame. */
+[data-proposed] .mk-mobile, [data-proposed] .mk-web, [data-proposed].mk-region { outline: 2px solid #2f8f5b; outline-offset: -2px; }
+.mk-proposed-tag { color: #2f8f5b; font-size: 11px; font-weight: 700; }
+
+/* Overlay (dialog / bottom sheet) on top of a dimmed base screen. */
+.mk-overlay { min-height: 100vh; padding: 16px; background: rgba(32, 33, 36, .28); }
+.mk-overlay > .mk-region { max-width: 520px; margin: 12vh auto 0; background: #f7f8f9; }
+[data-overlay="sheet"] .mk-overlay > .mk-region { margin: 40vh auto 0; }
+.mk-meta { color: #6b6e73; font-size: 11px; }
+
+/* ── Layout kit (WP dr-mockup-layouts) — still grey / dashed, no brand colour.
+ * Every block below is a WIREFRAME hint (grid, row, chip, field…), not a DS
+ * component. Pick them per pattern in references/layout-patterns.md. */
+
+/* Grids: 2 / 3 / 4 equal columns (cards, option tiles, quick actions, button pairs). */
+.mk-grid-2, .mk-grid-3, .mk-grid-4 { display: grid; gap: 8px; }
+.mk-grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.mk-grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.mk-grid-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.mk-grid-2 > .mk-region, .mk-grid-3 > .mk-region, .mk-grid-4 > .mk-region { min-height: 72px; }
+.mk-grid-3 > .mk-region, .mk-grid-4 > .mk-region { align-items: center; text-align: center; padding: 22px 6px 8px; }
+
+/* Horizontal scroll row: chips or cards, each child min-width 120. */
+.mk-hscroll { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; scrollbar-width: thin; }
+.mk-hscroll > * { flex: 0 0 auto; min-width: 120px; }
+.mk-hscroll > .mk-chip { min-width: 0; }
+
+/* Split row: 56px thumb + text column (list rows, order summary, profile row). */
+.mk-split { display: flex; align-items: center; gap: 10px; }
+.mk-split > .mk-thumb { flex: 0 0 56px; width: 56px; height: 56px; }
+.mk-split > .mk-text, .mk-split > div:not(.mk-thumb) { flex: 1; min-width: 0; }
+.mk-split > .mk-meta { flex: 0 0 auto; }
+.mk-region[data-region="list"] > .mk-split { min-height: 56px; padding: 8px 10px; border: 1px dashed #b3b7bd; background: #eceef1; }
+.mk-region[data-region="list"] > .mk-split + .mk-split { margin-top: 4px; }
+
+/* Thumb: grey image placeholder with a diagonal cross; data-ratio="1x1" | "16x9" | "4x3". */
+.mk-thumb {
+  position: relative;
+  display: block;
+  width: 100%;
+  min-height: 56px;
+  aspect-ratio: 1 / 1;
+  border: 1px solid #a9aeb5;
+  background:
+    linear-gradient(to top right, transparent calc(50% - 1px), #a9aeb5, transparent calc(50% + 1px)),
+    linear-gradient(to top left, transparent calc(50% - 1px), #a9aeb5, transparent calc(50% + 1px)),
+    #d5d9de;
+}
+.mk-thumb[data-ratio="16x9"] { aspect-ratio: 16 / 9; }
+.mk-thumb[data-ratio="4x3"] { aspect-ratio: 4 / 3; }
+.mk-thumb[data-ratio="1x1"] { aspect-ratio: 1 / 1; }
+.mk-thumb[data-size="sm"] { width: 40px; min-height: 40px; }
+.mk-thumb[data-size="lg"] { width: 120px; min-height: 120px; margin: 0 auto; }
+
+/* Key-value table: 2 columns label : value (detail, order summary, receipt). */
+.mk-kv { display: grid; grid-template-columns: minmax(96px, 40%) 1fr; gap: 4px 10px; margin: 0; }
+.mk-kv > dt, .mk-kv > .mk-kv-k { margin: 0; color: #5c6167; font-size: 12px; }
+.mk-kv > dd, .mk-kv > .mk-kv-v { margin: 0; font-size: 13px; font-weight: 600; text-align: right; }
+.mk-kv > dt, .mk-kv > dd, .mk-kv > .mk-kv-k, .mk-kv > .mk-kv-v { padding: 4px 0; border-bottom: 1px dotted #c1c5cb; }
+.mk-kv[data-total] > dt:last-of-type, .mk-kv[data-total] > dd:last-of-type { font-weight: 700; border-bottom: 0; }
+
+/* Form field: small label + empty box + placeholder. data-type="text|select|date|otp|toggle|search|textarea". */
+.mk-field { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.mk-field > label, .mk-field > .mk-field-l { font-size: 11px; color: #5c6167; }
+.mk-field > .mk-input, .mk-field > input, .mk-field > span:not(.mk-field-l) {
+  display: flex;
+  align-items: center;
+  min-height: 36px;
+  padding: 0 10px;
+  border: 1px solid #a9aeb5;
+  border-radius: 4px;
+  background: #fbfbfc;
+  color: #8a8f96;
+  font-size: 13px;
+  font-family: inherit;
+}
+.mk-field[data-type="select"] > .mk-input::after, .mk-field[data-type="date"] > .mk-input::after,
+.mk-field[data-type="search"] > .mk-input::before {
+  margin-left: auto; color: #6b6e73; font-size: 12px;
+}
+.mk-field[data-type="select"] > .mk-input::after { content: "▾"; }
+.mk-field[data-type="date"] > .mk-input::after { content: "▦"; }
+.mk-field[data-type="search"] > .mk-input::before { content: "⌕"; margin: 0 6px 0 0; }
+.mk-field[data-type="textarea"] > .mk-input { min-height: 72px; align-items: flex-start; padding-top: 8px; }
+.mk-field[data-type="otp"] > .mk-input { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; padding: 0; border: 0; background: none; }
+.mk-field[data-type="otp"] > .mk-input > span { display: block; min-height: 40px; border: 1px solid #a9aeb5; border-radius: 4px; background: #fbfbfc; }
+.mk-field[data-type="toggle"] { flex-direction: row; align-items: center; justify-content: space-between; min-height: 36px; }
+.mk-field[data-type="toggle"] > label, .mk-field[data-type="toggle"] > .mk-field-l { font-size: 13px; color: #2f3439; }
+.mk-field[data-type="toggle"] > .mk-input { min-height: 0; width: 40px; height: 22px; padding: 2px; border-radius: 11px; background: #a9aeb5; border: 0; }
+.mk-field[data-type="toggle"] > .mk-input::after { content: ""; width: 18px; height: 18px; border-radius: 50%; background: #f7f8f9; }
+.mk-field[data-type="toggle"][data-on] > .mk-input { justify-content: flex-end; background: #2f5ea8; }
+.mk-region[data-region="form"] > .mk-field + .mk-field, .mk-region[data-region="form"] > .mk-grid-2 + .mk-field, .mk-region[data-region="form"] > .mk-field + .mk-grid-2 { margin-top: 6px; }
+
+/* Chip: filter / tag pill; data-on = selected. */
+.mk-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 12px;
+  border: 1px solid #8a8f96;
+  border-radius: 14px;
+  background: #f7f8f9;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.mk-chip[data-on] { background: #d9dde2; border-color: #2f3439; font-weight: 700; }
+
+/* Tabs (underline) and segmented control (filled). Child with data-on = current. */
+.mk-tabs, .mk-seg { display: flex; gap: 0; }
+.mk-tabs > * { flex: 1; padding: 8px 4px; text-align: center; font-size: 13px; color: #5c6167; border-bottom: 2px solid #c9ccd1; }
+.mk-tabs > [data-on] { color: #202124; font-weight: 700; border-bottom-color: #2f3439; }
+.mk-seg { padding: 3px; border: 1px solid #8a8f96; border-radius: 6px; background: #d9dde2; }
+.mk-seg > * { flex: 1; padding: 6px 4px; text-align: center; font-size: 12px; border-radius: 4px; }
+.mk-seg > [data-on] { background: #f7f8f9; font-weight: 700; box-shadow: 0 0 0 1px #8a8f96; }
+
+/* Stepper: 3-4 steps, current step bold; data-on = current, data-done = passed. data-dir="vertical" for timelines. */
+.mk-stepper { display: flex; align-items: flex-start; gap: 4px; padding: 6px 0; }
+.mk-stepper > * { position: relative; flex: 1; padding-top: 22px; text-align: center; font-size: 11px; color: #5c6167; }
+.mk-stepper > *::before {
+  content: "";
+  position: absolute;
+  top: 0; left: 50%;
+  width: 16px; height: 16px;
+  transform: translateX(-50%);
+  border: 2px solid #8a8f96;
+  border-radius: 50%;
+  background: #f7f8f9;
+}
+.mk-stepper > *::after { content: ""; position: absolute; top: 8px; left: 50%; right: -50%; height: 2px; background: #c9ccd1; z-index: -1; }
+.mk-stepper > :last-child::after { display: none; }
+.mk-stepper > [data-on] { color: #202124; font-weight: 700; }
+.mk-stepper > [data-on]::before, .mk-stepper > [data-done]::before { background: #2f3439; border-color: #2f3439; }
+.mk-stepper[data-dir="vertical"] { flex-direction: column; gap: 0; }
+.mk-stepper[data-dir="vertical"] > * { flex: none; padding: 0 0 14px 26px; text-align: left; }
+.mk-stepper[data-dir="vertical"] > *::before { top: 0; left: 0; transform: none; }
+.mk-stepper[data-dir="vertical"] > *::after { top: 16px; left: 7px; right: auto; bottom: 0; width: 2px; height: auto; }
+
+/* Sticky bottom bar: pinned to the frame bottom with a top border (main CTA, total + pay). */
+.mk-sticky {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: auto -12px -12px;
+  padding: 10px 12px 12px;
+  border-top: 1px solid #a9aeb5;
+  background: #f7f8f9;
+  box-shadow: 0 -4px 12px rgba(32, 33, 36, .08);
+}
+.mk-sticky > .mk-region[data-region="cta"] { min-height: 44px; }
+.mk-sticky > .mk-row { align-items: center; }
+.mk-sticky > .mk-row > .mk-total { flex: 1; font-weight: 700; font-size: 15px; }
+.mk-sticky > .mk-row > .mk-region[data-region="cta"] { flex: 1.4; }
+
+/* Bottom tab bar: 4-5 icon + label. data-on = current tab. */
+.mk-tabbar { display: flex; margin: auto -12px -12px; padding: 6px 4px 10px; border-top: 1px solid #a9aeb5; background: #d9dde2; }
+.mk-tabbar > * { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px; font-size: 10px; color: #5c6167; }
+.mk-tabbar > *::before { content: ""; width: 22px; height: 22px; border: 2px solid #8a8f96; border-radius: 6px; }
+.mk-tabbar > [data-on] { color: #202124; font-weight: 700; }
+.mk-tabbar > [data-on]::before { background: #2f3439; border-color: #2f3439; }
+.mk-sticky + .mk-tabbar { margin-top: 0; }
+
+/* Status circle: 64px ring with a text glyph. data-kind="ok|fail|wait|info". */
+.mk-status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 64px;
+  height: 64px;
+  margin: 8px auto;
+  border: 3px solid #8a8f96;
+  border-radius: 50%;
+  font-size: 30px;
+  font-weight: 700;
+  color: #2f3439;
+  background: #f7f8f9;
+}
+.mk-status:empty::before { content: "✓"; }
+.mk-status[data-kind="fail"]:empty::before { content: "✕"; }
+.mk-status[data-kind="wait"]:empty::before { content: "⏳"; font-size: 26px; }
+.mk-status[data-kind="info"]:empty::before { content: "i"; }
+.mk-region[data-region="status"] { align-items: center; text-align: center; }
+
+/* Progress bar (processing screens). */
+.mk-progress { position: relative; height: 8px; border-radius: 4px; background: #c9ccd1; overflow: hidden; }
+.mk-progress::before { content: ""; position: absolute; inset: 0; width: 45%; background: #5c6167; }
+.mk-progress[data-pct="25"]::before { width: 25%; }
+.mk-progress[data-pct="75"]::before { width: 75%; }
+
+/* Accordion row: title + chevron; data-on = expanded (children shown below). */
+.mk-accordion { display: flex; flex-direction: column; gap: 4px; padding: 8px 10px; border: 1px dashed #8a8f96; background: #eceef1; }
+.mk-accordion > .mk-acc-h, .mk-accordion > summary { display: flex; align-items: center; justify-content: space-between; list-style: none; font-size: 13px; font-weight: 700; cursor: default; }
+.mk-accordion > .mk-acc-h::after, .mk-accordion > summary::after { content: "▾"; color: #6b6e73; }
+.mk-accordion[data-on] > .mk-acc-h::after, .mk-accordion[data-on] > summary::after { content: "▴"; }
+.mk-accordion:not([data-on]) > :not(.mk-acc-h):not(summary) { display: none; }
+.mk-accordion + .mk-accordion { margin-top: 4px; }
+
+/* FAB: round button pinned bottom-right of the frame. */
+.mk-fab {
+  position: sticky;
+  bottom: 16px;
+  z-index: 2;
+  align-self: flex-end;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  margin: -56px 4px 8px 0;
+  border: 1px solid #2f5ea8;
+  border-radius: 50%;
+  background: #d5e2f7;
+  color: #1c3d73;
+  font-size: 22px;
+  font-weight: 700;
+}
+.mk-fab:empty::before { content: "+"; }
+
+/* Plain button (secondary, non-CTA): grey pill; pair them inside .mk-grid-2. */
+.mk-btn { display: flex; align-items: center; justify-content: center; min-height: 40px; padding: 0 12px; border: 1px solid #8a8f96; border-radius: 6px; background: #f7f8f9; font-size: 13px; font-weight: 600; }

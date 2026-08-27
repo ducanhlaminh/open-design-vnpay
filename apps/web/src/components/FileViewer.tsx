@@ -65,6 +65,7 @@ import { ComponentAuditPreview, isComponentAuditFile } from './ComponentAuditPre
 import { ScreenComponentsPreview, isScreenComponentsFile } from './ScreenComponentsPreview';
 import { FlowchartPreview, isFlowchartFile } from './FlowchartPreview';
 import { FlowUxReviewPreview, isFlowUxFile } from './FlowUxReviewPreview';
+import { MockupsPreview, isMockupsIndexFile } from './MockupsPreview';
 import { MermaidDiagram } from './MermaidDiagram';
 import { inlineMarkdownImages } from '../runtime/markdown-images';
 import { SpecFlowCanvas, isFlowDoc, type FlowDoc } from './SpecFlowCanvas';
@@ -875,6 +876,15 @@ export function FileViewer({
   }
   if (isPipelineUiScreenFile(file)) {
     return <PipelineScreenViewer projectId={projectId} file={file} />;
+  }
+  // dr-mockup "Mockup màn" (WP dr-mockup 2026-08-27): `<wf>/mockups/index.json`
+  // mở MockupsPreview (rail màn + iframe sandbox nạp HTML concept layout, bấm
+  // data-nav chuyển màn). Nhận diện theo ĐƯỜNG DẪN và đứng TRƯỚC mọi nhánh
+  // JSON chung (SpecFileViewer coi index.json là JSON thường → rơi về mã
+  // nguồn). `mockups/*.html` KHÔNG vào đây — mở trực tiếp thì HtmlViewer
+  // nhận như HTML thường; Quick result ẩn chúng (isUiPreviewFile).
+  if (isMockupsIndexFile(file)) {
+    return <MockupsPreview projectId={projectId} file={file} />;
   }
   // docs-review's redline page (`docs-review/review/docs/**/*.md` for legacy
   // ingest, `docs-review/review/docs-feature/**/*.md` for App-pool projects —
@@ -8524,9 +8534,10 @@ function SpecFileViewer({
     }
   }, [text, review, docsMockupReview, systemMap]);
 
-  // Output của stage "Phát hiện màn hình" (dr-screens): screens-discovered.json
-  // — có preview riêng (ScreensDiscoveredPreview), phải nhận diện TRƯỚC nhánh
-  // spec bên dưới vì nó không phải ux-spec.
+  // screens-discovered.json — danh sách màn sinh cùng bước Luồng màn hình
+  // (dr-flow; trước 2026-08-27 là stage dr-screens riêng, cùng contract) — có
+  // preview riêng (ScreensDiscoveredPreview), phải nhận diện TRƯỚC nhánh spec
+  // bên dưới vì nó không phải ux-spec.
   const screensDiscovered = useMemo<ScreensDiscoveredDoc | null>(() => {
     if (text == null || review || uxResearch || docsMockupReview || systemMap) return null;
     try {
@@ -8544,7 +8555,7 @@ function SpecFileViewer({
       const hasJourneys = Array.isArray(parsed.journeys) && parsed.journeys.length > 0;
       const hasPersonas = Array.isArray(parsed.personas) && parsed.personas.length > 0;
       const hasScreens = Array.isArray(parsed.screens) && parsed.screens.length > 0;
-      // ScreensManifest (comp/_screens.json của dr-screens/dr-comp) cũng có
+      // ScreensManifest (comp/_screens.json của dr-flow/dr-comp) cũng có
       // mảng `screens` nhưng entry mang key/origin chứ không phải
       // screen_type/components — KHÔNG phải ux-spec, để nó rơi xuống
       // TextViewer thay vì render UxSpecView toàn dấu "−" (bug 0.8.143).

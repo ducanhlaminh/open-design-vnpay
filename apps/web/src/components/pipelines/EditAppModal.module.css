@@ -95,3 +95,31 @@
   outline-offset: 2px;
   border-color: var(--accent);
 }
+
+/* WP dr-mockup (2026-08-27) — cô lập DS: khối chọn nguồn component / DS /
+   Figma DS gom vào <details> "Nâng cao — Design System (tuỳ chọn)", mặc định
+   đóng. Tạo App / chạy workflow không cần DS nên không bày nó ra mặt tiền. */
+.advanced {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0 14px;
+  background: var(--bg-subtle);
+}
+.advanced[open] {
+  padding-bottom: 14px;
+}
+.advancedSummary {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 12px 0;
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--text);
+  list-style: revert;
+}
+.advancedSummary small {
+  font-weight: 400;
+  color: var(--text-muted);
+  font-size: 12.5px;
+}

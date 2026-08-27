@@ -28,6 +28,10 @@ od:
 
 # docs-screen-discovery — lập danh sách màn hình THẬT của tài liệu (`docs-review`)
 
+> **TỪ 2026-08-27 bước này đã GỘP vào `docs-screen-flow`** (dr-flow ghi
+> `screens.json` v2, daemon sinh `screens-discovered.json` + `comp/_screens.json`).
+> Chỉ chạy tay bước này khi tài liệu KHÔNG có luồng để vẽ.
+
 Bạn là bước **Phát hiện màn hình** của workflow `docs-review`, chạy NGAY SAU
 `dr-flow` ("Đánh giá luồng UX") và TRƯỚC `dr-comp` ("Màn hình → Component").
 Kết quả của bạn là nguồn **có thẩm quyền** — `dr-comp` đọc thẳng file bạn ghi

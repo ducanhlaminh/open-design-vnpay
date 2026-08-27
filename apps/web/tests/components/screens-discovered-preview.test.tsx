@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 //
 // ScreensDiscoveredPreview (0.8.143) — preview cho screens-discovered.json
-// của stage "Phát hiện màn hình". Trước đây stage này không có preview riêng:
+// (danh sách màn; nay sinh cùng bước Luồng màn hình dr-flow, trước là stage
+// dr-screens riêng). Trước đây stage này không có preview riêng:
 // Quick result fallback mở comp/_screens.json và SpecFileViewer render nhầm
 // thành UX Spec toàn dấu "−". Test cả shape guard (isScreensDiscoveredDoc)
 // mà FileViewer dùng để tránh lặp lại chuyện nhận nhầm.

@@ -338,15 +338,43 @@ const PIPELINE_DEFS_BASE: readonly PipelineDef[] = [
   // một file, làm dr-review hiện xanh chỉ vì dr-flow đã chạy. Trùng tên với
   // `flows/` của stage `ux` bên docs-to-ui là vô hại: attribution có namespace
   // theo workflow nên `docs-review/flows/…` chỉ khớp stage của workflow này.
-  // 2026-08-18: bước này KHÔNG còn "chép lại" sơ đồ từ chữ. Daemon giải nén
-  // sơ đồ GỐC (draw.io / Mermaid) vào `flows/<FLOW-ID>/as-is.*` trước khi
-  // agent chạy (prepareFlowUxInputs); agent ĐÁNH GIÁ UX của luồng, ghi
-  // `ux-review.json` + `patch.json` (thao tác sửa nhỏ, không đụng XML) +
-  // `screens.json`; daemon áp patch → `proposed.drawio` tô màu phần sửa, tự
-  // sinh `flows/<FLOW-ID>.flowchart.json` từ sơ đồ nguồn và dựng lại
-  // `flows/index.json` (finalizeFlowUx). Contract `flowchart.json`/`index.json`
-  // cho dr-comp/dr-review giữ nguyên.
-  { id: 'dr-flow',          name: 'Đánh giá luồng UX',         skillId: 'docs-flow-ux',          dependsOn: ['dr-docs'],          outputs: ['flows/'] },
+  // 2026-08-27: bước này KHÔNG còn review sơ đồ ("Đánh giá luồng UX", skill
+  // docs-flow-ux) — nó SINH luồng màn hình của tính năng cho designer. Daemon
+  // vẫn giải nén sơ đồ GỐC vào `flows/<FLOW-ID>/as-is.*` trước khi agent chạy
+  // (prepareFlowUxInputs) nhưng giờ chỉ làm SEED; agent chưng cất tài liệu +
+  // seed thành một sơ đồ màn duy nhất `flows/SCREEN-FLOW/screen-flow.cells.xml`
+  // (mxCell trần, conventions next-ai-draw-io) + `screens.json` (schema cũ).
+  // Daemon wrap + validate + dịch thành flow drawio bình thường
+  // (finalizeScreenFlowXml, seed dời sang flows/_seeds/) rồi finalizeFlowUx
+  // dựng `flowchart.json`/`index.json` như cũ — contract cho dr-comp/dr-review
+  // giữ nguyên, index chỉ còn đúng một flow SCREEN-FLOW.
+  // WP dr-screens-merge (2026-08-27): bước này SỞ HỮU LUÔN danh sách màn —
+  // `screens.json` v2 (`screens[]` key/code/name/anchorText/cell/why/blocks)
+  // được daemon dẫn xuất thành `screens-discovered.json` + `.md` +
+  // `comp/_screens.json` (ĐÚNG contract dr-screens cũ, persistScreenDiscovery)
+  // nên dr-comp / ScreensDiscoveredPreview / ScreenListManager không đổi.
+  // Ba output đó khai ở đây để re-run dr-flow dọn chúng (generic theo outputs);
+  // `comp/_screens.json` nay có hai chủ (dr-flow + dr-comp qua `comp/`) —
+  // stagesForOutput chấm cả hai, stageForOutput ưu tiên dr-flow (đứng trước).
+  // `screens-overrides.json` KHÔNG nằm trong outputs → sống sót (bất biến WP14).
+  { id: 'dr-flow',          name: 'Luồng màn hình',            skillId: 'docs-screen-flow',      dependsOn: ['dr-docs'],          outputs: ['flows/', 'screens-discovered.json', 'screens-discovered.md', 'comp/_screens.json'] },
+  // WP dr-flow-improve (2026-08-27): "Cải thiện luồng" — bước RIÊNG chạy SAU
+  // dr-flow, TRƯỚC dr-comp. Agent (skill docs-screen-flow-improve, tập con
+  // lean của docs-flow-ux cũ) review `flows/SCREEN-FLOW` theo heuristics UX và
+  // ghi `patch.json` (ops relabel/mark/addNode/addEdge/redirectEdge —
+  // `addNode.screen` = node mới LÀ một màn) + `ux-review.json` (finding có
+  // reason/evidence/cells). Daemon tái dùng cơ chế "Đề xuất" cũ: finalizeFlowUx
+  // áp patch → `proposed.drawio` 2 trang (Nguyên bản | Cải thiện) tô màu
+  // Thêm/Sửa/Bỏ; sinh thêm `screens.improved.json` (màn của bản cải thiện).
+  // `selection.json` (bản đang dùng để chạy tiếp) KHÔNG nằm trong outputs →
+  // re-run bước này không xoá lựa chọn của người dùng; re-run dr-flow (cascade)
+  // xoá cả thư mục flows/ kể cả bước này — đúng ý (luồng mới → đề xuất cũ vô
+  // nghĩa). `proposed.edited.json` = người dùng sửa tay trang Cải thiện.
+  // dr-comp KHÔNG dependsOn bước này (tuỳ chọn khi chạy lẻ); run-all có nó.
+  // Bước này XOÁ `ux-review.json` tối thiểu do dr-flow ghi khi re-run — chấp
+  // nhận (finalizeFlowUx chịu được review vắng: chỉ warning "thiếu/hỏng").
+  // docs-review không có cơ chế lean (docs-to-ui-only) nên không gắn cờ.
+  { id: 'dr-flow-improve',  name: 'Cải thiện luồng',           skillId: 'docs-screen-flow-improve', dependsOn: ['dr-flow'], outputs: ['flows/SCREEN-FLOW/patch.json', 'flows/SCREEN-FLOW/ux-review.json', 'flows/SCREEN-FLOW/proposed.drawio', 'flows/SCREEN-FLOW/proposed.edited.json', 'flows/SCREEN-FLOW/screens.improved.json'] },
   // Bước GIỮA: đối chiếu component + wireframe. Đọc `docs/` (bản GỐC, chưa
   // review) và với MỖI màn hình trong tài liệu, liệt kê phần tử nào dùng
   // component nào rồi đối chiếu với danh mục hợp lệ `criteria/components.md`,
@@ -380,9 +408,36 @@ const PIPELINE_DEFS_BASE: readonly PipelineDef[] = [
   // tại và hợp lệ; không có file thì dr-comp lùi về hành vi cũ (tương thích
   // ngược tuyệt đối). `comp/_screens.json` là gợi ý daemon tự quét cho agent
   // tham khảo (không phải nguồn sự thật).
+  // WP dr-screens-merge (2026-08-27): ẨN — GỘP vào dr-flow (docs-screen-flow
+  // ghi screens.json v2, daemon sinh cùng 3 output). Def GIỮ như `dr-confirm`
+  // (không nằm trong `pipelineIds` của docs-review) để chạy TAY khi tài liệu
+  // không có luồng để vẽ; runScreenDiscovery (server.ts) vẫn dispatch theo
+  // skillId. dependsOn giữ nguyên.
   { id: 'dr-screens',       name: 'Phát hiện màn hình',        skillId: 'docs-screen-discovery',   dependsOn: ['dr-docs', 'dr-flow'], outputs: ['screens-discovered.json', 'screens-discovered.md', 'comp/_screens.json'] },
-  { id: 'dr-comp',          name: 'Màn hình → Component',      skillId: 'docs-screen-components',  dependsOn: ['dr-docs', 'dr-flow', 'dr-screens'], outputs: ['comp/', 'wireframes/'], usesDesignSystemCriteria: true },
-  { id: 'dr-review',        name: 'Review tài liệu',           skillId: 'docs-spec-review',      dependsOn: ['dr-docs', 'dr-flow', 'dr-comp'], outputs: ['review/'], usesDesignSystemCriteria: true },
+  // WP dr-mockup (2026-08-27): dr-comp RÚT KHỎI workflow docs-review — dựng màn
+  // theo Design System tạm dừng (người dùng: tạo App / chạy workflow không cần
+  // DS). Def GIỮ như `dr-screens`/`dr-confirm` (không trong `pipelineIds`) để
+  // chạy TAY khi App có DS; runDocsComponentAuditFanout (server.ts) vẫn dispatch
+  // theo skillId với fallback wfDir 'docs-review'. Hệ quả attribution (giống
+  // dr-screens): `docs-review/comp/**` + `wireframes/**` không còn stage nào
+  // trong workflow khai → stagesForOutput trả rỗng, không "Xong" ké, re-run
+  // clear generic không đụng — fan-out tự dọn output của nó.
+  { id: 'dr-comp',          name: 'Màn hình → Component',      skillId: 'docs-screen-components',  dependsOn: ['dr-docs', 'dr-flow'], outputs: ['comp/', 'wireframes/'], usesDesignSystemCriteria: true },
+  // WP dr-mockup (2026-08-27): "Mockup màn" — THAY chỗ dr-comp trong workflow,
+  // đứng SAU dr-flow-improve. Agent (skill docs-screen-mockup) dựng mỗi màn
+  // của BẢN ĐÃ CHỌN (selection.json Nguyên bản/Cải thiện — danh sách màn
+  // daemon soạn vào `mockups/_inputs.json` bằng prepareScreenComponentInputs
+  // với outFile) một mockup HTML mức CONCEPT LAYOUT: vùng bố cục xám + nhãn
+  // nội dung thật, `data-nav` chuyển màn, KHÔNG map Design System, KHÔNG
+  // element-level như wireframe của dr-comp. Daemon copy `_mockup.css` từ
+  // skill assets một lần / stage, validate tất định sau agent
+  // (screen-mockups.ts: thiếu file/script/link → chặn; nav sai → xoá + warning;
+  // index.json hỏng → dựng lại). KHÔNG `usesDesignSystemCriteria` — bước này
+  // cô lập khỏi DS. dependsOn dr-flow → re-run dr-flow (cascade) xoá mockups/.
+  { id: 'dr-mockup',        name: 'Mockup màn',                skillId: 'docs-screen-mockup',    dependsOn: ['dr-docs', 'dr-flow'], outputs: ['mockups/'] },
+  // dr-review dependsOn (WP dr-mockup): bỏ dr-comp — review không còn chờ dựng
+  // màn theo DS; nhóm `component` của review đọc comp/ khi có, vắng thì bỏ qua.
+  { id: 'dr-review',        name: 'Review tài liệu',           skillId: 'docs-spec-review',      dependsOn: ['dr-docs', 'dr-flow'], outputs: ['review/'], usesDesignSystemCriteria: true },
   { id: 'dr-confirm',       name: 'Xác nhận hoàn tất',         skillId: 'docs-review-confirm',   dependsOn: ['dr-review'], outputs: ['confirmation/'] },
 
   // ── `ds-lab` workflow — fully INDEPENDENT of docs-to-ui/docs-to-prd/docs-review ─
@@ -540,11 +595,18 @@ const WORKFLOW_DEFS: ReadonlyArray<Omit<Workflow, 'stages'>> = [
     id: 'docs-review',
     name: 'URD/PRD → Rà soát tài liệu',
     description:
-      'Độc lập hoàn toàn với Docs → UI-Spec và Docs → PRD Requirements Review: nạp tài liệu (Confluence hoặc file .md) riêng cho workflow này, đối chiếu component được khai báo trong chữ với danh mục hợp lệ, review theo bộ tiêu chí của bạn (đặt trong criteria/, tuỳ chọn — thiếu thì dùng bộ mặc định của skill) và trả về bản sao đã sửa kèm chú giải từng chỗ sửa, rồi rút sơ đồ luồng màn hình của từng nghiệp vụ từ bản đã review. Ảnh mockup nhúng chỉ để minh hoạ, không phải hướng thiết kế.',
+      'Độc lập hoàn toàn với Docs → UI-Spec và Docs → PRD Requirements Review: nạp tài liệu (Confluence hoặc file .md) riêng cho workflow này, đối chiếu component được khai báo trong chữ với danh mục hợp lệ, review theo bộ tiêu chí của bạn (đặt trong criteria/, tuỳ chọn — thiếu thì dùng bộ mặc định của skill) và trả về bản sao đã sửa kèm chú giải từng chỗ sửa, cùng luồng màn hình của tính năng sinh từ tài liệu (một sơ đồ SCREEN-FLOW cho designer, kèm danh sách màn hình thật sinh cùng luồng), một bản cải thiện luồng do agent đề xuất theo heuristics UX (chọn được bản nào chạy tiếp) và mockup HTML mức concept layout cho từng màn của bản đã chọn (vùng bố cục + nhãn nội dung thật, bấm chuyển màn — không map Design System). Ảnh mockup nhúng chỉ để minh hoạ, không phải hướng thiết kế.',
     // `dr-confirm` is an internal deterministic action, not a processing
     // stage. The UI exposes it as a dedicated completion CTA after every real
     // stage succeeds, so it must not appear in the stepper or Run All.
-    pipelineIds: ['dr-docs', 'dr-flow', 'dr-screens', 'dr-comp', 'dr-review'],
+    // `dr-screens` (2026-08-27) is hidden the same way: merged into dr-flow,
+    // kept as a def for manual runs when a document has no flow to draw.
+    // `dr-flow-improve` (WP dr-flow-improve, 2026-08-27): optional UX pass on
+    // the screen flow — in run-all.
+    // WP dr-mockup (2026-08-27): `dr-comp` ("Màn hình → Component", dựng theo
+    // Design System) is hidden like dr-screens — def kept for manual runs;
+    // `dr-mockup` ("Mockup màn", concept-layout HTML, no DS) takes its slot.
+    pipelineIds: ['dr-docs', 'dr-flow', 'dr-flow-improve', 'dr-mockup', 'dr-review'],
   },
   {
     id: 'ds-lab',
@@ -688,11 +750,37 @@ export function stagesForOutput(rel: string): PipelineDef[] {
   const [wf, sub] = splitWorkflowPath(rel);
   if (wf) {
     const ids = new Set(wf.pipelineIds);
-    return PIPELINE_DEFS.filter(
-      (d) => ids.has(d.id) && (d.outputs ?? []).some((p) => outputMatches(sub, p)),
-    );
+    return stagesMatchingOutput(sub, (d) => ids.has(d.id));
   }
-  return PIPELINE_DEFS.filter((d) => (d.outputs ?? []).some((p) => outputMatches(rel, p)));
+  return stagesMatchingOutput(rel, () => true);
+}
+
+// A pattern that names a FILE (exact name, `*.ext`, `-suffix`) rather than a
+// folder (`comp/`, `flows/`, …). See stagesMatchingOutput.
+function isExplicitOutputPattern(pattern: string): boolean {
+  return !pattern.endsWith('/');
+}
+
+// WP dr-flow-result-split (2026-08-27): "khai tường minh THẮNG khai thư mục".
+// Among the candidate stages (`keep` = workflow filter), a stage whose FILE
+// pattern matches `rel` owns it outright; stages that only reach `rel` through
+// a FOLDER pattern are dropped whenever such an explicit owner exists. This is
+// what stops a stage from lighting "Xong" — or being skipped by run-all
+// `skipSucceeded`, or clearing on re-run — off a sibling's file that merely
+// lives inside its folder: `comp/_screens.json` is dr-flow's (dr-comp only
+// declares `comp/`), `flows/SCREEN-FLOW/ux-review.json` is dr-flow-improve's
+// (dr-flow only declares `flows/`). Without any explicit owner the folder
+// owners are returned exactly as before, registry order preserved.
+function stagesMatchingOutput(rel: string, keep: (d: PipelineDef) => boolean): PipelineDef[] {
+  const explicit: PipelineDef[] = [];
+  const byFolder: PipelineDef[] = [];
+  for (const d of PIPELINE_DEFS) {
+    if (!keep(d)) continue;
+    const outputs = d.outputs ?? [];
+    if (outputs.some((p) => isExplicitOutputPattern(p) && outputMatches(rel, p))) explicit.push(d);
+    else if (outputs.some((p) => outputMatches(rel, p))) byFolder.push(d);
+  }
+  return explicit.length ? explicit : byFolder;
 }
 
 // Which pipeline owns a produced file, for manual upload stage-attribution
@@ -983,7 +1071,14 @@ export function computeActive(
 ): boolean {
   if (isDocumentInputStage(def)) return true;
   const wf = workflowForPipeline(def.id);
-  const ingest = wf && ingestDefOfWorkflow(wf);
+  // Hidden stage (def kept but outside every workflow's pipelineIds —
+  // dr-screens, dr-comp since WP dr-mockup 2026-08-27 — for MANUAL runs):
+  // no workflow to read the ingest stage from, so gate on the ingest stage
+  // among its own transitive `dependsOn` (dr-comp → dr-flow → dr-docs).
+  // Before this fallback a hidden stage was never active → POST /run 409.
+  const ingest = wf
+    ? ingestDefOfWorkflow(wf)
+    : upstreamStages(def.id).map((id) => getPipelineDef(id)).find((d) => isDocumentInputStage(d));
   if (!ingest) return false;
   if (docsReady?.[ingest.id]) return true;
   return statusOf(state, ingest.id) === 'succeeded';

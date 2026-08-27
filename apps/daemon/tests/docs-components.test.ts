@@ -481,20 +481,16 @@ test('stagesForOutput: comp-khong-chay-duoc.md (NGANG HÀNG comp/, không nằm 
   assert.deepEqual(stagesForOutput(`docs-review/${DOCS_COMPONENT_FAILURE_NOTE}`), []);
 });
 
-test('stagesForOutput/deriveStateFromLocalFiles: NGƯỢC LẠI — bất kỳ file nào dưới comp/ (kể cả chỉ comp/summary.md) tự nó đủ để suy ra dr-comp = succeeded', () => {
-  assert.deepEqual(
-    stagesForOutput('docs-review/comp/summary.md').map((d) => d.id),
-    ['dr-comp'],
-  );
-  assert.deepEqual(
-    stagesForOutput('docs-review/comp/i-quan-ly-nhan-su.components.json').map((d) => d.id),
-    ['dr-comp'],
-  );
-  // Đây là lý do runDocsComponentAuditFanout PHẢI xoá sạch comp/ ở mọi đường
-  // thoát khác 'succeeded' khi không trang nào đạt, thay vì ghi thông báo lỗi
-  // VÀO comp/.
+// WP dr-mockup (2026-08-27): dr-comp ẨN khỏi pipelineIds của docs-review →
+// stagesForOutput (lọc theo workflow) KHÔNG còn chấm dr-comp cho file dưới
+// comp/ — không "Xong" ké từ đĩa, cũng không bị re-run clear generic đụng
+// (fan-out tự dọn). Trước đây bất kỳ file nào dưới comp/ đủ suy dr-comp =
+// succeeded; giữ test để khoá hành vi mới (giống dr-screens).
+test('stagesForOutput/deriveStateFromLocalFiles: file dưới docs-review/comp/ không còn thuộc dr-comp (ẩn khỏi workflow)', () => {
+  assert.deepEqual(stagesForOutput('docs-review/comp/summary.md'), []);
+  assert.deepEqual(stagesForOutput('docs-review/comp/i-quan-ly-nhan-su.components.json'), []);
   const state = deriveStateFromLocalFiles(['docs-review/comp/summary.md']);
-  assert.equal(state['dr-comp']?.status, 'succeeded');
+  assert.equal(state['dr-comp'], undefined);
 });
 
 test('writeDocsComponentFailureNote xoá SẠCH comp/ và ghi note NGANG HÀNG comp/, không nằm trong nó', async () => {

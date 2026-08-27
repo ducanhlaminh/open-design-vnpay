@@ -368,6 +368,10 @@ export function buildScreenRunKickoff(opts: ScreenRunKickoffOptions): string {
  * ones as bullets, in the same order the legacy kickoff concatenated them. */
 export interface PipelineKickoffDirectives {
   skill?: string;
+  /** Chỉ dẫn RIÊNG của một stage (input/output cụ thể) — đứng ngay sau `skill`.
+   *  dr-flow-improve và dr-mockup (WP dr-mockup 2026-08-27) dùng; stage khác
+   *  để trống → kickoff không đổi. */
+  stage?: string;
   source?: string;
   platform?: string;
   audience?: string;
@@ -389,6 +393,7 @@ export interface PipelineKickoffOptions {
 
 const PIPELINE_DIRECTIVE_ORDER: Array<keyof PipelineKickoffDirectives> = [
   'skill',
+  'stage',
   'source',
   'platform',
   'audience',

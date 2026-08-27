@@ -77,6 +77,11 @@ export interface RunPipelineOptions {
   // the kickoff so the skill authors screens with the matching `layout`.
   // undefined → no directive (the skill defaults to mobile).
   platform?: import('@open-design/contracts').TargetPlatform | undefined;
+  // WP dr-flow-improve (2026-08-27): stage được chạy bởi run-all (full
+  // workflow) chứ không phải chạy lẻ. CHỈ dr-flow-improve đọc cờ này: run-all
+  // mặc định chọn bản "Cải thiện" (selection.json source 'run-all', trừ khi
+  // người dùng đã tự chọn); chạy lẻ không đụng selection.
+  viaRunAll?: boolean | undefined;
   // RE-RUN clear scope: 'stage' (default) clears only this stage's outputs;
   // 'downstream' also clears every stage that depends on it. See
   // RunPipelineRequest.resetScope.

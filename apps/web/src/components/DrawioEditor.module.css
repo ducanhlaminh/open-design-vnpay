@@ -1,0 +1,49 @@
+/* DrawioEditor — iframe embed.diagrams.net lấp đầy khung sơ đồ
+ * (.diagramBox của FlowUxReviewPreview là position:relative → host absolute
+ * inset:0 chiếm trọn, cả ở chế độ thường lẫn overlay toàn màn hình). */
+.host {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg, #fff);
+}
+
+.frame {
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 360px;
+  border: 0;
+}
+
+/* Chip trạng thái lưu nổi góc trên-phải, không chiếm layout của editor. */
+.state {
+  position: absolute;
+  top: 6px;
+  right: 10px;
+  z-index: 1;
+  font-size: 11.5px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--bg, #fff) 85%, transparent);
+  color: var(--text-muted, #64748b);
+  border: 1px solid var(--border, #e2e8f0);
+  pointer-events: none;
+  max-width: 60%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.state[data-state='saved'] {
+  color: #166534;
+  border-color: #bbf7d0;
+}
+.state[data-state='dirty'],
+.state[data-state='saving'] {
+  color: #854d0e;
+  border-color: #fde68a;
+}
+.state[data-state='error'] {
+  color: #b91c1c;
+  border-color: #fecaca;
+}

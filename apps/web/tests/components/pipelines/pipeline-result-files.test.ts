@@ -76,11 +76,24 @@ describe('isUiPreviewFile', () => {
     expect(isUiPreviewFile('docs-to-prd/review/summary.md')).toBe(false);
   });
 
-  // dr-screens ("Phát hiện màn hình", 0.8.143): Quick result mở
-  // screens-discovered.json (ScreensDiscoveredPreview); digest .md và
-  // comp/_screens.json (manifest — trước đây lọt fallback rồi render nhầm
-  // thành UX Spec) phải ẩn.
-  it('matches dr-screens screens-discovered.json and hides its siblings', () => {
+  // WP dr-mockup (2026-08-27): Quick result của bước "Mockup màn" CHỈ liệt kê
+  // `mockups/index.json` (MockupsPreview); HTML từng màn + file phụ ẩn. Rule
+  // này phải đứng TRƯỚC rule ẩn index.json chung — comp/index.json vẫn ẩn.
+  it('dr-mockup: mockups/index.json hiện, mockups/*.html + file phụ ẩn, comp/index.json vẫn ẩn', () => {
+    expect(isUiPreviewFile('docs-review/mockups/index.json')).toBe(true);
+    expect(isUiPreviewFile('docs-review/mockups/index.json', 'dr-mockup')).toBe(true);
+    expect(isUiPreviewFile('docs-review/mockups/SCR-001.html')).toBe(false);
+    expect(isUiPreviewFile('docs-review/mockups/_inputs.json')).toBe(false);
+    expect(isUiPreviewFile('docs-review/mockups/_audit.json')).toBe(false);
+    expect(isUiPreviewFile('docs-review/mockups/_mockup.css')).toBe(false);
+    expect(isUiPreviewFile('docs-review/comp/index.json')).toBe(false);
+  });
+
+  // screens-discovered.json (0.8.143; từ WP dr-screens-merge sinh cùng bước
+  // Luồng màn hình dr-flow, cùng contract dr-screens cũ): Quick result mở
+  // ScreensDiscoveredPreview; digest .md và comp/_screens.json (manifest —
+  // trước đây lọt fallback rồi render nhầm thành UX Spec) phải ẩn.
+  it('matches screens-discovered.json (dr-flow, formerly dr-screens) and hides its siblings', () => {
     expect(isUiPreviewFile('docs-review/screens-discovered.json')).toBe(true);
     expect(isUiPreviewFile('docs-review/screens-discovered.md')).toBe(false);
     expect(isUiPreviewFile('docs-review/comp/_screens.json')).toBe(false);
@@ -111,5 +124,37 @@ describe('isUiPreviewFile', () => {
   it('ds-lab: screen-map.md is previewable, screen-map.json is not', () => {
     expect(isUiPreviewFile('ds-lab/screen-map.md')).toBe(true);
     expect(isUiPreviewFile('ds-lab/screen-map.json')).toBe(false);
+  });
+});
+
+// WP dr-flow-result-split (2026-08-27): Quick result là của MỘT BƯỚC — cùng
+// thư mục flows/<id>/ nhưng dr-flow mở sơ đồ nguyên bản as-is.drawio (ux-review
+// .json là file của dr-flow-improve, không hiện "ké"), dr-flow-improve mở
+// ux-review.json (khung Nguyên bản | Cải thiện). Không truyền pipelineId →
+// luật cũ nguyên vẹn.
+describe('isUiPreviewFile theo bước (pipelineId)', () => {
+  it('dr-flow: as-is.drawio hiện, ux-review.json + proposed.* ẩn, screens-discovered.json vẫn hiện', () => {
+    expect(isUiPreviewFile('docs-review/flows/SCREEN-FLOW/as-is.drawio', 'dr-flow')).toBe(true);
+    expect(isUiPreviewFile('docs-review/flows/SCREEN-FLOW/ux-review.json', 'dr-flow')).toBe(false);
+    expect(isUiPreviewFile('docs-review/flows/SCREEN-FLOW/proposed.drawio', 'dr-flow')).toBe(false);
+    expect(isUiPreviewFile('docs-review/flows/SCREEN-FLOW/proposed.edited.json', 'dr-flow')).toBe(false);
+    expect(isUiPreviewFile('docs-review/screens-discovered.json', 'dr-flow')).toBe(true);
+    expect(isUiPreviewFile('docs-review/flows/index.json', 'dr-flow')).toBe(false);
+  });
+
+  it('dr-flow-improve: ux-review.json hiện, as-is.drawio + proposed.drawio ẩn', () => {
+    expect(isUiPreviewFile('docs-review/flows/SCREEN-FLOW/ux-review.json', 'dr-flow-improve')).toBe(true);
+    expect(isUiPreviewFile('docs-review/flows/SCREEN-FLOW/as-is.drawio', 'dr-flow-improve')).toBe(false);
+    expect(isUiPreviewFile('docs-review/flows/SCREEN-FLOW/proposed.drawio', 'dr-flow-improve')).toBe(false);
+  });
+
+  it('không pipelineId / bước khác → hành vi cũ: ux-review.json hiện, as-is.drawio ẩn', () => {
+    expect(isUiPreviewFile('docs-review/flows/SCREEN-FLOW/ux-review.json')).toBe(true);
+    expect(isUiPreviewFile('docs-review/flows/SCREEN-FLOW/as-is.drawio')).toBe(false);
+    expect(isUiPreviewFile('docs-review/flows/SCREEN-FLOW/ux-review.json', 'dr-comp')).toBe(true);
+    expect(isUiPreviewFile('docs-review/flows/SCREEN-FLOW/as-is.drawio', 'dr-comp')).toBe(false);
+    // Luật khác không đổi khi có pipelineId.
+    expect(isUiPreviewFile('docs-review/review/docs-feature/A/x.md', 'dr-flow')).toBe(true);
+    expect(isUiPreviewFile('docs-review/comp/_screens.json', 'dr-flow')).toBe(false);
   });
 });

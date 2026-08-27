@@ -3184,15 +3184,41 @@ const isScreenFile = (name: string) =>
 //   • design-v3 screens → screen.json.
 //   • docs (dr-docs) / dr-review → the ingested/redline .md pages under
 //     docs/** or docs-feature/**.
+//   • dr-mockup ("Mockup màn", WP dr-mockup 2026-08-27) → ONLY
+//     `mockups/index.json` (MockupsPreview: rail màn + iframe HTML); the
+//     per-screen `mockups/*.html`, `_inputs.json`, `_audit.json`,
+//     `_mockup.css` stay hidden (mở qua preview).
 // If a step produces NO previewable file we fall back to listing everything
 // so the modal is never empty.
-export function isUiPreviewFile(name: string): boolean {
+//
+// `pipelineId` (WP dr-flow-result-split, 2026-08-27): Quick result là CỦA MỘT
+// BƯỚC, nên cùng một thư mục `flows/<id>/` mở file khác nhau tuỳ bước:
+//   • dr-flow ("Luồng màn hình") → CHỈ sơ đồ nguyên bản `as-is.drawio` (+ tab
+//     Danh sách màn trong FlowUxReviewPreview); `ux-review.json` (file của
+//     dr-flow-improve — improve khởi động re-run-clear xoá nó, dr-flow không
+//     còn ghi bản tối thiểu) và `proposed.*` ẩn.
+//   • dr-flow-improve ("Cải thiện luồng") → `ux-review.json` (khung Nguyên bản |
+//     Cải thiện + highlight thay đổi); `as-is.drawio` ẩn (đã có trong khung).
+// Không truyền / bước khác → luật chung bên dưới, nguyên vẹn.
+export function isUiPreviewFile(name: string, pipelineId?: string): boolean {
   const lower = name.toLowerCase();
   const base = lower.split('/').pop() ?? '';
+  if (pipelineId === 'dr-flow') {
+    if (/(^|\/)flows\/[^/]+\/as-is\.drawio$/.test(lower)) return true;
+    if (/(^|\/)flows\/[^/]+\/ux-review\.json$/.test(lower)) return false;
+  }
+  // dr-flow-improve: ux-review.json đã true (luật flows/ bên dưới), as-is.drawio
+  // đã false (không luật nào nhận .drawio) — không cần nhánh riêng.
   // Ẩn manifest/digest máy-đọc ở MỌI vị trí (feedback 08/2026): rail chỉ liệt
   // kê trang nội dung. index.json từng lọt qua rule report-JSON cuối hàm chỉ
   // vì nằm trong review/; summary.md (review/ digest, docs-feature/ digest)
   // từng match rule trang .md phía dưới.
+  // dr-mockup: `mockups/index.json` là file MỞ preview (MockupsPreview) —
+  // phải nhận TRƯỚC rule ẩn index.json chung ngay dưới. HTML từng màn ẩn
+  // (mở qua rail của preview), `_inputs.json`/`_audit.json`/`_mockup.css`
+  // rơi về các rule chung → false.
+  if (/(^|\/)mockups\/index\.json$/.test(lower)) return true;
+  if (/(^|\/)mockups\/[^/]+\.html?$/.test(lower)) return false;
   if (base === 'index.json' || base === 'summary.md') return false;
   // dr-review's "the run produced no review" note (sibling of `review/`, see
   // apps/daemon/src/docs-review.ts's DOCS_REVIEW_FAILURE_NOTE) — surfaced here
@@ -3203,7 +3229,8 @@ export function isUiPreviewFile(name: string): boolean {
   // DOCS_COMPONENT_FAILURE_NOTE) — same reasoning as review-khong-chay-duoc.md.
   if (base === 'comp-khong-chay-duoc.md') return true;
   if (base === 'screen.json') return true;
-  // dr-screens ("Phát hiện màn hình"): screens-discovered.json mở
+  // screens-discovered.json (danh sách màn sinh cùng bước Luồng màn hình,
+  // dr-flow — trước là dr-screens, cùng contract): mở
   // ScreensDiscoveredPreview (danh sách màn theo trang + khối bổ sung + đã
   // loại trừ). Bản digest .md và comp/_screens.json (manifest máy-đọc, trước
   // đây lọt fallback rồi render nhầm thành UX Spec toàn dấu "−") ẩn đi.
@@ -3287,7 +3314,7 @@ function usePipelineResultFiles(projectId: string, pipeline: PipelineView, workf
           .filter((f) => f.name && outputs.some((o) => outputMatches(stripWorkflowDir(f.name), o)));
         // Non-tech listing: UI-previewable files only, falling back to the full
         // set when a stage ships none (so doc/cj stages still show something).
-        const ui = all.filter((f) => isUiPreviewFile(f.name));
+        const ui = all.filter((f) => isUiPreviewFile(f.name, pipeline.id));
         // Collapse the per-target docs copies down to the shared original.
         const deduped = dropSharedTargetCopies(ui.length > 0 ? ui : all);
         // Source order (wiki sidebar): sort by the numbering in each path segment.

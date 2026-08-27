@@ -21,6 +21,18 @@ import path from 'node:path';
 import { decodeMxfile, encodeMxfile, listCells, type MxPage } from './mxfile.js';
 import { applyPatch, parsePatchDoc, type PatchOp } from './patch.js';
 import { drawioPageToFlowchart, mermaidToFlowchart, resolveScreenCells, type FlowchartDoc } from './to-flowchart.js';
+// WP dr-flow-improve: bản "Cải thiện" của SCREEN-FLOW — selection.json chọn
+// trang nào dựng flowchart/index, proposed.edited.json chặn áp lại patch,
+// screens.improved.json mang mapping màn cho node mới. Import MỘT CHIỀU
+// (screen-flow-xml.ts không import file này).
+import {
+  SCREEN_FLOW_ID,
+  hasProposedEditedMarker,
+  readScreenFlowSelection,
+  readScreensImproved,
+  type ScreenFlowSelectionSource,
+  type ScreenFlowVariant,
+} from './screen-flow-xml.js';
 import { svgForImgEmbedding } from '../bas/svg-xml.js';
 import { findEmbeddedMermaid, isMermaidFlowchart, looksLikeMermaid, replaceCreateViewerCalls } from './mermaid-detect.js';
 // WP-drreview-mmd-color-badge: bù màu proposed.mmd khi agent quên tô — xem
@@ -78,8 +90,13 @@ export interface FlowIndexEntry {
   /** Trang gốc trong attachment draw.io nhiều trang. `index` là zero-based,
    * giống FlowInput.page. Optional để đọc được index sinh bởi bản cũ. */
   page?: { index: number; name: string; count: number };
-  screens: Array<{ key: string; name: string } & Partial<ScreenMetadata>>;
+  screens: Array<{ key: string; name: string } & Partial<ScreenMetadata> & { removedByProposal?: true }>;
   note?: string;
+  /** WP dr-flow-improve (chỉ SCREEN-FLOW): bản đang dựng flowchart/screens —
+   *  `improved` = từ TRANG 1 của proposed.drawio; `original` = as-is như cũ. */
+  variant?: ScreenFlowVariant;
+  /** …và lựa chọn ghi ở selection.json (`default` = chưa có file). Web/dr-comp đọc. */
+  selection?: { variant: ScreenFlowVariant; source: ScreenFlowSelectionSource | 'default' };
   verdict?: UxReview['verdict'];
   findings?: number;
   hasProposal?: boolean;
@@ -773,8 +790,12 @@ export async function finalizeFlowUx(cwd: string): Promise<FinalizeResult> {
       ...(input.page ? { page: input.page } : {}),
     };
     const screensFile = (await readJson<ScreensFile>(path.join(dir, 'screens.json'))) ?? {};
-    const cellScreens = screensFile.cells ?? {};
-    const names = screensFile.names ?? {};
+    // Bản sao (không sửa object đọc từ file): nhánh improved bên dưới bổ sung
+    // mapping/tên cho màn đề xuất mới.
+    const cellScreens: Record<string, string> = { ...(screensFile.cells ?? {}) };
+    const names: Record<string, string> = { ...(screensFile.names ?? {}) };
+    const improvedMeta: Record<string, Partial<ScreenMetadata>> = {};
+    const removedByProposal = new Set<string>();
     let flowchart: FlowchartDoc | null = null;
     // Bảng id cạnh → {from,to} + id node do patch đề xuất thêm, dùng SAU khi
     // dựng flowchart để tính lại `screensDropped` (resolveScreenCells) và
@@ -802,33 +823,83 @@ export async function finalizeFlowUx(cwd: string): Promise<FinalizeResult> {
         index.push(entry);
         continue;
       }
-      flowchart = drawioPageToFlowchart(page.graphXml, { id: input.id, title: input.title, source: input.source }, cellScreens);
-      edgesForDrop = listCells(page.graphXml)
-        .filter((c) => c.kind === 'edge')
-        .map((c) => ({ id: c.id, from: c.source, to: c.target }));
+      // WP dr-flow-improve: chỉ SCREEN-FLOW có bản "Cải thiện" chọn được;
+      // sơ đồ nguồn khác (docs-flow-ux cũ) giữ nguyên hành vi byte-identical.
+      const isScreenFlow = input.id === SCREEN_FLOW_ID;
+      const selection = isScreenFlow ? await readScreenFlowSelection(cwd) : null;
+      const editedByHand = isScreenFlow && (await hasProposedEditedMarker(cwd));
+      let proposedGraphXml: string | null = null;
+
       const patchRaw = await readText(path.join(dir, 'patch.json'));
-      if (patchRaw != null) {
-        const patch = parsePatchDoc(patchRaw);
+      const patch = patchRaw != null ? parsePatchDoc(patchRaw) : null;
+      if (patch) {
         patchAddNodeIds = new Set(
           patch.ops.filter((o): o is Extract<PatchOp, { op: 'addNode' }> => o.op === 'addNode').map((o) => o.id),
         );
-        if (patch.ops.length) {
-          const result = applyPatch(page.graphXml, patch);
-          if (result.applied > 0) {
-            const proposed = encodeMxfile([
-              { id: `${page.id}`, name: 'Hiện trạng', graphXml: page.graphXml },
-              { id: `${page.id}-proposed`, name: 'Đề xuất', graphXml: result.graphXml },
-            ]);
-            await fs.promises.writeFile(path.join(dir, 'proposed.drawio'), proposed, 'utf8');
-            entry.hasProposal = true;
-            entry.files!.proposed = `flows/${input.id}/proposed.drawio`;
-          }
-          if (result.skipped.length) {
-            entry.patchSkipped = result.skipped;
-            warnings.push(`${input.id}: ${result.skipped.length} thao tác vá bị bỏ qua (${result.skipped.map((s) => s.reason).join('; ')})`);
-          }
+      }
+      if (editedByHand) {
+        // Người dùng đã sửa tay trang Cải thiện → KHÔNG áp lại patch, KHÔNG
+        // ghi đè proposed.drawio: đọc bản trên đĩa (trang 1 = bản cải thiện).
+        const proposedRaw = await readText(path.join(dir, 'proposed.drawio'));
+        let proposedPages: MxPage[] = [];
+        try {
+          proposedPages = proposedRaw != null ? decodeMxfile(proposedRaw) : [];
+        } catch {
+          proposedPages = [];
+        }
+        const p1 = proposedPages[1];
+        if (p1?.graphXml) {
+          proposedGraphXml = p1.graphXml;
+          entry.hasProposal = true;
+          entry.files!.proposed = `flows/${input.id}/proposed.drawio`;
+        } else {
+          warnings.push(`${input.id}: có dấu sửa tay (proposed.edited.json) nhưng proposed.drawio không có trang Cải thiện — bỏ qua bản cải thiện`);
+        }
+      } else if (patch && patch.ops.length) {
+        const result = applyPatch(page.graphXml, patch);
+        if (result.applied > 0) {
+          const proposed = encodeMxfile([
+            { id: `${page.id}`, name: 'Hiện trạng', graphXml: page.graphXml },
+            { id: `${page.id}-proposed`, name: 'Đề xuất', graphXml: result.graphXml },
+          ]);
+          await fs.promises.writeFile(path.join(dir, 'proposed.drawio'), proposed, 'utf8');
+          entry.hasProposal = true;
+          entry.files!.proposed = `flows/${input.id}/proposed.drawio`;
+          proposedGraphXml = result.graphXml;
+        }
+        if (result.skipped.length) {
+          entry.patchSkipped = result.skipped;
+          warnings.push(`${input.id}: ${result.skipped.length} thao tác vá bị bỏ qua (${result.skipped.map((s) => s.reason).join('; ')})`);
         }
       }
+
+      // Bản nào dựng flowchart/screens: improved (trang 1 + mapping màn mới
+      // từ screens.improved.json) khi selection.json chọn VÀ trang 1 có thật;
+      // còn lại as-is như hôm nay.
+      const useImproved = isScreenFlow && selection?.variant === 'improved' && proposedGraphXml != null;
+      if (isScreenFlow) {
+        entry.variant = useImproved ? 'improved' : 'original';
+        entry.selection = { variant: entry.variant, source: selection?.source ?? 'default' };
+        if (selection?.variant === 'improved' && !useImproved) {
+          warnings.push(`${input.id}: selection.json chọn bản cải thiện nhưng chưa có proposed.drawio — dùng bản nguyên bản`);
+        }
+      }
+      let graphForChart = page.graphXml;
+      if (useImproved && proposedGraphXml) {
+        graphForChart = proposedGraphXml;
+        const improved = await readScreensImproved(cwd);
+        for (const s of improved?.screens ?? []) {
+          if (s.provenance !== 'proposed') continue;
+          if (s.cell && !cellScreens[s.cell]) cellScreens[s.cell] = s.key;
+          if (!names[s.key]) names[s.key] = s.name;
+          improvedMeta[s.key] = { provenance: 'proposed' };
+        }
+        for (const s of improved?.screens ?? []) if (s.removedByProposal) removedByProposal.add(s.key);
+      }
+      flowchart = drawioPageToFlowchart(graphForChart, { id: input.id, title: input.title, source: input.source }, cellScreens);
+      edgesForDrop = listCells(graphForChart)
+        .filter((c) => c.kind === 'edge')
+        .map((c) => ({ id: c.id, from: c.source, to: c.target }));
     } else {
       const code = await readText(path.join(dir, 'as-is.mmd'));
       if (code == null) {
@@ -868,7 +939,10 @@ export async function finalizeFlowUx(cwd: string): Promise<FinalizeResult> {
     if (flowchart && flowchart.nodes.length) {
       await writeJson(path.join(flowsDir, `${input.id}.flowchart.json`), flowchart);
       entry.files!.flowchart = `flows/${input.id}.flowchart.json`;
-      entry.screens = screensOf(flowchart, names, screensFile.meta ?? {});
+      entry.screens = screensOf(flowchart, names, { ...(screensFile.meta ?? {}), ...improvedMeta } as Record<string, ScreenMetadata>);
+      if (removedByProposal.size) {
+        entry.screens = entry.screens.map((s) => (removedByProposal.has(s.key) ? { ...s, removedByProposal: true as const } : s));
+      }
       // screen-variants WP-V3: key có thể là groupKey — expand ra từng thành
       // viên (giữ nguyên name/provenance của nhóm) để coverage đếm theo màn
       // nghiệp vụ mà mỗi biến thể vẫn có mặt trong index. screens.json không
@@ -913,7 +987,11 @@ export async function finalizeFlowUx(cwd: string): Promise<FinalizeResult> {
       entry.files!.review = `flows/${input.id}/ux-review.json`;
       entry.verdict = review.verdict;
       entry.findings = review.findings.length;
-    } else {
+    } else if (input.id !== SCREEN_FLOW_ID || (await readText(path.join(dir, 'ux-review.json'))) != null) {
+      // WP dr-flow-result-split (2026-08-27): SCREEN-FLOW KHÔNG có review cho
+      // tới khi dr-flow-improve chạy (dr-flow không còn ghi file tối thiểu) —
+      // vắng file là trạng thái bình thường, không cảnh báo; file CÓ mà hỏng
+      // vẫn báo. Flow thường (docs-flow-ux cũ) giữ nguyên warning.
       warnings.push(`${input.id}: thiếu/hỏng ux-review.json`);
     }
     if (screensFile.note) entry.note = screensFile.note;

@@ -215,12 +215,21 @@ function isFurniture(c: MxCellInfo, edgeIds: Set<string>, parentOf: Map<string, 
 }
 
 /** Decoded draw.io page → flowchart doc. `screens` maps cell id → SCREEN-KEY. */
+/** Cell CHÚ THÍCH (legend) của sơ đồ Luồng màn hình (skill docs-screen-flow):
+ *  id bắt đầu bằng tiền tố này là khung/đường mẫu giải thích ký hiệu — vẽ
+ *  trên sơ đồ nhưng KHÔNG phải bước/màn, nên bị loại khỏi flowchart.json
+ *  (dr-comp/screen-flows không thấy) và validator bỏ qua khi soát reachability. */
+export const LEGEND_ID_PREFIX = 'od-legend-';
+export function isLegendCellId(id: string): boolean {
+  return id.startsWith(LEGEND_ID_PREFIX);
+}
+
 export function drawioPageToFlowchart(
   graphXml: string,
   meta: { id: string; title: string; source: string },
   screens: Record<string, string> = {},
 ): FlowchartDoc {
-  const cells = listCells(graphXml);
+  const cells = listCells(graphXml).filter((c) => !isLegendCellId(c.id));
   const edgeIds = new Set(cells.filter((c) => c.kind === 'edge').map((c) => c.id));
   // listCells does not expose `parent`; recover it cheaply for edge-label detection.
   const parentOf = new Map<string, string | undefined>();

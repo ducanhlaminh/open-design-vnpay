@@ -19,6 +19,18 @@ vi.mock('../../../src/providers/registry', () => ({
 vi.mock('../../../src/components/Icon', () => ({ Icon: () => null }));
 
 afterEach(() => cleanup());
+
+// WP dr-mockup (2026-08-27): khối nguồn component / DS / Figma DS nằm trong
+// <details> "Nâng cao — Design System (tuỳ chọn)" MẶC ĐỊNH ĐÓNG — test mở nó
+// ra trước khi bấm radio/picker (jsdom không ẩn con của details đóng, nhưng
+// thao tác qua summary mới đúng đường người dùng đi).
+function openAdvanced() {
+  const details = screen.getByTestId('app-ds-advanced') as HTMLDetailsElement;
+  expect(details.open).toBe(false);
+  fireEvent.click(details.querySelector('summary')!);
+  if (!details.open) details.open = true;
+}
+
 beforeEach(() => {
   vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
     if (url === '/api/pipelines/apps') return new Response(JSON.stringify({ apps: [] }), { status: 200 });
@@ -90,6 +102,7 @@ describe('EditAppModal · Design System', () => {
   it('chọn nguồn Figma đã nạp và chỉ lưu source id', async () => {
     const fetchMock = vi.mocked(fetch);
     render(<EditAppModal app={{ id: 'retail', name: 'Retail' }} onClose={() => {}} onSaved={() => {}} />);
+    openAdvanced();
     fireEvent.click(screen.getByRole('radio', { name: /^Design system từ link Figma/i }));
     fireEvent.change(await screen.findByLabelText('Design system Figma'), { target: { value: 'shared-figma' } });
     fireEvent.click(screen.getByRole('button', { name: 'Lưu thay đổi' }));
@@ -102,6 +115,7 @@ describe('EditAppModal · Design System', () => {
     const fetchMock = vi.mocked(fetch);
     render(<EditAppModal app={{ id: 'retail', name: 'Retail', designSystemId: 'old-ds' }} onClose={() => {}} onSaved={() => {}} />);
     await act(async () => {});
+    openAdvanced();
     expect(screen.getByText('Design System (Figma)')).toBeTruthy();
     fireEvent.click(screen.getByRole('radio', { name: /^Design system từ link Figma/i }));
     expect(screen.queryByText('Design System (Figma)')).toBeNull();
@@ -122,6 +136,7 @@ describe('EditAppModal · Design System', () => {
     const fetchMock = vi.mocked(fetch);
     render(<EditAppModal app={app} onClose={() => {}} onSaved={() => {}} />);
     await act(async () => {});
+    openAdvanced();
     fireEvent.click(screen.getByTestId('project-ds-picker-option-figma-ds'));
     fireEvent.click(screen.getByRole('button', { name: 'Lưu thay đổi' }));
     await waitFor(() => expect(fetchMock.mock.calls.some((call) => String(call[0]).includes('/api/pipelines/apps/') && call[1]?.method === 'PATCH')).toBe(true));
@@ -147,6 +162,7 @@ describe('EditAppModal · Design System', () => {
     const fetchMock = vi.mocked(fetch);
     render(<EditAppModal app={{ id: 'retail', name: 'Retail', designSystemId: 'old-ds' }} onClose={() => {}} onSaved={() => {}} />);
     await act(async () => {});
+    openAdvanced();
     fireEvent.click(screen.getByRole('radio', { name: /No design system/i }));
     fireEvent.click(screen.getByRole('button', { name: 'Lưu thay đổi' }));
     await waitFor(() => expect(fetchMock.mock.calls.some((call) => String(call[0]).includes('/api/pipelines/apps/') && call[1]?.method === 'PATCH')).toBe(true));
@@ -158,23 +174,46 @@ describe('EditAppModal · Design System', () => {
     render(<EditAppModal app={{ id: 'retail', name: 'Retail', designSystemId: 'figma-ds' }} onClose={() => {}} onSaved={() => {}} />);
     expect((screen.getByRole('button', { name: 'Lưu thay đổi' }) as HTMLButtonElement).disabled).toBe(true);
   });
+
+  // WP dr-mockup: nút Lưu KHÔNG phụ thuộc DS — chọn loại Figma mà chưa chọn
+  // nguồn (trước đây khoá nút) thì đổi tên vẫn lưu được, PATCH chỉ có name.
+  it('chọn loại Figma nhưng chưa chọn nguồn: đổi tên vẫn Lưu được, không gửi nguồn', async () => {
+    const fetchMock = vi.mocked(fetch);
+    render(<EditAppModal app={{ id: 'retail', name: 'Retail' }} onClose={() => {}} onSaved={() => {}} />);
+    await act(async () => {});
+    openAdvanced();
+    fireEvent.click(screen.getByRole('radio', { name: /^Design system từ link Figma/i }));
+    fireEvent.change(screen.getByLabelText('Tên dự án'), { target: { value: 'Retail VN' } });
+    expect((screen.getByRole('button', { name: 'Lưu thay đổi' }) as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: 'Lưu thay đổi' }));
+    await waitFor(() => expect(fetchMock.mock.calls.some((call) => String(call[0]).includes('/api/pipelines/apps/') && call[1]?.method === 'PATCH')).toBe(true));
+    const call = fetchMock.mock.calls.find((c) => String(c[0]).includes('/api/pipelines/apps/') && c[1]?.method === 'PATCH');
+    expect(JSON.parse(String(call?.[1]?.body))).toEqual({ name: 'Retail VN' });
+  });
 });
 
 describe('NewAppModal · Design System', () => {
-  it('không chọn DS thì POST không có designSystemId', async () => {
+  // WP dr-mockup: khối DS đóng mặc định, không đụng tới → Tạo vẫn bật, POST
+  // không có designSystemId lẫn figmaDesignSystemSourceId.
+  it('không mở khối Nâng cao / không chọn DS thì vẫn Tạo được, POST không có DS', async () => {
     const fetchMock = vi.mocked(fetch);
     render(<NewAppModal onClose={() => {}} onCreated={() => {}} />);
+    expect((screen.getByTestId('app-ds-advanced') as HTMLDetailsElement).open).toBe(false);
     fireEvent.change(screen.getByLabelText('Tên dự án'), { target: { value: 'Retail' } });
+    expect((screen.getByRole('button', { name: 'Tạo' }) as HTMLButtonElement).disabled).toBe(false);
     fireEvent.click(screen.getByRole('button', { name: 'Tạo' }));
     await waitFor(() => expect(fetchMock.mock.calls.some((call) => call[0] === '/api/pipelines/apps' && call[1]?.method === 'POST')).toBe(true));
     const call = fetchMock.mock.calls.find((c) => c[0] === '/api/pipelines/apps' && c[1]?.method === 'POST');
-    expect(JSON.parse(String(call?.[1]?.body))).not.toHaveProperty('designSystemId');
+    const body = JSON.parse(String(call?.[1]?.body));
+    expect(body).not.toHaveProperty('designSystemId');
+    expect(body).not.toHaveProperty('figmaDesignSystemSourceId');
   });
 
   it('chọn Design system Figma đã nạp khi tạo và POST source id', async () => {
     const fetchMock = vi.mocked(fetch);
     render(<NewAppModal onClose={() => {}} onCreated={() => {}} />);
     fireEvent.change(screen.getByLabelText('Tên dự án'), { target: { value: 'Retail' } });
+    openAdvanced();
     fireEvent.click(screen.getByRole('radio', { name: /^Design system từ link Figma/i }));
     fireEvent.change(await screen.findByLabelText('Design system Figma'), { target: { value: 'shared-figma' } });
     fireEvent.click(screen.getByRole('button', { name: 'Tạo' }));
@@ -187,10 +226,19 @@ describe('NewAppModal · Design System', () => {
     });
   });
 
-  it('không cho tạo khi đã chọn loại Figma nhưng chưa chọn nguồn đã nạp', () => {
+  // WP dr-mockup: trước đây khoá nút Tạo; nay nút KHÔNG phụ thuộc DS — vẫn
+  // tạo được, không gửi nguồn Figma nào, hint nói rõ App không gắn DS.
+  it('chọn loại Figma nhưng chưa chọn nguồn: vẫn Tạo được, POST không có figmaDesignSystemSourceId', async () => {
+    const fetchMock = vi.mocked(fetch);
     render(<NewAppModal onClose={() => {}} onCreated={() => {}} />);
     fireEvent.change(screen.getByLabelText('Tên dự án'), { target: { value: 'Retail' } });
+    openAdvanced();
     fireEvent.click(screen.getByRole('radio', { name: /^Design system từ link Figma/i }));
-    expect((screen.getByRole('button', { name: 'Tạo' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(await screen.findByText(/Chưa chọn nguồn → dự án tạo ra không gắn Design System/)).toBeTruthy();
+    expect((screen.getByRole('button', { name: 'Tạo' }) as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: 'Tạo' }));
+    await waitFor(() => expect(fetchMock.mock.calls.some((call) => call[0] === '/api/pipelines/apps' && call[1]?.method === 'POST')).toBe(true));
+    const call = fetchMock.mock.calls.find((c) => c[0] === '/api/pipelines/apps' && c[1]?.method === 'POST');
+    expect(JSON.parse(String(call?.[1]?.body))).not.toHaveProperty('figmaDesignSystemSourceId');
   });
 });

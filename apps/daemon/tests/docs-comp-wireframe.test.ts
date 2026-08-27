@@ -1,37 +1,38 @@
-// dr-comp (2026-08-17) vẽ thêm `wireframes/<SCREEN-KEY>.html` mỗi màn. Test này
-// khoá hai chuyện daemon dựa vào trong runDocsComponentAuditFanout (server.ts):
-//   1. `wireframes/` là output của RIÊNG dr-comp trong docs-review → re-run
-//      clear dọn nó, và bất kỳ file nào dưới đó (kể cả `_wireframe.css` daemon
-//      copy sẵn) tự nó đủ chấm dr-comp = succeeded khi suy từ đĩa — đó là lý
-//      do fail-shut cấp stage phải xoá cả `wireframes/` chứ không chỉ `comp/`.
-//   2. Nguồn CSS daemon copy vào `<cwd>/wireframes/_wireframe.css` là
-//      `skills/ux-spec/assets/wireframe.css` (resolve qua SKILLS_DIR) — file
-//      phải tồn tại và có các class mà hợp đồng wireframe của skill dùng.
+// dr-comp (2026-08-17) vẽ thêm `wireframes/<SCREEN-KEY>.html` mỗi màn.
+// WP dr-mockup (2026-08-27): dr-comp RÚT KHỎI workflow docs-review (def giữ, ẩn
+// như dr-screens) → `stagesForOutput` (lọc theo pipelineIds của workflow) KHÔNG
+// còn chấm dr-comp cho `docs-review/comp/**` lẫn `docs-review/wireframes/**`:
+// không "Xong" ké từ đĩa, re-run clear generic không đụng (fan-out tự dọn
+// comp/ + wireframes/ ở mọi đường thoát). Test này khoá hành vi mới + nguồn
+// CSS daemon copy (`skills/ux-spec/assets/wireframe.css`) vẫn tồn tại.
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'vitest';
 
-import { deriveStateFromLocalFiles, getPipelineDef, relClearedByRegen, stagesForOutput } from '../src/pipelines.js';
+import { deriveStateFromLocalFiles, getPipelineDef, relClearedByRegen, stagesForOutput, WORKFLOWS } from '../src/pipelines.js';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
-test('dr-comp khai outputs comp/ + wireframes/, cả hai ở gốc docs-review', () => {
+test('dr-comp khai outputs comp/ + wireframes/ nhưng ẩn khỏi mọi workflow (WP dr-mockup)', () => {
   assert.deepEqual(getPipelineDef('dr-comp')?.outputs, ['comp/', 'wireframes/']);
+  assert.ok(!WORKFLOWS.some((w) => w.pipelineIds.includes('dr-comp')));
 });
 
-test('docs-review/wireframes/* thuộc RIÊNG dr-comp — kể cả _wireframe.css daemon copy sẵn', () => {
+test('docs-review/wireframes/* và comp/* KHÔNG còn thuộc dr-comp — không Xong ké, không bị re-run clear generic', () => {
   for (const rel of [
     'docs-review/wireframes/_wireframe.css',
     'docs-review/wireframes/2.1.1-URD-Quan-ly-nhan-vien__SCR-001.html',
+    'docs-review/comp/_doc-screens.json',
+    'docs-review/comp/screen-flows/index.json',
+    'docs-review/comp/screen-flows/FLOW-mua-sim.screen-flow.json',
   ]) {
-    assert.deepEqual(stagesForOutput(rel).map((d) => d.id), ['dr-comp'], rel);
-    assert.equal(deriveStateFromLocalFiles([rel])['dr-comp']?.status, 'succeeded', rel);
+    assert.deepEqual(stagesForOutput(rel), [], rel);
+    assert.equal(deriveStateFromLocalFiles([rel])['dr-comp'], undefined, rel);
+    assert.equal(relClearedByRegen(rel, new Set(['dr-comp']), 'docs-review'), false, rel);
   }
-  // Re-run dr-comp dọn wireframes/ trước khi copy CSS + fan-out lại.
-  assert.equal(relClearedByRegen('docs-review/wireframes/_wireframe.css', new Set(['dr-comp']), 'docs-review'), true);
-  // wireframes/ của workflow docs-to-ui (stage ux) KHÔNG dính tới dr-comp.
+  // wireframes/ của workflow docs-to-ui (stage ux) vẫn không dính tới dr-comp.
   assert.equal(stagesForOutput('docs-to-ui/wireframes/x.html').some((d) => d.id === 'dr-comp'), false);
 });
 
@@ -45,41 +46,20 @@ test('skills/ux-spec/assets/wireframe.css tồn tại và có các class hợp �
 
 // WP14 (lớp 3 — overrides + manifest): screens-overrides.json là NGUỒN SỰ
 // THẬT do người dùng giữ, nằm NGAY DƯỚI docs-review/ (NGOÀI comp/) — cùng
-// tầng criteria/, đúng lý do criteria/ sống sót re-run clear. comp/_screens.json
-// (manifest) và comp/_doc-screens.json (bản normalize lượt trích lớp 2) thì
-// NẰM DƯỚI comp/ nên bị dọn cùng dr-comp mỗi lần "Run lại" — ĐÚNG Ý vì cả hai
-// chỉ mô tả LẦN CHẠY HIỆN TẠI. Test này khoá đúng bất biến đó bằng chính
-// primitive server.ts dùng (relClearedByRegen + stagesForOutput), không dựng
-// cây thư mục thật vì hai hàm này thuần theo đường dẫn (khuôn test ở trên).
-test('re-run dr-comp KHÔNG xoá docs-review/screens-overrides.json (lớp 3, người dùng giữ)', () => {
+// tầng criteria/, đúng lý do criteria/ sống sót re-run clear.
+test('re-run KHÔNG xoá docs-review/screens-overrides.json (lớp 3, người dùng giữ)', () => {
   const rel = 'docs-review/screens-overrides.json';
-  // Không stage nào khai output này — sống ngoài comp/ và wireframes/.
   assert.deepEqual(stagesForOutput(rel), []);
   assert.equal(relClearedByRegen(rel, new Set(['dr-comp']), 'docs-review'), false);
-  // Regen downstream rộng hơn (dr-review phụ thuộc dr-comp) cũng không đụng nó.
-  assert.equal(relClearedByRegen(rel, new Set(['dr-comp', 'dr-review']), 'docs-review'), false);
+  assert.equal(relClearedByRegen(rel, new Set(['dr-flow', 'dr-mockup', 'dr-review']), 'docs-review'), false);
 });
 
-test('re-run dr-comp CÓ xoá comp/_screens.json + comp/_doc-screens.json (ảnh của lần chạy)', () => {
-  for (const rel of ['docs-review/comp/_screens.json', 'docs-review/comp/_doc-screens.json']) {
-    assert.deepEqual(stagesForOutput(rel).map((d) => d.id), ['dr-comp'], rel);
-    assert.equal(relClearedByRegen(rel, new Set(['dr-comp']), 'docs-review'), true, rel);
-  }
-});
-
-test('screen-flow daemon-owned nằm trong comp/: thuộc dr-comp, bị dọn khi re-run; flows/ vẫn thuộc dr-flow', () => {
-  for (const rel of [
-    'docs-review/comp/screen-flows/index.json',
-    'docs-review/comp/screen-flows/FLOW-mua-sim.screen-flow.json',
-    'docs-review/comp/screen-flows/FLOW-mua-sim.drawio',
-  ]) {
-    assert.deepEqual(stagesForOutput(rel).map((d) => d.id), ['dr-comp'], rel);
-    assert.equal(relClearedByRegen(rel, new Set(['dr-comp']), 'docs-review'), true, rel);
-  }
-
+test('comp/_screens.json vẫn là file của dr-flow (khai tường minh); flows/ thuộc dr-flow', () => {
+  assert.deepEqual(stagesForOutput('docs-review/comp/_screens.json').map((d) => d.id), ['dr-flow']);
+  assert.equal(relClearedByRegen('docs-review/comp/_screens.json', new Set(['dr-flow']), 'docs-review'), true);
+  assert.equal(relClearedByRegen('docs-review/comp/_screens.json', new Set(['dr-mockup']), 'docs-review'), false);
   for (const rel of ['docs-review/flows/index.json', 'docs-review/flows/FLOW-mua-sim/as-is.drawio']) {
     assert.deepEqual(stagesForOutput(rel).map((d) => d.id), ['dr-flow'], rel);
-    assert.equal(relClearedByRegen(rel, new Set(['dr-comp']), 'docs-review'), false, rel);
+    assert.equal(relClearedByRegen(rel, new Set(['dr-mockup']), 'docs-review'), false, rel);
   }
-  assert.equal(relClearedByRegen('docs-review/screens-overrides.json', new Set(['dr-comp']), 'docs-review'), false);
 });

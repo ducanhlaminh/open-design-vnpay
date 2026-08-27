@@ -80,18 +80,31 @@ test('docs-to-prd: fully independent of docs-to-ui — its own docs/cj/ux-resear
   assert.equal(workflowDirForPipeline('ux-research'), 'docs-to-ui');
 });
 
-test('docs-review: fully independent of docs-to-ui and docs-to-prd — dr-docs -> dr-flow -> dr-comp -> dr-review, docs-to-ui stays WORKFLOWS[0]', () => {
+test('docs-review: fully independent of docs-to-ui and docs-to-prd — dr-docs -> dr-flow -> dr-flow-improve -> dr-mockup -> dr-review (dr-comp ẩn 2026-08-27), docs-to-ui stays WORKFLOWS[0]', () => {
   // docs-to-ui must remain the default workflow — appending docs-review must
   // not disturb WORKFLOWS[0] or DEFAULT_WORKFLOW_ID.
   assert.equal(WORKFLOWS[0]!.id, 'docs-to-ui');
   const wf = WORKFLOWS.find((w) => w.id === 'docs-review');
   assert.ok(wf, 'docs-review workflow should exist');
-  assert.deepEqual(wf!.pipelineIds, ['dr-docs', 'dr-flow', 'dr-screens', 'dr-comp', 'dr-review']);
+  // WP dr-screens-merge (2026-08-27): dr-screens rời pipelineIds (gộp vào
+  // dr-flow), def GIỮ ẩn như dr-confirm để chạy tay.
+  // WP dr-flow-improve (2026-08-27): "Cải thiện luồng" chạy sau dr-flow.
+  // WP dr-mockup (2026-08-27): dr-comp (dựng theo DS) RỜI workflow — def giữ
+  // ẩn như dr-screens; "Mockup màn" (concept layout, không DS) thế chỗ.
+  assert.deepEqual(wf!.pipelineIds, ['dr-docs', 'dr-flow', 'dr-flow-improve', 'dr-mockup', 'dr-review']);
+  assert.ok(!WORKFLOWS.some((w) => w.pipelineIds.includes('dr-comp')), 'dr-comp ẩn khỏi mọi workflow');
+  assert.equal(def('dr-mockup').skillId, 'docs-screen-mockup');
+  assert.deepEqual(def('dr-mockup').dependsOn, ['dr-docs', 'dr-flow']);
+  assert.deepEqual(def('dr-mockup').outputs, ['mockups/']);
+  assert.equal(def('dr-mockup').usesDesignSystemCriteria, undefined, 'dr-mockup cô lập khỏi DS');
   assert.equal(def('dr-docs').skillId, 'confluence-ingest');
+  assert.equal(def('dr-flow-improve').skillId, 'docs-screen-flow-improve');
+  assert.deepEqual(def('dr-flow-improve').dependsOn, ['dr-flow']);
   assert.equal(def('dr-screens').skillId, 'docs-screen-discovery');
+  assert.ok(!WORKFLOWS.some((w) => w.pipelineIds.includes('dr-screens')), 'dr-screens ẩn khỏi mọi workflow');
   assert.equal(def('dr-comp').skillId, 'docs-screen-components');
   assert.equal(def('dr-review').skillId, 'docs-spec-review');
-  assert.equal(def('dr-flow').skillId, 'docs-flow-ux');
+  assert.equal(def('dr-flow').skillId, 'docs-screen-flow');
   assert.deepEqual(def('dr-docs').dependsOn, []);
   // 2026-08-17: dr-flow chạy TRƯỚC dr-comp — wireframe của dr-comp lấy
   // `data-nav` từ flows/, nên run-all sắp flow trước và re-run dr-flow có
@@ -101,9 +114,10 @@ test('docs-review: fully independent of docs-to-ui and docs-to-prd — dr-docs -
   // WP1 (2026-08-25): dr-screens ("Phát hiện màn hình") chạy GIỮA dr-flow và
   // dr-comp — dr-comp tiêu thụ `screens-discovered.json` của nó khi có.
   assert.deepEqual(def('dr-screens').dependsOn, ['dr-docs', 'dr-flow']);
-  assert.deepEqual(def('dr-comp').dependsOn, ['dr-docs', 'dr-flow', 'dr-screens']);
-  // Review là bước CHỐT cuối — chờ đủ cả flow lẫn comp.
-  assert.deepEqual(def('dr-review').dependsOn, ['dr-docs', 'dr-flow', 'dr-comp']);
+  // 2026-08-27: dr-comp không còn chờ dr-screens — danh sách màn sinh cùng dr-flow.
+  assert.deepEqual(def('dr-comp').dependsOn, ['dr-docs', 'dr-flow']);
+  // Review là bước CHỐT cuối — WP dr-mockup: không còn chờ dr-comp (ẩn).
+  assert.deepEqual(def('dr-review').dependsOn, ['dr-docs', 'dr-flow']);
   assert.deepEqual(def('dr-docs').outputs, ['docs/', 'docs-feature/']);
   // comp/ nằm ở gốc workflow-dir, KHÔNG lồng trong review/ — cùng lý do như
   // flows/: lồng vào đó thì re-run dr-review xoá mất, và stagesForOutput chấm
@@ -112,16 +126,20 @@ test('docs-review: fully independent of docs-to-ui and docs-to-prd — dr-docs -
   assert.deepEqual(def('dr-review').outputs, ['review/']);
   // flows/ sits at the workflow-dir root, NOT under review/ — see
   // tests/docs-flow-stage.test.ts for why that placement is load-bearing.
-  assert.deepEqual(def('dr-flow').outputs, ['flows/']);
+  // WP dr-screens-merge: dr-flow sinh luôn danh sách màn — ba output cũ của
+  // dr-screens khai ở dr-flow để re-run dr-flow dọn chúng.
+  assert.deepEqual(def('dr-flow').outputs, ['flows/', 'screens-discovered.json', 'screens-discovered.md', 'comp/_screens.json']);
   // dr-screens outputs sit at the workflow-dir root too (NOT under comp/), so
   // a re-run of dr-comp never clears the discovery file it consumes.
   assert.deepEqual(def('dr-screens').outputs, ['screens-discovered.json', 'screens-discovered.md', 'comp/_screens.json']);
   // Each id resolves to docs-review's OWN folder namespace.
   assert.equal(workflowDirForPipeline('dr-docs'), 'docs-review');
-  assert.equal(workflowDirForPipeline('dr-screens'), 'docs-review');
-  assert.equal(workflowDirForPipeline('dr-comp'), 'docs-review');
+  // dr-comp ẩn → null (server.ts fallback 'docs-review' khi chạy tay, như dr-screens).
+  assert.equal(workflowDirForPipeline('dr-comp'), null);
+  assert.equal(workflowDirForPipeline('dr-mockup'), 'docs-review');
   assert.equal(workflowDirForPipeline('dr-review'), 'docs-review');
   assert.equal(workflowDirForPipeline('dr-flow'), 'docs-review');
+  assert.equal(workflowDirForPipeline('dr-flow-improve'), 'docs-review');
   // And the other two workflows' own ids are untouched.
   assert.equal(workflowDirForPipeline('docs'), 'docs-to-ui');
   assert.equal(workflowDirForPipeline('prd-docs'), 'docs-to-prd');
@@ -304,6 +322,53 @@ test('stagesForOutput: workflow-namespaced files attribute to the owning stage',
   assert.deepEqual(stagesForOutput('docs-to-ui/app-journey.json').map((d) => d.id), ['cj']);
   assert.deepEqual(stagesForOutput('docs-to-ui/prototype/index.html').map((d) => d.id), ['ui-html']);
   assert.deepEqual(stagesForOutput('docs-to-ui/react/dist/index.html').map((d) => d.id), ['ui-react']);
+});
+
+// WP dr-flow-result-split (2026-08-27): "khai tường minh THẮNG khai thư mục".
+// Một file khớp ≥1 stage bằng pattern TÊN FILE (tên chính xác / *.ext /
+// -suffix) thì CHỈ các stage đó sở hữu; stage chỉ với tới nó qua pattern THƯ
+// MỤC (`comp/`, `flows/`) bị loại. Không có chủ tường minh → như cũ. Đây là
+// thứ chặn dr-comp/dr-flow-improve tự "Xong" (deriveStateFromLocalFiles) và
+// run-all skipSucceeded bỏ qua chúng chỉ vì dr-flow vừa ghi file vào thư mục
+// của chúng.
+test('stagesForOutput: khai tường minh thắng khai thư mục (docs-review), workflow khác không đổi', () => {
+  const ids = (rel: string) => stagesForOutput(rel).map((d) => d.id);
+  // comp/_screens.json: dr-flow khai đích danh, dr-comp chỉ khai comp/ → dr-flow.
+  assert.deepEqual(ids('docs-review/comp/_screens.json'), ['dr-flow']);
+  // 5 file của improve dưới flows/SCREEN-FLOW/: dr-flow chỉ khai flows/ → improve.
+  for (const f of ['patch.json', 'ux-review.json', 'proposed.drawio', 'proposed.edited.json', 'screens.improved.json']) {
+    assert.deepEqual(ids(`docs-review/flows/SCREEN-FLOW/${f}`), ['dr-flow-improve'], f);
+  }
+  // Phần còn lại của flows/ không ai khai đích danh → chủ thư mục (dr-flow) như cũ.
+  for (const rel of ['docs-review/flows/SCREEN-FLOW/as-is.drawio', 'docs-review/flows/index.json', 'docs-review/flows/_inputs.json']) {
+    assert.deepEqual(ids(rel), ['dr-flow'], rel);
+  }
+  // WP dr-mockup: dr-comp ẩn khỏi workflow → comp/X.screen.json KHÔNG còn chủ
+  // (như screens-discovered.json với dr-screens); mockups/** thuộc dr-mockup.
+  assert.deepEqual(ids('docs-review/comp/X.screen.json'), []);
+  assert.deepEqual(ids('docs-review/mockups/index.json'), ['dr-mockup']);
+  assert.deepEqual(ids('docs-review/mockups/2.1-PRD__SCR-001.html'), ['dr-mockup']);
+  assert.deepEqual(ids('docs-review/mockups/_inputs.json'), ['dr-mockup']);
+  // Hệ quả trạng thái: full dr-flow output KHÔNG làm dr-comp / improve "Xong".
+  const state = deriveStateFromLocalFiles([
+    'docs-review/flows/index.json',
+    'docs-review/flows/SCREEN-FLOW/as-is.drawio',
+    'docs-review/screens-discovered.json',
+    'docs-review/comp/_screens.json',
+  ]);
+  assert.equal(state['dr-flow']?.status, 'succeeded');
+  assert.equal(state['dr-comp'], undefined);
+  assert.equal(state['dr-flow-improve'], undefined);
+  // docs-to-ui: không có cặp exact-vs-dir chồng nhau → byte-identical với trước.
+  assert.deepEqual(ids('docs-to-ui/docs/system-map.json'), ['docs-map']);
+  assert.deepEqual(ids('docs-to-ui/docs/confluence/x.md'), ['docs']);
+  assert.deepEqual(ids('docs-to-ui/cj/app-cj.json'), ['cj']);
+  assert.deepEqual(ids('docs-to-ui/flows/FLOW-1/ux-review.json'), ['ux']);
+  assert.deepEqual(ids('docs-to-ui/mobile/app-ux-spec.json'), ['ux']);
+  assert.deepEqual(ids('ds-lab/kit/kit.json'), ['lab-kit']);
+  // Legacy unprefixed: luật áp cả nhánh fallback — chủ thư mục bị loại khi có chủ đích danh.
+  assert.deepEqual(ids('docs/system-map.json'), ['docs-map']);
+  assert.deepEqual(ids('docs/confluence/x.md'), ['docs', 'prd-docs', 'dr-docs', 'lab-docs']);
 });
 
 // Link-followed background pages land in `docs/context/` (bas-client.ts). The
@@ -961,19 +1026,19 @@ test('docsFromUpload VẪN lọc bước ingest kể cả khi người dùng tic
   // Nhánh cũ (không stageIds).
   assert.deepEqual(
     selectRunStages(dr, { docsFromUpload: true }),
-    ['dr-flow', 'dr-screens', 'dr-comp', 'dr-review'],
+    ['dr-flow', 'dr-flow-improve', 'dr-mockup', 'dr-review'],
   );
   // Nhánh tick tay: chạy lại ingest sẽ XOÁ SẠCH tài liệu vừa tải lên (output
   // khai báo của nó chính là docs/), nên việc người dùng lỡ tick không làm điều
   // đó bớt phá hoại — bước ingest vẫn bị loại.
   assert.deepEqual(
-    selectRunStages(dr, { stageIds: ['dr-docs', 'dr-comp', 'dr-flow'], docsFromUpload: true }),
-    ['dr-flow', 'dr-comp'],
+    selectRunStages(dr, { stageIds: ['dr-docs', 'dr-mockup', 'dr-flow'], docsFromUpload: true }),
+    ['dr-flow', 'dr-mockup'],
   );
   // Không có cờ upload thì bước ingest được tick vẫn chạy bình thường.
   assert.deepEqual(
-    selectRunStages(dr, { stageIds: ['dr-docs', 'dr-comp'] }),
-    ['dr-docs', 'dr-comp'],
+    selectRunStages(dr, { stageIds: ['dr-docs', 'dr-mockup'] }),
+    ['dr-docs', 'dr-mockup'],
   );
 });
 
@@ -1381,6 +1446,12 @@ test('invariant: every PIPELINE_DEFS id (including lab-kit-plan and lab-kit) bel
   for (const d of PIPELINE_DEFS) {
     const owners = WORKFLOWS.filter((w) => w.pipelineIds.includes(d.id));
     if (d.id === 'dr-confirm') continue; // documented exception (see lab-compose.test.ts)
+    // WP dr-screens-merge (2026-08-27): dr-screens gộp vào dr-flow, def giữ ẩn
+    // để chạy tay khi tài liệu không có luồng — cùng cơ chế dr-confirm.
+    if (d.id === 'dr-screens') continue;
+    // WP dr-mockup (2026-08-27): dr-comp rút khỏi docs-review (dựng theo DS tạm
+    // dừng), def giữ ẩn để chạy tay — cùng cơ chế.
+    if (d.id === 'dr-comp') continue;
     assert.equal(owners.length, 1, `${d.id} should belong to exactly one workflow (found in: ${owners.map((w) => w.id).join(', ') || 'none'})`);
   }
   assert.deepEqual(WORKFLOWS.filter((w) => w.pipelineIds.includes('lab-map')).map((w) => w.id), ['ds-lab']);

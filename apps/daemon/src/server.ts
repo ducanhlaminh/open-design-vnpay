@@ -179,6 +179,17 @@ import { diagnoseClaudeCliFailure } from './claude-diagnostics.js';
 import { fetchClaudeUsage } from './claude-usage.js';
 import { renderHtmlToPdf } from './bas/drawio-render.js';
 import { finalizeFlowUx, prepareFlowUxInputs, type FlowIndexEntry } from './flow-ux/index.js';
+import { validateMockups, MOCKUP_INPUTS_FILE, MOCKUP_CSS_FILE } from './screen-mockups.js';
+import { SCREEN_FLOW_CELLS_FILE, SCREEN_FLOW_ID, finalizeScreenFlowXml, saveScreenFlowEdit } from './flow-ux/screen-flow-xml.js';
+import {
+  finalizeScreenFlowImprove,
+  hasProposedEditedMarker,
+  readScreenFlowSelection,
+  readScreensImproved,
+  writeScreenFlowSelection,
+} from './flow-ux/screen-flow-improve.js';
+import { parseScreenFlowScreensV2, renderDiscoveredMd, toDiscoveredDoc } from './flow-ux/screen-flow-screens.js';
+import { persistScreenDiscovery } from './screen-discovery.js';
 import {
   canonicalizeRecoveredScreens,
   parseScreenRecovery,
@@ -6748,8 +6759,9 @@ export async function startServer({
     const project = getProject(db, projectId);
     if (!project) return null;
     const projectRoot = resolveProjectDir(PROJECTS_DIR, projectId, project.metadata);
-    const wfDir = wfDirForStage('dr-comp', undefined).wfDir;
-    const cwd = wfDir ? path.join(projectRoot, wfDir) : projectRoot;
+    // dr-comp ẩn khỏi workflow (WP dr-mockup) → wfDirForStage null → docs-review.
+    const wfDir = wfDirForStage('dr-comp', undefined).wfDir ?? 'docs-review';
+    const cwd = path.join(projectRoot, wfDir);
     const catalog = await fs.promises
       .readFile(path.join(cwd, '.figma-catalog', 'components.json'), 'utf8')
       .then((raw) => JSON.parse(raw) as { files?: Array<{ fileKey?: string; name?: string; components?: Array<{ nodeId?: string; name?: string }> }> })
@@ -9821,6 +9833,154 @@ export async function startServer({
       await fs.promises.writeFile(tmp, JSON.stringify(doc, null, 2), 'utf8');
       await fs.promises.rename(tmp, target);
       res.json({ ok: true });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // WP dr-flow-improve (2026-08-27): dựng lại phần DẪN XUẤT của SCREEN-FLOW
+  // theo bản đang chọn (selection.json) — flowchart.json/index.json qua
+  // finalizeFlowUx, rồi danh sách màn (screens-discovered.json/.md +
+  // comp/_screens.json) qua persistScreenDiscovery với doc = màn theo bản
+  // đang chọn: improved → thêm màn `provenance: 'proposed'` (không anchor —
+  // nhánh riêng, không qua validateDocScreenExtract). Dùng chung cho: finalize
+  // stage improve, route PUT selection, route lưu editor. screens.json v1
+  // (không `screens[]`) → không có discovery (dr-comp lùi về lớp regex như
+  // trước). FAIL-SOFT: discovery hỏng chỉ là warning — luồng đã có.
+  const refreshScreenFlowDerived = async (
+    cwd: string,
+    fallbackTitle: string,
+  ): Promise<{ entry: FlowIndexEntry | null; warnings: string[]; screens: Array<{ key: string; name: string; provenance?: string }> }> => {
+    const fin = await finalizeFlowUx(cwd);
+    const entry = fin.index.find((e) => e.id === SCREEN_FLOW_ID) ?? null;
+    const warnings = [...fin.warnings];
+    const screens = (entry?.screens ?? []).map((sc) => ({ key: sc.key, name: sc.name, ...(sc.provenance ? { provenance: String(sc.provenance) } : {}) }));
+    if (!entry) return { entry, warnings, screens };
+    try {
+      const raw = await fs.promises
+        .readFile(path.join(cwd, 'flows', SCREEN_FLOW_ID, 'screens.json'), 'utf8')
+        .then((t) => JSON.parse(t) as unknown)
+        .catch(() => null);
+      const parsed = raw != null ? parseScreenFlowScreensV2(raw) : null;
+      if (parsed && 'doc' in parsed) {
+        const discovery = toDiscoveredDoc(parsed.doc, { generatedAt: new Date().toISOString() });
+        const proposed =
+          entry.variant === 'improved'
+            ? ((await readScreensImproved(cwd))?.screens ?? [])
+                .filter((sc) => sc.provenance === 'proposed')
+                .map((sc) => ({ key: sc.key, name: sc.name, ...(sc.source ? { source: sc.source } : {}), ...(sc.why ? { why: sc.why } : {}) }))
+            : [];
+        const featureTitle = (entry.title || '').replace(/^Luồng màn hình\s*[—–-]\s*/u, '').trim() || fallbackTitle;
+        const persisted = await persistScreenDiscovery({
+          cwd,
+          pages: await listDocPages(cwd),
+          doc: discovery,
+          md: renderDiscoveredMd(discovery, featureTitle, { proposed }),
+          proposed,
+        });
+        if (!persisted.ok) warnings.push(`discovery: ${persisted.error}`);
+        else if (persisted.rejected.length) warnings.push(`discovery: ${persisted.rejected.length} màn bị loại — ${persisted.rejected.join(' | ')}`);
+      }
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      console.warn('[screen-flow] discovery refresh failed (fail-soft):', error);
+      warnings.push(`discovery: ${msg}`);
+    }
+    return { entry, warnings, screens };
+  };
+
+  // WP-screen-flow editor (2026-08-27): lưu bản chỉnh TAY của sơ đồ "Luồng màn
+  // hình" từ editor draw.io nhúng (FlowUxReviewPreview → overlay
+  // embed.diagrams.net). Nhận mxfile đầy đủ editor xuất, validate mềm + ghi
+  // as-is.drawio/cells.json (saveScreenFlowEdit), rồi chạy lại finalizeFlowUx
+  // để flowchart.json/index.json (nguồn của dr-comp/dr-review) đuổi kịp bản
+  // sửa — id node giữ nguyên khi kéo/đổi nhãn nên mapping màn không suy suyển.
+  // WP dr-flow-improve: mxfile có thể 2 trang (Nguyên bản | Cải thiện) — trang
+  // 1 vào proposed.drawio (+ marker proposed.edited.json khi khác bản cũ);
+  // sau lưu dựng lại cả discovery theo bản đang chọn (refreshScreenFlowDerived).
+  app.post('/api/projects/:projectId/docs-review/screen-flow', async (req, res) => {
+    try {
+      const xml = typeof (req.body as { xml?: unknown } | null)?.xml === 'string' ? (req.body as { xml: string }).xml : '';
+      if (!xml.trim()) return res.status(400).json({ error: 'body.xml (mxfile XML từ editor) là bắt buộc' });
+      const projectRoot = await ensureProject(PROJECTS_DIR, req.params.projectId);
+      const cwd = path.join(projectRoot, workflowDirForPipeline('dr-flow') ?? 'docs-review');
+      const saved = await saveScreenFlowEdit(cwd, xml);
+      if (!saved.ok) return res.status(400).json({ error: saved.errors.join('; '), warnings: saved.warnings });
+      const derived = await refreshScreenFlowDerived(cwd, getProject(db, req.params.projectId)?.name ?? req.params.projectId);
+      res.json({
+        ok: true,
+        warnings: [...saved.warnings, ...derived.warnings],
+        screens: derived.entry?.screens ?? [],
+        ...(saved.savedProposed ? { savedProposed: true, proposedEdited: saved.proposedEdited === true } : {}),
+        ...(derived.entry?.variant ? { variant: derived.entry.variant } : {}),
+      });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // WP dr-flow-improve: bản đang dùng để chạy tiếp (Nguyên bản | Cải thiện).
+  //   GET → { variant, source, hasProposal, edited }  (source 'default' = chưa có file)
+  //   PUT { variant } → ghi selection.json (source 'user') → finalizeFlowUx +
+  //        discovery theo bản đó → { ok, variant, screens, downstreamStale }
+  //        (downstreamStale = comp/index.json HOẶC mockups/index.json đang tồn
+  //        tại → dr-comp/dr-mockup đã chạy theo bản trước, cần Chạy lại).
+  app.get('/api/projects/:projectId/docs-review/screen-flow/selection', async (req, res) => {
+    try {
+      const projectRoot = await ensureProject(PROJECTS_DIR, req.params.projectId);
+      const cwd = path.join(projectRoot, workflowDirForPipeline('dr-flow') ?? 'docs-review');
+      const sel = await readScreenFlowSelection(cwd);
+      const hasProposal = await fs.promises
+        .stat(path.join(cwd, 'flows', SCREEN_FLOW_ID, 'proposed.drawio'))
+        .then((st) => st.isFile())
+        .catch(() => false);
+      res.json({
+        variant: sel?.variant ?? 'original',
+        source: sel?.source ?? 'default',
+        ...(sel?.at ? { at: sel.at } : {}),
+        hasProposal,
+        edited: await hasProposedEditedMarker(cwd),
+      });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  app.put('/api/projects/:projectId/docs-review/screen-flow/selection', async (req, res) => {
+    try {
+      const variant = (req.body as { variant?: unknown } | null)?.variant;
+      if (variant !== 'original' && variant !== 'improved') {
+        return res.status(400).json({ error: 'body.variant phải là "original" hoặc "improved"' });
+      }
+      const projectRoot = await ensureProject(PROJECTS_DIR, req.params.projectId);
+      const cwd = path.join(projectRoot, workflowDirForPipeline('dr-flow') ?? 'docs-review');
+      const hasFlow = await fs.promises
+        .stat(path.join(cwd, 'flows', SCREEN_FLOW_ID, 'as-is.drawio'))
+        .then((st) => st.isFile())
+        .catch(() => false);
+      if (!hasFlow) return res.status(400).json({ error: 'chưa có flows/SCREEN-FLOW/as-is.drawio — chạy bước "Luồng màn hình" trước' });
+      if (variant === 'improved') {
+        const hasProposal = await fs.promises
+          .stat(path.join(cwd, 'flows', SCREEN_FLOW_ID, 'proposed.drawio'))
+          .then((st) => st.isFile())
+          .catch(() => false);
+        if (!hasProposal) return res.status(400).json({ error: 'chưa có bản cải thiện (proposed.drawio) — chạy bước "Cải thiện luồng" trước' });
+      }
+      await writeScreenFlowSelection(cwd, { variant, source: 'user' });
+      const derived = await refreshScreenFlowDerived(cwd, getProject(db, req.params.projectId)?.name ?? req.params.projectId);
+      // WP dr-mockup: bước sau của workflow nay là dr-mockup (mockups/index.json);
+      // comp/index.json vẫn tính (dr-comp chạy tay).
+      const downstreamStale = (await Promise.all([
+        path.join(cwd, 'comp', 'index.json'),
+        path.join(cwd, 'mockups', 'index.json'),
+      ].map((p) => fs.promises.stat(p).then((st) => st.isFile()).catch(() => false)))).some(Boolean);
+      res.json({
+        ok: true,
+        variant: derived.entry?.variant ?? variant,
+        screens: derived.screens,
+        downstreamStale,
+        ...(derived.warnings.length ? { warnings: derived.warnings } : {}),
+      });
     } catch (err) {
       res.status(500).json({ error: String(err) });
     }
@@ -17762,18 +17922,18 @@ export async function startServer({
         // VÀ áp overrides lớp 3: một override 'add' hoàn toàn có thể cứu một
         // stage mà lớp 1 + lớp 2 đều trắng tay.
         if (screenInputs.length === 0) {
-          const failureLines = ['# Màn hình → Component — không chạy được', '', inputs.note ?? 'Bước Đánh giá luồng UX chưa cho ra màn hình nào.'];
+          const failureLines = ['# Màn hình → Component — không chạy được', '', inputs.note ?? 'Bước Luồng màn hình chưa cho ra màn hình nào.'];
           if (extractFailureReason) {
             failureLines.push('', `Đã thử trích màn bằng agent (lớp 2) cho ${pagesNeedingExtract.length} trang nhưng hỏng: ${extractFailureReason}`);
           }
-          failureLines.push('', 'Chạy bước **Đánh giá luồng UX** (dr-flow) trước — bước này lấy danh sách màn hình từ đó — rồi chạy lại.', '');
+          failureLines.push('', 'Chạy bước **Luồng màn hình** (dr-flow) trước — bước này lấy danh sách màn hình từ đó — rồi chạy lại.', '');
           await writeDocsComponentFailureNote(cwd, failureLines.join('\n'));
           setProjectPipelineStatus(db, projectId, pipelineId, {
             status: 'failed',
             subConversations: docScreenExtractTask ? [{ ...docScreenExtractTask }] : [],
             error: extractFailureReason
               ? `Đã thử trích màn bằng agent nhưng hỏng: ${extractFailureReason}`
-              : inputs.note ?? 'Bước Đánh giá luồng UX chưa cho ra màn hình nào — chạy dr-flow trước.',
+              : inputs.note ?? 'Bước Luồng màn hình chưa cho ra màn hình nào — chạy dr-flow trước.',
           });
           return 'failed' as const;
         }
@@ -22400,52 +22560,34 @@ export async function startServer({
           return 'failed' as const;
         }
 
-        // validateDocScreenExtract đối chiếu tất định pages[].screens[].anchorText
-        // với nội dung trang thật — cùng hàm dr-comp lớp 2 dùng (screen-extract.ts);
-        // shape CONTRACT của dr-screens khớp thẳng chữ ký hàm này (source/screens/
-        // code/name/anchorText), không cần lớp chuyển đổi riêng.
-        const { accepted, rejected } = validateDocScreenExtract(mdBySource, discoveredDoc);
-        if (rejected.length > 0) {
-          console.warn(`[dr-screens] ${rejected.length} màn bị loại khi validate: ${rejected.map((r) => r.reason).join(' | ')}`);
+        // WP dr-screens-merge (2026-08-27): hậu xử lý (validateDocScreenExtract
+        // đối chiếu anchorText tất định → screens-discovered.json →
+        // mergeExtractedScreens → applyScreenGrouping → comp/_screens.json) nay
+        // nằm ở persistScreenDiscovery (screen-discovery.ts) — dùng chung với
+        // dr-flow (docs-screen-flow, screens.json v2). Không đưa `md`: bản
+        // screens-discovered.md do agent tự ghi giữ nguyên như trước. Trang
+        // đã đọc ở trên (mdBySource) — không đọc lại đĩa.
+        const persisted = await persistScreenDiscovery({
+          cwd,
+          pages,
+          doc: discoveredDoc,
+          readMd: async (rel) => mdBySource.get(rel) ?? null,
+        });
+        if (persisted.rejected.length > 0) {
+          console.warn(`[dr-screens] ${persisted.rejected.length} màn bị loại khi validate: ${persisted.rejected.join(' | ')}`);
         }
-        if (accepted.length === 0) {
-          const failMessage = 'Agent không xuất được màn hình hợp lệ nào (mọi "anchorText" phải là một dòng nguyên văn, duy nhất trong trang).';
-          setProjectPipelineStatus(db, projectId, pipelineId, { status: 'failed', error: failMessage });
+        if (!persisted.ok) {
+          setProjectPipelineStatus(db, projectId, pipelineId, { status: 'failed', error: persisted.error });
           return 'failed' as const;
         }
-
-        // excluded — validate khoan dung: chỉ đếm mục có "name" khác rỗng;
-        // các field khác optional. Không chặn stage, chỉ để log — file agent
-        // đã ghi giữ nguyên, daemon không ghi lại phần "excluded".
-        const excludedRaw = (discoveredDoc as Record<string, unknown> | null)?.excluded;
-        const excludedCount = Array.isArray(excludedRaw)
-          ? excludedRaw.filter(
-              (e): e is Record<string, unknown> => !!e && typeof e === 'object' && typeof (e as Record<string, unknown>).name === 'string' && !!(e as Record<string, unknown>).name,
-            ).length
-          : 0;
-
-        // Dựng ScreenInput[] tối thiểu từ accepted rồi build manifest — TÁI
-        // DÙNG mergeExtractedScreens (bắt đầu từ mảng rỗng, không có màn lớp-1
-        // nào để giữ) + buildScreensManifest, đúng cặp hàm dr-comp lớp 2/3 đã
-        // dùng — để comp/_screens.json (route GET /docs-review/screens +
-        // ScreenListManager) đọc được NGAY sau dr-screens, không cần đợi dr-comp.
-        const { screens: mergedScreens } = mergeExtractedScreens([], accepted, mdBySource);
-        // screen-variants WP-V2: nhóm biến thể trước khi ghi manifest —
-        // dr-screens là nơi kiểm kê nên nhóm phải hiện ngay từ đây.
-        const grouping = applyScreenGrouping(mergedScreens);
-        if (grouping.suggestions.length > 0) {
-          console.log(
-            `[dr-screens] gợi ý nhóm biến thể (chưa auto): ${grouping.suggestions.map((g) => `${g.a.name} ↔ ${g.b.name}`).join('; ')}`,
-          );
+        if (persisted.suggestions.length > 0) {
+          console.log(`[dr-screens] gợi ý nhóm biến thể (chưa auto): ${persisted.suggestions.join('; ')}`);
         }
-        const manifest = buildScreensManifest(grouping.changed ? grouping.screens : mergedScreens);
-        await fs.promises.mkdir(path.join(cwd, 'comp'), { recursive: true });
-        await fs.promises.writeFile(path.join(cwd, SCREENS_MANIFEST_FILE), JSON.stringify(manifest, null, 2), 'utf8');
 
         setProjectPipelineStatus(db, projectId, pipelineId, { status: 'succeeded' });
         void commitHistory(projectRoot, { kind: 'run', pipelineId, status: 'succeeded', by: historyActor() }).catch(() => null);
         console.log(
-          `[dr-screens] ${projectId}: phát hiện ${accepted.length} màn hình (loại ${rejected.length}, excluded khai báo ${excludedCount}).`,
+          `[dr-screens] ${projectId}: phát hiện ${persisted.accepted} màn hình (loại ${persisted.rejected.length}, excluded khai báo ${persisted.excludedCount}).`,
         );
         return 'succeeded' as const;
       } catch (error) {
@@ -22717,8 +22859,11 @@ export async function startServer({
     // bước Đánh giá luồng UX: lượt role-map cho cả feature rồi mỗi màn một
     // lượt agent ghi comp/<KEY>.screen.json + wireframes/<KEY>.html; daemon
     // validate với danh mục DS + danh sách màn, gộp comp/index.json (2.0).
+    // WP dr-mockup (2026-08-27): dr-comp ẨN khỏi pipelineIds của docs-review
+    // (dựng theo DS tạm dừng) nên wfDirForStage trả null — chạy TAY vẫn phải
+    // làm việc trong docs-review/ (cùng fallback dr-screens/dr-confirm dùng).
     if (def.skillId === 'docs-screen-components') {
-      return runDocsComponentAuditFanout(pipelineId, projectId, wfDir, resetScope);
+      return runDocsComponentAuditFanout(pipelineId, projectId, wfDir ?? 'docs-review', resetScope);
     }
 
     // Docs → Phát hiện màn hình (dr-screens, WP2/screen-discovery 2026-08-25)
@@ -22728,8 +22873,11 @@ export async function startServer({
     // + comp/_screens.json. Runs BEFORE dr-comp so dr-comp can consume an
     // authoritative screen list; never falls through to the normal
     // single-agent path below.
+    // WP dr-screens-merge (2026-08-27): dr-screens ẨN khỏi pipelineIds của
+    // docs-review (gộp vào dr-flow) nên wfDirForStage trả null — chạy TAY
+    // vẫn phải làm việc trong docs-review/ (cùng fallback dr-confirm dùng).
     if (def.skillId === 'docs-screen-discovery') {
-      return runScreenDiscovery(pipelineId, projectId, wfDir, resetScope, input, project);
+      return runScreenDiscovery(pipelineId, projectId, wfDir ?? 'docs-review', resetScope, input, project);
     }
 
     // Docs → Review tài liệu (dr-review) → parallel per-page fan-out: the
@@ -23083,11 +23231,69 @@ export async function startServer({
     // UI terminals (ui-html / ui-react / ui-react-ds) get the target-viewport
     // directive on multi-target runs (responsive website vs fixed-viewport app).
     const uiDirective = def.id.startsWith('ui-') ? await uiTargetDirective(wfDir) : '';
+    // WP dr-flow-improve: bước "Cải thiện luồng" CHỈ review luồng màn hình đã
+    // có — precondition as-is.drawio (KHÔNG chạy prepareFlowUxInputs: nó quét
+    // lại docs và ghi đè _inputs.json, kéo seed quay lại). Kickoff nêu đúng 3
+    // file input + 2 file output + nhắc `addNode.screen`. Kiểm TRƯỚC khi tạo
+    // conversation/run để lỗi không để lại run 'running' mồ côi.
+    let stageDirective = '';
+    if (def.skillId === 'docs-screen-flow-improve') {
+      const projectRoot = await ensureProject(PROJECTS_DIR, projectId);
+      const runCwd = wfDir ? path.join(projectRoot, wfDir) : projectRoot;
+      const hasAsIs = await fs.promises
+        .stat(path.join(runCwd, 'flows', SCREEN_FLOW_ID, 'as-is.drawio'))
+        .then((st) => st.isFile())
+        .catch(() => false);
+      if (!hasAsIs) throw new Error('Chưa có flows/SCREEN-FLOW/as-is.drawio — chạy bước "Luồng màn hình" trước.');
+      stageDirective =
+        `Input (chỉ đọc): \`flows/${SCREEN_FLOW_ID}/as-is.drawio\` (luồng màn hình hiện hành), \`flows/${SCREEN_FLOW_ID}/cells.json\` (id ↔ nhãn cell), \`flows/${SCREEN_FLOW_ID}/screens.json\` (danh sách màn), cộng tài liệu tính năng. ` +
+        `Output CHỈ 2 file: \`flows/${SCREEN_FLOW_ID}/patch.json\` + \`flows/${SCREEN_FLOW_ID}/ux-review.json\` — luồng tốt thì \`findings: []\` và KHÔNG tạo patch.json. ` +
+        'Node mới trong patch LÀ một màn người dùng thấy → BẮT BUỘC có `screen: { key, name, anchorText? }` (key `<file-stem>__<code>`, không mã → `<file-stem>__NEW-<slug>`); không đụng cell `od-legend-*`; không ghi cells.xml/as-is.*/screens.json/proposed.*/_inputs.json/index.json/selection.json.';
+    }
+    // WP dr-mockup (2026-08-27): "Mockup màn" dựng mockup HTML concept layout
+    // cho MỌI màn của bản luồng đã chọn. Precondition (kiểm TRƯỚC khi tạo
+    // conversation, cùng lý do improve ở trên): flows/index.json phải có màn.
+    // `_inputs.json` tính ở đây CHỈ để soạn kickoff (danh sách màn) — file
+    // thật được ghi lại SAU re-run clear bên dưới (clear xoá cả mockups/).
+    if (def.skillId === 'docs-screen-mockup') {
+      const projectRoot = await ensureProject(PROJECTS_DIR, projectId);
+      const runCwd = wfDir ? path.join(projectRoot, wfDir) : projectRoot;
+      const preview = await prepareScreenComponentInputs(runCwd, {
+        pages: await listDocPages(runCwd),
+        outFile: MOCKUP_INPUTS_FILE,
+        excludeRemovedByProposal: true,
+        layoutKb: true,
+      });
+      if (preview.screens.length === 0) {
+        throw new Error(preview.note ?? 'Chưa có màn hình nào — chạy bước "Luồng màn hình" trước.');
+      }
+      const screenLines = preview.screens.map((sc) => {
+        const bits = [
+          `\`${sc.key}\` — ${sc.name}`,
+          sc.platform ?? sc.platformHint,
+          ...(sc.provenance === 'proposed' ? ['ĐỀ XUẤT (data-proposed)'] : []),
+          sc.navOut.length ? `→ ${sc.navOut.map((n) => n.to).join(', ')}` : 'không nav ra',
+          sc.mockups?.length ? `có ${sc.mockups.length} ảnh mockup BA` : 'không ảnh',
+        ];
+        return `  - ${bits.join(' · ')}`;
+      });
+      stageDirective =
+        `Danh sách màn (${preview.screens.length}, bản ${preview.selection?.variant ?? 'original'}) + ngữ cảnh từng màn (mục tài liệu, blocks, ảnh, nav) nằm ở \`${MOCKUP_INPUTS_FILE}\` — đọc nó trước. ` +
+        `Output CHỈ 2 thứ: \`mockups/<SCREEN-KEY>.html\` (một file / màn, key NGUYÊN VĂN) + \`mockups/index.json\`; CSS dùng chung daemon đã copy ở \`${MOCKUP_CSS_FILE}\` — chép vào <style> của từng file. ` +
+        'Mức CONCEPT LAYOUT wireframe xám nhưng BỐ CỤC PHẢI ĐA DẠNG: mỗi màn chọn pattern trong references/layout-patterns.md (data-pattern), không stack 1 cột thuần; form vẽ từng .mk-field; ảnh mockup BA thắng mọi gợi ý; KHÔNG Design System, KHÔNG data-comp; data-nav chỉ trỏ key có trong danh sách.\n' +
+        // WP dr-mockup-layouts: kho bố cục Enrico (~/layout-kb) — có thì trỏ agent
+        // tới layoutRefs trong _inputs.json, vắng thì nói rõ cách dựng.
+        (preview.layoutKb
+          ? `Kho bố cục tham khảo (Enrico): ${preview.layoutKb.topics} topic tại ${preview.layoutKb.dir} — _inputs.json.screens[].layoutRefs có sketch + ảnh wireframe theo archetype; xem trước khi chọn pattern.\n`
+          : 'Chưa có layout-kb (chạy node tools/layout-kb/build.mjs) — dùng catalogue trong skill.\n') +
+        `Màn:\n${screenLines.join('\n')}`;
+    }
     const kickoff = buildPipelineKickoff({
       name: def.name,
       featureScope,
       directives: {
         skill: skillDirective,
+        stage: stageDirective,
         source: sourceDirective,
         platform: platformDirective,
         audience: audienceDirective,
@@ -23224,10 +23430,12 @@ export async function startServer({
     if (def.skillId === 'ui-react-ds' && reactDsStageId) {
       await stageReactDsBundle(reactDsStageId, projectId, wfDir);
     }
-    // dr-flow (docs-flow-ux): decode every draw.io / Mermaid diagram the docs
-    // carry into ./flows/<FLOW-ID>/ BEFORE the agent starts (after the re-run
-    // clear above, which wipes flows/). The skill reads flows/_inputs.json.
-    if (def.skillId === 'docs-flow-ux' && pipelineCwd) {
+    // dr-flow: decode every draw.io / Mermaid diagram the docs carry into
+    // ./flows/<FLOW-ID>/ BEFORE the agent starts (after the re-run clear
+    // above, which wipes flows/). The skill reads flows/_inputs.json — the old
+    // review skill (docs-flow-ux) treats them as the subject, the new
+    // generator skill (docs-screen-flow) as SEED evidence for the screen flow.
+    if ((def.skillId === 'docs-flow-ux' || def.skillId === 'docs-screen-flow') && pipelineCwd) {
       const runCwd = wfDir ? path.join(pipelineCwd, wfDir) : pipelineCwd;
       try {
         const prep = await prepareFlowUxInputs(runCwd);
@@ -23238,6 +23446,28 @@ export async function startServer({
       } catch (error) {
         console.warn('[flow-ux] prepare failed (continuing in text-only mode):', error);
       }
+    }
+    // dr-mockup: ghi `mockups/_inputs.json` THẬT + copy `_mockup.css` từ skill
+    // assets SAU re-run clear (clear vừa xoá mockups/ — file soạn ở kickoff
+    // phía trên chỉ để liệt kê màn). Copy một lần cho cả stage, như
+    // `wireframes/_wireframe.css` của dr-comp.
+    if (def.skillId === 'docs-screen-mockup' && pipelineCwd) {
+      const runCwd = wfDir ? path.join(pipelineCwd, wfDir) : pipelineCwd;
+      try {
+        const inputs = await prepareScreenComponentInputs(runCwd, {
+          pages: await listDocPages(runCwd),
+          outFile: MOCKUP_INPUTS_FILE,
+          excludeRemovedByProposal: true,
+          layoutKb: true,
+        });
+        console.log(`[screen-mockup] ${projectId}: prepared ${inputs.screens.length} màn (bản ${inputs.selection?.variant ?? 'original'})`);
+        console.log(`[screen-mockup] layout-kb: ${inputs.layoutKb?.dir ?? 'none'}`);
+      } catch (error) {
+        console.warn('[screen-mockup] prepare inputs failed (continuing):', error);
+      }
+      await fs.promises
+        .copyFile(path.join(SKILLS_DIR, 'docs-screen-mockup', 'assets', '_mockup.css'), path.join(runCwd, MOCKUP_CSS_FILE))
+        .catch((err) => console.warn('[screen-mockup] _mockup.css copy failed (continuing):', err?.message ?? err));
     }
     const modelPrefs = appConfig.agentModels?.[agentId] ?? {};
     design.runs.start(run, () => startChatRun({
@@ -23279,6 +23509,135 @@ export async function startServer({
         let recoveryErrorCode: string | null = null;
         let screenFormatObservationId: string | null = null;
         let interactiveRecovery: import('@open-design/contracts').PipelineRecoveryWorkspace | null = null;
+        // dr-flow (docs-screen-flow — "Luồng màn hình"): the agent GENERATED a
+        // screen flow (bare mxCell fragment + screens.json) instead of
+        // reviewing diagrams. finalizeScreenFlowXml wraps + validates the
+        // fragment, writes as-is.drawio, moves seed diagrams to flows/_seeds/
+        // and shrinks the manifest to the single SCREEN-FLOW entry; the
+        // existing finalizeFlowUx then derives flowchart.json/index.json as if
+        // it were an ordinary drawio flow. This path deliberately SKIPS the
+        // docs-flow-ux recovery loop below: here screens.json maps the agent's
+        // OWN drawing, so a missing screen is a hard, specific error — re-run
+        // the stage to fix.
+        if (next === 'succeeded' && def.skillId === 'docs-screen-flow' && pipelineCwd) {
+          const runCwd = wfDir ? path.join(pipelineCwd, wfDir) : pipelineCwd;
+          try {
+            const sf = await finalizeScreenFlowXml(runCwd);
+            if (!sf.found) {
+              throw new Error(`agent không ghi flows/${SCREEN_FLOW_ID}/${SCREEN_FLOW_CELLS_FILE} — không có luồng màn hình nào để hiển thị`);
+            }
+            if (sf.errors.length) throw new Error(sf.errors.join(' | '));
+            const fin = await finalizeFlowUx(runCwd);
+            const entry = fin.index.find((e) => e.id === SCREEN_FLOW_ID);
+            if (!entry || entry.screens.length === 0) {
+              const dropped = entry?.screensDropped?.map((d) => `"${d.key}" → "${d.cell}" (${d.reason})`).join('; ');
+              throw new Error(
+                `screens.json không gắn được màn nào vào sơ đồ${dropped ? ` — mapping bị bỏ: ${dropped}` : ' — kiểm tra cells/names'}`,
+              );
+            }
+            const allWarnings = [...sf.warnings, ...fin.warnings];
+            // WP dr-screens-merge (2026-08-27): screens.json v2 → dr-flow sở
+            // hữu luôn danh sách màn. finalizeScreenFlowXml đã dẫn xuất
+            // `discovery` (contract screens-discovered.json); persist qua
+            // ĐÚNG đường dr-screens cũ (anchorText đối chiếu tất định →
+            // screens-discovered.json/.md + comp/_screens.json). FAIL-SOFT:
+            // luồng đã có, discovery hỏng chỉ là warning — dr-comp lùi về lớp
+            // regex như trước khi có dr-screens.
+            if (sf.discovery) {
+              try {
+                const featureTitle = (entry.title || '').replace(/^Luồng màn hình\s*[—–-]\s*/u, '').trim() || project.name || projectId;
+                const persisted = await persistScreenDiscovery({
+                  cwd: runCwd,
+                  pages: await listDocPages(runCwd),
+                  doc: sf.discovery,
+                  md: renderDiscoveredMd(sf.discovery, featureTitle),
+                });
+                if (persisted.ok) {
+                  const declared = sf.discovery.pages.reduce((n, p) => n + p.screens.length, 0);
+                  console.log(
+                    `[screen-flow] discovery: ${persisted.accepted} màn (loại ${persisted.rejected.length}, khai ${declared}, excluded ${persisted.excludedCount})` +
+                      (persisted.rejected.length ? ` — ${persisted.rejected.join(' | ')}` : ''),
+                  );
+                  if (persisted.rejected.length) allWarnings.push(`discovery: ${persisted.rejected.length} màn bị loại — ${persisted.rejected.join(' | ')}`);
+                  if (persisted.suggestions.length) console.log(`[screen-flow] discovery: gợi ý nhóm biến thể (chưa auto): ${persisted.suggestions.join('; ')}`);
+                } else {
+                  console.warn(`[screen-flow] discovery persist failed (fail-soft): ${persisted.error}`);
+                  allWarnings.push(`discovery: ${persisted.error}`);
+                }
+              } catch (error) {
+                const msg = error instanceof Error ? error.message : String(error);
+                console.warn('[screen-flow] discovery persist threw (fail-soft):', error);
+                allWarnings.push(`discovery: ${msg}`);
+              }
+            }
+            console.log(
+              `[screen-flow] ${projectId}: ${entry.screens.length} màn, ${entry.id} finalized` +
+                (allWarnings.length ? ` — ${allWarnings.length} warning(s): ${allWarnings.join(' | ')}` : ''),
+            );
+          } catch (error) {
+            finalizeError = `Hoàn tất luồng màn hình thất bại: ${String((error as Error)?.message ?? error)}`;
+            console.warn('[screen-flow] finalize failed:', error);
+            next = 'failed';
+          }
+        }
+        // dr-flow-improve (docs-screen-flow-improve — "Cải thiện luồng", WP
+        // dr-flow-improve 2026-08-27): agent ghi patch.json + ux-review.json
+        // cho SCREEN-FLOW. finalizeScreenFlowImprove: không patch & không
+        // finding → "luồng tốt" (không proposed, selection giữ nguyên); có
+        // patch → validate `addNode.screen`, áp patch → proposed.drawio 2
+        // trang, screens.improved.json, mặc định selection khi run-all
+        // (improved/run-all trừ khi người dùng đã chọn). Selection = improved
+        // → dựng lại discovery theo bản cải thiện (refreshScreenFlowDerived).
+        if (next === 'succeeded' && def.skillId === 'docs-screen-flow-improve' && pipelineCwd) {
+          const runCwd = wfDir ? path.join(pipelineCwd, wfDir) : pipelineCwd;
+          try {
+            const r = await finalizeScreenFlowImprove(runCwd, { viaRunAll: opts.viaRunAll === true });
+            const allWarnings = [...r.warnings];
+            if (!r.hasProposal) {
+              console.log(
+                `[screen-flow-improve] ${projectId}: luồng tốt, không có đề xuất (${r.findings} finding)` +
+                  (allWarnings.length ? ` — ${allWarnings.length} warning(s): ${allWarnings.join(' | ')}` : ''),
+              );
+            } else {
+              if (r.selection?.variant === 'improved') {
+                const derived = await refreshScreenFlowDerived(runCwd, project.name || projectId);
+                allWarnings.push(...derived.warnings.filter((w) => !allWarnings.includes(w)));
+              }
+              console.log(
+                `[screen-flow-improve] ${projectId}: ${r.findings} finding, bản cải thiện đã dựng — đang dùng: ${r.selection?.variant ?? 'original'}` +
+                  `${r.selection ? ` (${r.selection.source})` : ' (mặc định)'}` +
+                  (allWarnings.length ? ` — ${allWarnings.length} warning(s): ${allWarnings.join(' | ')}` : ''),
+              );
+            }
+          } catch (error) {
+            finalizeError = `Hoàn tất cải thiện luồng thất bại: ${String((error as Error)?.message ?? error)}`;
+            console.warn('[screen-flow-improve] finalize failed:', error);
+            next = 'failed';
+          }
+        }
+        // dr-mockup (docs-screen-mockup — "Mockup màn", WP dr-mockup 2026-08-27):
+        // validate tất định các mockups/<KEY>.html theo mockups/_inputs.json —
+        // thiếu file / script / link ngoài → stage failed kèm danh sách; nav sai
+        // → daemon xoá attribute (warning); index.json hỏng → dựng lại. Không
+        // đụng flows/ hay comp/.
+        if (next === 'succeeded' && def.skillId === 'docs-screen-mockup' && pipelineCwd) {
+          const runCwd = wfDir ? path.join(pipelineCwd, wfDir) : pipelineCwd;
+          try {
+            const raw = await fs.promises.readFile(path.join(runCwd, MOCKUP_INPUTS_FILE), 'utf8');
+            const inputs = JSON.parse(raw) as import('./screen-components.js').ScreenComponentsInputs;
+            if (!Array.isArray(inputs.screens) || inputs.screens.length === 0) {
+              throw new Error(`${MOCKUP_INPUTS_FILE} không có màn nào — chạy bước "Luồng màn hình" trước`);
+            }
+            const v = await validateMockups(runCwd, inputs);
+            if (v.warnings.length) console.warn(`[screen-mockup] ${projectId}: ${v.warnings.length} warning(s): ${v.warnings.join(' | ')}`);
+            if (!v.ok) throw new Error(v.errors.join(' | '));
+            console.log(`[screen-mockup] ${projectId}: ${v.index.screens.length}/${inputs.screens.length} mockup hợp lệ (bản ${v.index.variant})${v.indexRebuilt ? ' — index.json daemon dựng lại' : ''}`);
+          } catch (error) {
+            finalizeError = `Hoàn tất mockup màn thất bại: ${String((error as Error)?.message ?? error)}`;
+            console.warn('[screen-mockup] finalize failed:', error);
+            next = 'failed';
+          }
+        }
         // dr-flow (docs-flow-ux): the agent emitted small JSON files; the daemon
         // now applies patch.json -> proposed.drawio, derives flowchart.json and
         // rebuilds flows/index.json. A finalize failure IS a stage failure —
@@ -23942,6 +24301,9 @@ export async function startServer({
           includeDescendants: isDocumentInputStage(def) ? opts.includeDescendants : undefined,
           targetDir,
           audience,
+          // WP dr-flow-improve: run-all mặc định chọn bản "Cải thiện" (chỉ
+          // dr-flow-improve đọc cờ này).
+          viaRunAll: true,
         });
         return start.completion;
       };

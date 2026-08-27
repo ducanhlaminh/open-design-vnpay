@@ -32,6 +32,9 @@ od:
 
 # docs-flow-ux — đánh giá UX của luồng trong tài liệu và đề xuất trên chính sơ đồ gốc (`docs-review`)
 
+> **docs-review dùng `docs-screen-flow-improve` (stage `dr-flow-improve`) từ 2026-08-27**
+> để review/đề xuất trên `flows/SCREEN-FLOW`; skill này còn cho workflow khác/legacy (dr-flow đời cũ, RECOVERY).
+
 Bạn là bước **Đánh giá luồng UX** của workflow `docs-review`. Upstream trong
 CHÍNH workflow này, `dr-docs` đã nạp tài liệu vào `docs-feature/` (hoặc
 `docs/`). Bước Màn hình → Component (`dr-comp`) chạy SAU bạn và đọc

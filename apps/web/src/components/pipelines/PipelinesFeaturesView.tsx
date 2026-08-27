@@ -110,8 +110,13 @@ export function PipelinesFeaturesView({
   const hasDocsTab = Boolean(app && !app.unassigned);
   // Tab DS: DS đã nạp (app-design-system) hoặc danh mục component đọc từ
   // các file Figma đã link (figma-links) — cả hai đều là "DS của dự án".
-  const hasDsTab = hasDocsTab;
+  // WP dr-mockup (2026-08-27, cô lập DS): App KHÔNG có designSystemId, KHÔNG
+  // có figmaDesignSystemSourceId và KHÔNG dùng figma-links → ẩn hẳn tab (trước
+  // hiện tab trống nhắc "Chọn DS ở Sửa dự án" — DS nay là tuỳ chọn nâng cao,
+  // không nhắc). Panel/code bên trong giữ nguyên.
   const componentSource = app?.docsReviewComponentSource ?? { mode: 'app-design-system' as const };
+  const hasDsTab = hasDocsTab
+    && (Boolean(app?.designSystemId) || Boolean(app?.figmaDesignSystemSourceId) || componentSource.mode === 'figma-links');
   const [designSystems, setDesignSystems] = useState<DesignSystemSummary[]>([]);
   useEffect(() => {
     if (!hasDocsTab) return undefined;

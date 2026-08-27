@@ -17,7 +17,21 @@ export type Direction = 'below' | 'right' | 'left' | 'above';
 export type PatchOp =
   | { op: 'relabel'; cell: string; label: string; finding?: string }
   | { op: 'mark'; cell: string; change: 'modified' | 'removed'; finding?: string }
-  | { op: 'addNode'; id: string; shape: NodeShape; label: string; near: string; dir?: Direction; finding?: string }
+  | {
+      op: 'addNode';
+      id: string;
+      shape: NodeShape;
+      label: string;
+      near: string;
+      dir?: Direction;
+      finding?: string;
+      /** WP dr-flow-improve (2026-08-27): node mới LÀ một màn hình (không có
+       *  → bước hệ thống/kết cục). `key` theo luật `<file-stem>__<code>`
+       *  (tài liệu không có mã → `<stem>__NEW-<slug>`); `anchorText` chỉ khi
+       *  tài liệu thật sự có dòng khai màn. applyPatch KHÔNG đọc field này —
+       *  screen-flow-improve.ts dùng nó để dựng `screens.improved.json`. */
+      screen?: { key: string; name: string; anchorText?: string };
+    }
   | { op: 'addEdge'; id: string; from: string; to: string; label?: string; finding?: string }
   | { op: 'redirectEdge'; edge: string; from?: string; to?: string; finding?: string };
 
@@ -33,17 +47,27 @@ export interface PatchResult {
   skipped: { op: PatchOp; reason: string }[];
 }
 
-/** Fixed colour legend — the same values the web panel documents. */
+/** Fixed colour legend — the same values the web panel documents
+ *  (`DrawioViewer.HIGHLIGHT_KIND_STYLE` / `.legend_*` trong FlowUxReviewPreview).
+ *
+ *  WP dr-flow-edit-highlight (2026-08-27): thay đổi = VIỀN đậm + màu stroke
+ *  riêng, KHÔNG tô fill — fill "loại node" của template dr-flow (xanh lá
+ *  Bắt đầu/Kết thúc, đỏ Kết cục lỗi, `#dae8fc` màn hình…) giữ nguyên nên ngữ
+ *  nghĩa sơ đồ không đổi. Palette phải KHÁC hẳn palette template
+ *  (#82B366 / #6C8EBF / #666666 / #B85450 / #9E9E9E). */
 export const CHANGE_STYLE: Record<ChangeKind, Record<string, string>> = {
-  added: { fillColor: '#D5E8D4', strokeColor: '#82B366' },
-  modified: { fillColor: '#FFF2CC', strokeColor: '#D6B656' },
-  removed: { fillColor: '#F8CECC', strokeColor: '#B85450', dashed: '1' },
+  added: { strokeColor: '#1B7F3B', strokeWidth: '3', fontStyle: '1' },
+  modified: { strokeColor: '#B7791F', strokeWidth: '3', fontStyle: '1' },
+  removed: { strokeColor: '#C0392B', strokeWidth: '3', fontStyle: '1', dashed: '1' },
 };
 const EDGE_CHANGE_STYLE: Record<ChangeKind, Record<string, string>> = {
-  added: { strokeColor: '#82B366', strokeWidth: '2' },
-  modified: { strokeColor: '#D6B656', strokeWidth: '2' },
-  removed: { strokeColor: '#B85450', strokeWidth: '2', dashed: '1' },
+  added: { strokeColor: '#1B7F3B', strokeWidth: '4' },
+  modified: { strokeColor: '#B7791F', strokeWidth: '4' },
+  removed: { strokeColor: '#C0392B', strokeWidth: '4', dashed: '1' },
 };
+/** Node mới do `addNode` không có fill sẵn → nền trắng để nổi trên nền trang
+ *  (chỉ nhánh addNode; relabel/mark giữ fill cũ của cell). */
+const ADDED_NODE_FILL: Record<string, string> = { fillColor: '#FFFFFF' };
 export const CHANGE_LABEL_VI: Record<ChangeKind, string> = {
   added: 'Thêm mới',
   modified: 'Sửa đổi',
@@ -127,6 +151,9 @@ function stampChange($: CheerioAPI, id: string, change: ChangeKind, finding?: st
   return wrapper;
 }
 
+/** Đổi viền cell theo loại thay đổi. Vertex: `styleSet` chỉ ghi đè các key
+ *  trong CHANGE_STYLE (strokeColor/strokeWidth/fontStyle/dashed) — `fillColor`
+ *  cũ của template được GIỮ nguyên. */
 function restyleCell($: CheerioAPI, id: string, change: ChangeKind) {
   const found = findOwner($, id);
   if (!found) return false;
@@ -200,13 +227,21 @@ function appendLegend($: CheerioAPI, vertices: MxCellInfo[]) {
   if (!root.length) return;
   const items: ChangeKind[] = ['added', 'modified', 'removed'];
   const cells: string[] = [];
+  // WP dr-flow-improve: trang SCREEN-FLOW đã mang khối chú thích riêng của
+  // skill docs-screen-flow (cũng id `od-legend-*`, có `od-legend-title`) —
+  // không được đẻ id trùng trong cùng trang (mxCodec bỏ/đè cell trùng id).
+  // Cell nào đã có thì dùng id `od-legend-ux-…` thay thế; sơ đồ nguồn thường
+  // (không legend) giữ nguyên id cũ (`od-legend-added`… — web/test đọc).
+  const taken = new Set(vertices.map((v) => v.id));
+  const legendId = (suffix: string) => (taken.has(`od-legend-${suffix}`) ? `od-legend-ux-${suffix}` : `od-legend-${suffix}`);
   cells.push(
-    `<mxCell id="od-legend-title" value="Chú giải đề xuất UX" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontStyle=1;fontSize=12;" vertex="1" parent="1"><mxGeometry x="${x0}" y="${y0}" width="200" height="24" as="geometry"/></mxCell>`,
+    `<mxCell id="${legendId('title')}" value="Chú giải đề xuất UX — viền màu" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontStyle=1;fontSize=12;" vertex="1" parent="1"><mxGeometry x="${x0}" y="${y0}" width="200" height="24" as="geometry"/></mxCell>`,
   );
   items.forEach((k, i) => {
-    const st = styleSet('rounded=0;whiteSpace=wrap;html=1;fontSize=11;', CHANGE_STYLE[k]);
+    // Ô mẫu: nền trắng + viền theo CHANGE_STYLE (viền 3, removed gạch), chữ đậm.
+    const st = styleSet('rounded=0;whiteSpace=wrap;html=1;fontSize=11;', { fillColor: '#FFFFFF', ...CHANGE_STYLE[k] });
     cells.push(
-      `<mxCell id="od-legend-${k}" value="${escapeXml(CHANGE_LABEL_VI[k])}" style="${st}" vertex="1" parent="1"><mxGeometry x="${x0 + i * 130}" y="${y0 + 30}" width="120" height="30" as="geometry"/></mxCell>`,
+      `<mxCell id="${legendId(k)}" value="${escapeXml(CHANGE_LABEL_VI[k])}" style="${st}" vertex="1" parent="1"><mxGeometry x="${x0 + i * 130}" y="${y0 + 30}" width="120" height="30" as="geometry"/></mxCell>`,
     );
   });
   root.append(cells.join('\n'));
@@ -283,7 +318,7 @@ export function applyPatch(graphXml: string, patch: PatchDoc): PatchResult {
             ? { w: near.width, h: near.height }
             : SHAPE_SIZE[shape];
         const pos = placeNear(near, size, op.dir ?? 'below', cells.filter((c) => c.kind === 'vertex'));
-        const style = styleSet(SHAPE_STYLE[shape], CHANGE_STYLE.added);
+        const style = styleSet(SHAPE_STYLE[shape], { ...ADDED_NODE_FILL, ...CHANGE_STYLE.added });
         const parent = layerOf($, near.id);
         root.append(
           `<object id="${escapeXml(op.id)}" label="${escapeXml(op.label ?? '')}" od-change="added"${op.finding ? ` od-finding="${escapeXml(op.finding)}"` : ''}>` +

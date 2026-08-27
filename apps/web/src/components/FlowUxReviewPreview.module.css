@@ -229,11 +229,17 @@
   background: var(--accent-tint, #e6f0f8);
   font-weight: 650;
 }
-.fullscreenBtn {
-  /* Đẩy sang mép phải cùng .download (xem docblock .download bên dưới) —
-   * nhiều item margin-left:auto trong cùng hàng flex vẫn nhóm đúng thứ tự ở
-   * mép phải, không cần biết trước .download có render hay không. */
+/* Cụm nút mép phải (Chỉnh sửa · Tải .drawio · Toàn màn hình): MỘT container
+ * mang margin-left:auto. Trước đây từng nút tự margin-left:auto — flexbox
+ * chia đều khoảng trống cho mọi auto-margin nên các nút rải ra giữa thanh
+ * (ảnh người dùng 2026-08-27) chứ không nhóm ở mép phải. */
+.barRight {
   margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+}
+.fullscreenBtn {
   border: 1px solid var(--border, #e1e5eb);
   border-radius: 6px;
   background: var(--bg, #fff);
@@ -253,22 +259,56 @@
   border: 1px solid transparent;
   color: #1a1916;
 }
-/* Màu cố định của draw.io — khớp CHANGE_STYLE (daemon). */
+/* Khớp CHANGE_STYLE (daemon flow-ux/patch.ts) + HIGHLIGHT_KIND_STYLE
+ * (DrawioViewer) — WP dr-flow-edit-highlight: thay đổi = VIỀN màu riêng, KHÔNG
+ * fill (fill vẫn là "loại node" của template dr-flow); nền trắng, viền 2px,
+ * removed nét đứt. */
 .legend_added {
-  background: #d5e8d4;
-  border-color: #82b366;
+  background: #fff;
+  border: 2px solid #1b7f3b;
+  font-weight: 650;
 }
 .legend_modified {
-  background: #fff2cc;
-  border-color: #d6b656;
+  background: #fff;
+  border: 2px solid #b7791f;
+  font-weight: 650;
 }
 .legend_removed {
-  background: #f8cecc;
-  border-color: #b85450;
-  border-style: dashed;
+  background: #fff;
+  border: 2px dashed #c0392b;
+  font-weight: 650;
 }
+/* WP-screen-flow editor: nút "Chỉnh sửa" ↔ "Xong" (aria-pressed) chuyển khung
+ * sơ đồ SCREEN-FLOW giữa viewer tĩnh và editor draw.io nhúng (nằm trong
+ * .barRight). */
+.editBtn {
+  border: 1px solid var(--accent, #0066b3);
+  border-radius: 6px;
+  background: var(--bg, #fff);
+  color: var(--accent, #0066b3);
+  font-size: 11.5px;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+/* WP dr-flow-edit-highlight: dòng nhắc dưới thanh công cụ khi đang sửa tay
+ * trang Cải thiện (daemon giữ bản sửa, không áp lại đề xuất agent). */
+.editHint {
+  flex: 0 0 auto;
+  padding: 4px 12px;
+  font-size: 11.5px;
+  color: var(--text-muted, #57544e);
+  background: var(--accent-tint, #e6f0f8);
+  border-bottom: 1px solid var(--border, #e1e5eb);
+}
+.editHint code {
+  font-family: var(--mono, ui-monospace, monospace);
+}
+.editBtn[aria-pressed='true'] {
+  background: var(--accent, #0066b3);
+  color: #fff;
+}
+
 .download {
-  margin-left: auto;
   font-size: 11.5px;
   color: var(--accent, #0066b3);
   text-decoration: none;
@@ -288,6 +328,11 @@
 .diagramBoxSide {
   overflow: hidden;
   display: flex;
+}
+/* Tab "Danh sách màn" (SCREEN-FLOW, WP dr-screens-merge): ScreensDiscoveredPreview
+ * thay khung sơ đồ, cuộn theo .diagramBox. */
+.screensPane {
+  min-height: 100%;
 }
 .sideWrap {
   flex: 1 1 auto;
@@ -571,4 +616,172 @@
 .message code {
   font-family: var(--mono, ui-monospace, monospace);
   font-size: 12px;
+}
+
+/* ── WP dr-flow-improve (2026-08-27) ──────────────────────────────────── */
+/* Badge "đang dùng" trên tab / tiêu đề khung của bản được chọn để chạy tiếp
+ * (chỉ SCREEN-FLOW có bản Cải thiện). */
+.usingBadge {
+  margin-left: 6px;
+  font-size: 10px;
+  font-weight: 650;
+  padding: 0 6px;
+  border-radius: 999px;
+  color: var(--green, #1f7a3a);
+  background: var(--green-bg, #e8f7ee);
+  border: 1px solid var(--green-border, #c6ead2);
+  vertical-align: middle;
+}
+.sidePaneHead .usingBadge {
+  margin-left: 0;
+  margin-right: auto;
+}
+/* Khối chọn bản ở đầu right panel. */
+.selectBlock {
+  margin: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--accent-soft, #d6e7f4);
+  background: var(--bg, #fff);
+}
+.selectTitle {
+  font-size: 11.5px;
+  font-weight: 650;
+  color: var(--text-muted, #57544e);
+  margin-bottom: 6px;
+}
+.radioGroup {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  font-size: 12.5px;
+}
+.radioLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+}
+.radioLabel input {
+  margin: 0;
+  accent-color: var(--accent, #0066b3);
+}
+.radioLabelActive {
+  font-weight: 650;
+  color: var(--accent-strong, #00568f);
+}
+.selectMeta {
+  font-size: 11px;
+  color: var(--text-muted, #57544e);
+}
+.selectError {
+  margin-top: 6px;
+  font-size: 11.5px;
+  color: var(--red, #9c2a25);
+}
+.staleBanner {
+  margin-top: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--amber, #b26200);
+  background: var(--amber-bg, #fff3e0);
+  border: 1px solid var(--amber-border, #f4d9a6);
+}
+/* Toggle chế độ panel "Phát hiện UX" | "Theo phần tử" — cùng khuôn .modeBar. */
+.panelModeBar {
+  display: inline-flex;
+  border: 1px solid var(--border, #e1e5eb);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--bg, #fff);
+}
+.panelModeBtn {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  padding: 3px 10px;
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--text-muted, #57544e);
+  cursor: pointer;
+}
+.panelModeBtn + .panelModeBtn {
+  border-left: 1px solid var(--border, #e1e5eb);
+}
+.panelModeBtnActive {
+  color: var(--accent-strong, #00568f);
+  background: var(--accent-tint, #e6f0f8);
+  font-weight: 650;
+}
+/* Danh sách Theo phần tử: nhóm Thêm mới / Sửa đổi / Đề nghị bỏ, mỗi dòng dùng
+ * lại khuôn .card của finding. */
+.elemGroups {
+  display: flex;
+  flex-direction: column;
+}
+.elemGroup .list {
+  padding-top: 0;
+}
+.elemGroupTitle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 8px 4px;
+  font-size: 11.5px;
+  font-weight: 650;
+}
+.elemGroupTitle .change {
+  margin-left: 0;
+}
+.elemKind {
+  font-size: 10.5px;
+  font-weight: 650;
+  padding: 1px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--border, #e1e5eb);
+  color: var(--text-muted, #57544e);
+  background: var(--bg-subtle, #eef1f5);
+}
+
+/* ── WP dr-flow-result-split (2026-08-27) — B3 highlight thay đổi ─────── */
+/* Badge "N thay đổi · a thêm · b sửa · c bỏ" trên tab / tiêu đề khung Cải
+ * thiện — đếm từ tập cell có od-change ở trang 1 (= panel Theo phần tử). */
+.changesBadge {
+  margin-left: 6px;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 0 6px;
+  border-radius: 999px;
+  color: var(--accent-strong, #00568f);
+  background: var(--accent-tint, #e6f0f8);
+  border: 1px solid var(--accent-soft, #d6e7f4);
+  vertical-align: middle;
+  white-space: nowrap;
+}
+.sidePaneHead .changesBadge {
+  margin-left: 0;
+}
+/* Nút bật/tắt "Chỉ xem thay đổi" (aria-pressed): bật → DrawioViewer mờ cell
+ * không đổi (prop dimCellsExcept), tắt → sơ đồ đầy đủ. */
+.dimBtn {
+  border: 1px solid var(--border, #e1e5eb);
+  border-radius: 6px;
+  background: var(--bg, #fff);
+  color: var(--text-muted, #57544e);
+  font: inherit;
+  font-size: 11px;
+  padding: 2px 8px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.dimBtnActive,
+.dimBtn[aria-pressed='true'] {
+  color: var(--accent-strong, #00568f);
+  background: var(--accent-tint, #e6f0f8);
+  border-color: var(--accent, #0066b3);
+  font-weight: 650;
 }

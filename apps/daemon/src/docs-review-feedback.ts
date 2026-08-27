@@ -217,30 +217,31 @@ export async function assertDocsReviewCoverageComplete(workflowRoot: string): Pr
     if (uncovered.length > 0) issues.push(`dr-flow còn flow chưa có màn: ${uncovered.join(', ')}`);
   }
 
-  const comp = await readJsonObject(path.join(workflowRoot, 'comp', 'index.json'));
-  const completedScreens = Array.isArray(comp?.screens) ? comp.screens : null;
-  const failedScreens = Array.isArray(comp?.failed) ? comp.failed : [];
-  if (!completedScreens || completedScreens.length === 0) issues.push('dr-comp chưa có màn hình hoàn tất');
-  if (failedScreens.length > 0) issues.push(`dr-comp còn ${failedScreens.length} màn hình lỗi`);
-
-  const inputs = await readJsonObject(path.join(workflowRoot, 'comp', '_inputs.json'));
-  const expectedScreens = Array.isArray(inputs?.screens) ? inputs.screens : [];
-  if (!inputs || !Array.isArray(inputs.screens) || inputs.screens.length === 0) {
-    issues.push('dr-comp thiếu manifest màn hình đầu vào');
-  }
-  if (expectedScreens.length > 0 && completedScreens) {
-    const completedKeys = new Set(completedScreens.flatMap((screen) =>
-      screen && typeof screen === 'object' && !Array.isArray(screen) && typeof (screen as Record<string, unknown>).key === 'string'
-        ? [(screen as Record<string, unknown>).key as string]
-        : [],
-    ));
-    const missingKeys = expectedScreens.flatMap((screen) =>
-      screen && typeof screen === 'object' && !Array.isArray(screen) && typeof (screen as Record<string, unknown>).key === 'string'
-        && !completedKeys.has((screen as Record<string, unknown>).key as string)
-        ? [(screen as Record<string, unknown>).key as string]
-        : [],
-    );
-    if (missingKeys.length > 0) issues.push(`dr-comp thiếu output cho màn: ${missingKeys.join(', ')}`);
+  // WP dr-mockup (2026-08-27): dr-comp rời workflow docs-review → KHÔNG đòi
+  // `comp/index.json` / `comp/_inputs.json` nữa. Coverage màn = flows/index.json
+  // có màn (kiểm trên) + nếu bước Mockup màn đã chạy (`mockups/index.json` tồn
+  // tại) thì MỌI màn của bản đã chọn (flows/index.json[].screens, bỏ màn
+  // `removedByProposal`) phải có `mockups/<key>.html`. Chưa chạy dr-mockup →
+  // không chặn (flows + review là đủ để xác nhận).
+  const mockupIndex = await readJsonObject(path.join(workflowRoot, 'mockups', 'index.json'));
+  if (mockupIndex && flowEntries) {
+    const expected = flowEntries.flatMap((entry) => {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return [];
+      const screens = (entry as Record<string, unknown>).screens;
+      return Array.isArray(screens)
+        ? screens.flatMap((screen) => {
+          if (!screen || typeof screen !== 'object' || Array.isArray(screen)) return [];
+          const rec = screen as Record<string, unknown>;
+          return typeof rec.key === 'string' && rec.removedByProposal !== true ? [rec.key] : [];
+        })
+        : [];
+    });
+    const missingMockups: string[] = [];
+    for (const key of [...new Set(expected)]) {
+      const ok = await fs.stat(path.join(workflowRoot, 'mockups', `${key}.html`)).then((st) => st.isFile()).catch(() => false);
+      if (!ok) missingMockups.push(key);
+    }
+    if (missingMockups.length > 0) issues.push(`dr-mockup thiếu mockup cho màn: ${missingMockups.join(', ')}`);
   }
 
   const review = await readJsonObject(path.join(workflowRoot, 'review', 'index.json'));

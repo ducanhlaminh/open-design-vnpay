@@ -27,6 +27,7 @@ import path from 'node:path';
 import type { FlowchartDoc } from './flow-ux/to-flowchart.js';
 import type { FlowIndexEntry, UxReview } from './flow-ux/index.js';
 import { resolveScreenPlatform } from './screen-platform.js';
+import { guessArchetype, layoutRefsFor, loadLayoutKb, resolveLayoutKbDir, type ArchetypeGuess, type LayoutRefs } from './layout-kb.js';
 
 export const SCREEN_COMPONENTS_SCHEMA_VERSION = '2.1' as const;
 export const SCREEN_INPUTS_FILE = 'comp/_inputs.json';
@@ -56,7 +57,7 @@ export interface ScreenNav {
 
 /** WP32: nguồn canonical của một màn ở tầng flow/recovery. Field optional ở
  * mọi reader để artifact cũ tiếp tục chạy như trước. */
-export type ScreenOriginProvenance = 'document' | 'flow' | 'inferred-flow';
+export type ScreenOriginProvenance = 'document' | 'flow' | 'inferred-flow' | 'proposed';
 export interface ScreenOriginEvidence {
   source: string;
   anchorText?: string;
@@ -122,6 +123,16 @@ export interface ScreenInput {
    *  server.ts — WP-B) đọc thêm các khoảng dòng `section` này như một phần
    *  của màn. */
   blocks?: { name: string; section: NonNullable<ScreenInput['section']> }[];
+  /** WP dr-mockup-layouts (2026-08-27): archetype daemon đoán từ tên/heading/
+   *  bước (layout-kb.ts `guessArchetype`) — CHỈ khi `opts.layoutKb` (dr-mockup);
+   *  comp/_inputs.json của dr-comp không có. Agent ưu tiên field này nhưng
+   *  vẫn tự quyết khi `confidence: 'low'`. */
+  archetype?: ArchetypeGuess;
+  /** WP dr-mockup-layouts: khuôn bố cục (bands + sketch ASCII) + ảnh wireframe
+   *  Enrico tham khảo theo archetype, từ `~/layout-kb` (env `LAYOUT_KB_DIR`).
+   *  Vắng khi KB chưa dựng hoặc `opts.layoutKb` tắt. Ảnh mockup BA (`mockups`)
+   *  THẮNG mọi gợi ý ở đây. */
+  layoutRefs?: LayoutRefs;
 }
 
 export interface ScreenComponentsInputs {
@@ -131,6 +142,15 @@ export interface ScreenComponentsInputs {
   screens: ScreenInput[];
   /** Why the list is empty / partial. */
   note?: string;
+  /** WP dr-mockup (2026-08-27): bản luồng đang dùng (từ `flows/index.json[].selection`
+   *  của SCREEN-FLOW) — `default` = chưa có selection.json. Vắng khi index cũ
+   *  chưa ghi selection. Ghi cho cả comp/ lẫn mockups/ để consumer biết danh
+   *  sách màn này là của bản nào. */
+  selection?: { variant: 'original' | 'improved'; source: 'user' | 'run-all' | 'default' };
+  /** WP dr-mockup-layouts: kho bố cục Enrico đã dùng để điền `screens[].layoutRefs`
+   *  (`opts.layoutKb`). `null` = bật nhưng KB vắng (kèm `note` nói cách dựng);
+   *  field VẮNG = không bật (dr-comp). */
+  layoutKb?: { dir: string; source: string; builtAt: string; topics: number } | null;
 }
 
 // ── Outputs (agent → daemon) ───────────────────────────────────────────────
@@ -1161,6 +1181,19 @@ export function resolveDocScreens(input: ResolveDocScreensInput): ScreenInput[] 
 export interface PrepareScreenInputsOptions {
   /** Doc pages of the run (`listDocPages`): mdPath relative to cwd + title. */
   pages: { mdPath: string; page: string }[];
+  /** WP dr-mockup (2026-08-27): nơi ghi file inputs, tương đối cwd. Mặc định
+   *  `comp/_inputs.json` (dr-comp không đổi); dr-mockup truyền
+   *  `mockups/_inputs.json`. Thư mục cha được tạo nếu chưa có. */
+  outFile?: string;
+  /** WP dr-mockup: bỏ màn bị bản Cải thiện đánh dấu bỏ (`removedByProposal`
+   *  trong flows/index.json) — dr-mockup không dựng màn đã đề nghị bỏ; dr-comp
+   *  (mặc định false) vẫn nhận đủ như trước. */
+  excludeRemovedByProposal?: boolean;
+  /** WP dr-mockup-layouts (2026-08-27): gán `archetype` cho từng màn và, khi
+   *  `~/layout-kb` (env `LAYOUT_KB_DIR`) có manifest, thêm `layoutRefs` (khuôn
+   *  bố cục + ảnh wireframe Enrico) + `inputs.layoutKb`. Mặc định false —
+   *  comp/_inputs.json của dr-comp KHÔNG đổi một byte. */
+  layoutKb?: boolean;
 }
 
 /** Build `comp/_inputs.json` from the flow stage's outputs + the documents.
@@ -1191,6 +1224,7 @@ export async function prepareScreenComponentInputs(
     for (const n of flowchart?.nodes ?? []) if (n.screen) cellScreen.set(n.id, n.screen);
     for (const s of entry.screens) {
       if (!s?.key || seen.has(s.key)) continue;
+      if (opts.excludeRemovedByProposal && s.removedByProposal) continue;
       seen.add(s.key);
       const parts = splitScreenKey(s.key);
       const page = parts ? pagesByStem.get(parts.prefix) ?? null : null;
@@ -1296,12 +1330,15 @@ export async function prepareScreenComponentInputs(
     },
     screens,
   };
+  // WP dr-mockup: selection của SCREEN-FLOW (finalizeFlowUx ghi vào index entry).
+  const selected = (Array.isArray(index) ? index : []).find((e) => e?.selection?.variant);
+  if (selected?.selection) inputs.selection = { variant: selected.selection.variant, source: selected.selection.source };
   if (screens.length === 0) {
     // Cả hai nguồn đều rỗng — giữ nguyên 2 note cũ của WP9.
     inputs.note =
       index.length === 0
-        ? 'Chưa có flows/index.json — chạy bước "Đánh giá luồng UX" (dr-flow) trước.'
-        : 'Bước Đánh giá luồng UX chưa gắn màn hình nào (screens.json rỗng) — chạy lại dr-flow với gắn màn.';
+        ? 'Chưa có flows/index.json — chạy bước "Luồng màn hình" (dr-flow) trước.'
+        : 'Bước Luồng màn hình chưa gắn màn hình nào (screens.json rỗng) — chạy lại dr-flow.';
   } else if (addedDocKeys.length > 0) {
     inputs.note =
       flowScreenCount === 0
@@ -1309,8 +1346,34 @@ export async function prepareScreenComponentInputs(
           'dr-flow chưa gắn được màn nào — danh sách màn lấy TỪ TÀI LIỆU (heading khai màn); không có bước luồng/điều hướng cho từng màn.'
         : `Bổ sung ${addedDocKeys.length} màn lấy từ tài liệu (dr-flow không gắn được): ${addedDocKeys.join(', ')} — các màn này không có bước luồng/điều hướng.`;
   }
-  await fs.mkdir(path.join(cwd, 'comp'), { recursive: true });
-  await fs.writeFile(path.join(cwd, SCREEN_INPUTS_FILE), JSON.stringify(inputs, null, 2), 'utf8');
+  // WP dr-mockup-layouts: archetype + refs từ layout-kb — chỉ khi bật.
+  if (opts.layoutKb) {
+    const kbDir = await resolveLayoutKbDir();
+    const kb = kbDir ? await loadLayoutKb(kbDir) : null;
+    for (const s of screens) {
+      s.archetype = guessArchetype(s);
+      if (kb) {
+        const refs = layoutRefsFor(kb, s.archetype.id);
+        if (refs.topics.length) s.layoutRefs = refs;
+      }
+    }
+    if (kb) {
+      inputs.layoutKb = {
+        dir: kb.dir,
+        source: kb.manifest.source,
+        builtAt: kb.manifest.builtAt,
+        topics: Object.keys(kb.manifest.topics).length,
+      };
+    } else {
+      inputs.layoutKb = null;
+      const kbNote = 'Chưa có layout-kb (chạy `node tools/layout-kb/build.mjs` → ~/layout-kb, hoặc đặt LAYOUT_KB_DIR) — màn không có layoutRefs, dùng catalogue trong skill.';
+      // Không nối vào note "chưa có màn" — server.ts ném note đó làm lỗi kickoff.
+      if (screens.length > 0) inputs.note = inputs.note ? `${inputs.note} ${kbNote}` : kbNote;
+    }
+  }
+  const outRel = opts.outFile ?? SCREEN_INPUTS_FILE;
+  await fs.mkdir(path.dirname(path.join(cwd, outRel)), { recursive: true });
+  await fs.writeFile(path.join(cwd, outRel), JSON.stringify(inputs, null, 2), 'utf8');
   return inputs;
 }
 
@@ -1328,7 +1391,7 @@ const CONTENT_KEYS = new Set(['text', 'secondary', 'value', 'badge', 'items']);
 const CONTENT_STR_MAX = 160;
 const CONTENT_ITEMS_MAX = 12;
 const LAYOUT_SOURCES = new Set(['doc-image', 'agent']);
-const SCREEN_ORIGIN_PROVENANCES = new Set<ScreenOriginProvenance>(['document', 'flow', 'inferred-flow']);
+const SCREEN_ORIGIN_PROVENANCES = new Set<ScreenOriginProvenance>(['document', 'flow', 'inferred-flow', 'proposed']);
 
 function parseScreenOriginMetadata(raw: Record<string, unknown>): {
   provenance?: ScreenOriginProvenance;

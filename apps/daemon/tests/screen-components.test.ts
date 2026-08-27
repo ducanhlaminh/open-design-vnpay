@@ -208,6 +208,34 @@ test('prepareScreenComponentInputs: màn từ flows/, mục tài liệu, navOut 
   assert.equal(onDisk.screens.length, 2);
 });
 
+// WP dr-mockup (2026-08-27): `outFile` cho dr-mockup ghi `mockups/_inputs.json`
+// (mặc định vẫn comp/_inputs.json); `selection` chép từ index entry;
+// `excludeRemovedByProposal` bỏ màn bản Cải thiện đề nghị bỏ.
+test('prepareScreenComponentInputs: outFile ghi đúng chỗ (mặc định không đổi), selection từ index, excludeRemovedByProposal', async () => {
+  await seedFlowRun();
+  const pages = [{ mdPath: 'docs-feature/2.1-PRD-Mua-SIM.md', page: '2.1 PRD Mua SIM' }];
+  // Thêm selection + một màn removedByProposal vào index để kiểm 2 option còn lại.
+  const indexPath = join(cwd, 'flows', 'index.json');
+  const index = JSON.parse(await readFile(indexPath, 'utf8')) as Array<Record<string, unknown>>;
+  index[0]!.selection = { variant: 'improved', source: 'user' };
+  (index[0]!.screens as Array<Record<string, unknown>>).push({ key: '2.1-PRD-Mua-SIM__SCR-009', name: 'Màn bỏ', removedByProposal: true });
+  await writeFile(indexPath, JSON.stringify(index));
+
+  const viaMockup = await prepareScreenComponentInputs(cwd, { pages, outFile: 'mockups/_inputs.json', excludeRemovedByProposal: true });
+  assert.deepEqual(viaMockup.selection, { variant: 'improved', source: 'user' });
+  assert.ok(!viaMockup.screens.some((s) => s.key === '2.1-PRD-Mua-SIM__SCR-009'), 'màn removedByProposal bị loại');
+  const onDisk = JSON.parse(await readFile(join(cwd, 'mockups', '_inputs.json'), 'utf8')) as ScreenComponentsInputs;
+  assert.equal(onDisk.screens.length, viaMockup.screens.length);
+  assert.deepEqual(onDisk.selection, { variant: 'improved', source: 'user' });
+  await assert.rejects(readFile(join(cwd, SCREEN_INPUTS_FILE), 'utf8'), 'outFile không ghi comp/_inputs.json');
+
+  // Mặc định: comp/_inputs.json như cũ, removedByProposal VẪN có mặt cho dr-comp.
+  const viaComp = await prepareScreenComponentInputs(cwd, { pages });
+  assert.ok(viaComp.screens.some((s) => s.key === '2.1-PRD-Mua-SIM__SCR-009'));
+  const compDisk = JSON.parse(await readFile(join(cwd, SCREEN_INPUTS_FILE), 'utf8')) as ScreenComponentsInputs;
+  assert.equal(compDisk.screens.length, viaComp.screens.length);
+});
+
 test('prepareScreenComponentInputs: chưa có flows → screens rỗng + note bảo chạy dr-flow', async () => {
   const inputs = await prepareScreenComponentInputs(cwd, { pages: [] });
   assert.equal(inputs.screens.length, 0);
@@ -1352,4 +1380,119 @@ test('WP32c: inferred provenance/confidence/evidence đi từ flows/index vào S
     source: 'docs/prd.md',
     anchorText: 'Người dùng xác nhận giao dịch.',
   });
+});
+
+// ── WP dr-mockup-layouts (2026-08-27): opts.layoutKb → archetype + layoutRefs
+// từ ~/layout-kb (env LAYOUT_KB_DIR). KB GIẢ trong tmp; mặc định tắt phải giữ
+// output byte-identical.
+
+async function seedFakeLayoutKb(root: string): Promise<void> {
+  const png = Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex');
+  await mkdir(join(root, 'wireframes'), { recursive: true });
+  await writeFile(join(root, 'wireframes', '1.png'), png);
+  await writeFile(join(root, 'wireframes', '2.png'), png);
+  await writeFile(
+    join(root, 'manifest.json'),
+    JSON.stringify({
+      schema_version: 1,
+      source: 'enrico',
+      license: 'MIT',
+      builtAt: '2026-08-27T00:00:00.000Z',
+      topics: {
+        list: {
+          count: 10,
+          templates: [{ id: 'list-appbar-search-list-fab', bands: ['appbar', 'search', 'list(5)', 'fab'], sketch: 'S', samples: ['1'] }],
+          samples: [{ id: '1', wireframe: 'wireframes/1.png', bands: ['appbar', 'search', 'list(5)', 'fab'] }],
+        },
+        search: {
+          count: 3,
+          templates: [{ id: 'search-appbar-search-list', bands: ['appbar', 'search', 'list(4)'], sketch: 'T', samples: ['2'] }],
+          samples: [{ id: '2', wireframe: 'wireframes/2.png', bands: ['appbar', 'search', 'list(4)'] }],
+        },
+      },
+    }),
+    'utf8',
+  );
+}
+
+/** Bỏ field phụ thuộc thời gian để so byte. */
+const stableJson = (raw: string) => raw.replace(/"generatedAt": "[^"]+"/, '"generatedAt": "T"');
+
+test('prepareScreenComponentInputs: layoutKb:true + KB giả → archetype + layoutRefs đúng, inputs.layoutKb có dir/topics', async () => {
+  await seedFlowRun();
+  const kbDir = await mkdtemp(join(tmpdir(), 'od-layout-kb-'));
+  const saved = process.env.LAYOUT_KB_DIR;
+  process.env.LAYOUT_KB_DIR = kbDir;
+  try {
+    await seedFakeLayoutKb(kbDir);
+    const pages = [{ mdPath: 'docs-feature/2.1-PRD-Mua-SIM.md', page: '2.1 PRD Mua SIM' }];
+    const inputs = await prepareScreenComponentInputs(cwd, { pages, outFile: 'mockups/_inputs.json', excludeRemovedByProposal: true, layoutKb: true });
+    assert.deepEqual(inputs.layoutKb, { dir: kbDir, source: 'enrico', builtAt: '2026-08-27T00:00:00.000Z', topics: 2 });
+    const s1 = inputs.screens.find((s) => s.key === KEY1)!;
+    const s2 = inputs.screens.find((s) => s.key === KEY2)!;
+    // "Chọn quốc gia" / "Chọn gói cước" → picker (topics list, search, menu → KB có list + search).
+    assert.deepEqual(s1.archetype, { id: 'picker', confidence: 'high' });
+    assert.deepEqual(s2.archetype, { id: 'picker', confidence: 'high' });
+    assert.deepEqual(s1.layoutRefs?.topics, ['list', 'search']);
+    assert.deepEqual(s1.layoutRefs?.templates.map((t) => t.id), ['list-appbar-search-list-fab', 'search-appbar-search-list']);
+    assert.deepEqual(s1.layoutRefs?.images, [join(kbDir, 'wireframes', '1.png'), join(kbDir, 'wireframes', '2.png')]);
+    // Field cũ không đổi.
+    assert.equal(s1.section?.heading, '### 4.1 SCR-001 Chọn quốc gia');
+    assert.deepEqual(s1.navOut, [{ to: KEY2, via: 'Chọn quốc gia', condition: 'Có' }]);
+    const onDisk = JSON.parse(await readFile(join(cwd, 'mockups', '_inputs.json'), 'utf8')) as ScreenComponentsInputs;
+    assert.equal(onDisk.layoutKb?.topics, 2);
+    assert.equal(onDisk.screens[0]!.layoutRefs?.images.length, 2);
+  } finally {
+    if (saved === undefined) delete process.env.LAYOUT_KB_DIR;
+    else process.env.LAYOUT_KB_DIR = saved;
+    await rm(kbDir, { recursive: true, force: true });
+  }
+});
+
+test('prepareScreenComponentInputs: layoutKb:true nhưng KB vắng → layoutKb: null + note, vẫn có archetype, không layoutRefs', async () => {
+  await seedFlowRun();
+  const empty = await mkdtemp(join(tmpdir(), 'od-layout-kb-empty-'));
+  const saved = process.env.LAYOUT_KB_DIR;
+  process.env.LAYOUT_KB_DIR = empty;
+  try {
+    const pages = [{ mdPath: 'docs-feature/2.1-PRD-Mua-SIM.md', page: '2.1 PRD Mua SIM' }];
+    const inputs = await prepareScreenComponentInputs(cwd, { pages, outFile: 'mockups/_inputs.json', layoutKb: true });
+    assert.equal(inputs.layoutKb, null);
+    assert.match(inputs.note ?? '', /layout-kb/);
+    for (const s of inputs.screens) {
+      assert.ok(s.archetype, s.key);
+      assert.equal(s.layoutRefs, undefined);
+    }
+    // KB vắng + không màn → note "dr-flow" cũ giữ nguyên (server ném note làm lỗi kickoff).
+    await rm(join(cwd, 'flows'), { recursive: true, force: true });
+    const none = await prepareScreenComponentInputs(cwd, { pages: [], layoutKb: true });
+    assert.equal(none.layoutKb, null);
+    assert.match(none.note ?? '', /dr-flow/);
+    assert.doesNotMatch(none.note ?? '', /layout-kb/);
+  } finally {
+    if (saved === undefined) delete process.env.LAYOUT_KB_DIR;
+    else process.env.LAYOUT_KB_DIR = saved;
+    await rm(empty, { recursive: true, force: true });
+  }
+});
+
+test('prepareScreenComponentInputs: layoutKb mặc định (false) → output byte-identical, không archetype/layoutRefs/layoutKb dù KB có', async () => {
+  await seedFlowRun();
+  const kbDir = await mkdtemp(join(tmpdir(), 'od-layout-kb-'));
+  const saved = process.env.LAYOUT_KB_DIR;
+  process.env.LAYOUT_KB_DIR = kbDir;
+  try {
+    await seedFakeLayoutKb(kbDir);
+    const pages = [{ mdPath: 'docs-feature/2.1-PRD-Mua-SIM.md', page: '2.1 PRD Mua SIM' }];
+    await prepareScreenComponentInputs(cwd, { pages });
+    const a = stableJson(await readFile(join(cwd, SCREEN_INPUTS_FILE), 'utf8'));
+    await prepareScreenComponentInputs(cwd, { pages, layoutKb: false });
+    const b = stableJson(await readFile(join(cwd, SCREEN_INPUTS_FILE), 'utf8'));
+    assert.equal(a, b);
+    assert.ok(!a.includes('"archetype"') && !a.includes('"layoutRefs"') && !a.includes('"layoutKb"'));
+  } finally {
+    if (saved === undefined) delete process.env.LAYOUT_KB_DIR;
+    else process.env.LAYOUT_KB_DIR = saved;
+    await rm(kbDir, { recursive: true, force: true });
+  }
 });
