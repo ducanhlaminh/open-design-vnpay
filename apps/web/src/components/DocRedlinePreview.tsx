@@ -1701,6 +1701,17 @@ export function DocRedlinePreview({
     };
   }
 
+  /** Sửa lại NỘI DUNG ĐỀ XUẤT (`quote`) của một chỗ sửa — đường dùng chính là
+   *  chỉnh đề xuất của agent trước khi chốt. Non-destructive như mọi thao tác
+   *  khác: chỉ ghi changes.json (status 'edited' + event 'edit'), tài liệu
+   *  .md không bao giờ bị đụng. `before`/`anchor` giữ nguyên nên vùng bôi
+   *  không đổi chỗ; `initialQuote` (parse + sidecarJson tự giữ) là baseline
+   *  để feedback so bản agent ↔ bản người dùng (DocReviewAgentCounts
+   *  .editedByUser). */
+  async function editChangeQuote(c: DocRedlineChange, text: string): Promise<boolean> {
+    return saveAction(c.id, () => updateChange(c, { quote: text, status: 'edited' }, 'edit'));
+  }
+
   async function dismissChange(c: DocRedlineChange) {
     if (c.status === 'dismissed') {
       if (!undoableIds.has(c.id)) return;
@@ -2414,9 +2425,13 @@ export function DocRedlinePreview({
                   error={errorById[id]}
                   undoable={undoableIds.has(id)}
                   dismissed={dismissed}
+                  edited={isChange && target.change.status === 'edited'}
                   onClose={() => setDetailPanel(null)}
                   onDismiss={() => { if (isChange) void dismissChange(target.change); else void dismissNote(target.note); }}
                   onOpenRef={(ref, i) => openRefModal(`${REF_ID_PREFIX}${id}:${i}`, ref)}
+                  onSaveEdit={isChange && changeOp(target.change) !== 'del'
+                    ? (text) => editChangeQuote(target.change, text)
+                    : undefined}
                 />
               );
             })() : null}
@@ -2575,28 +2590,46 @@ function HighlightFilters({
  *  KHÔNG dùng `dangerouslySetInnerHTML`: nội dung ở đây là markdown THÔ lấy
  *  thẳng từ `changes.json`/`notes.json`, chưa qua renderMarkdownToSafeHtml —
  *  dựng làm HTML sẽ vừa thừa bước vừa hiện sai cú pháp `**`/`#` còn nguyên. */
+/** `<br>`/`<br/>` nguyên văn trong nội dung changes.json (Confluence dùng nó
+ *  để xuống dòng trong ô bảng — xem confluence-ingest) hiện thành CHỮ trong
+ *  panel; hiển thị thì đổi thành xuống dòng thật (`detailPre` đã pre-wrap).
+ *  CHỈ dùng cho hiển thị — textarea sửa nội dung giữ NGUYÊN VĂN để không âm
+ *  thầm đổi markdown sẽ được lưu lại. */
+function displayText(raw: string): string {
+  return raw.replace(/<br\s*\/?>/gi, '\n');
+}
+
 function AnnotationDetailPanel({
   target,
   busy,
   error,
   undoable,
   dismissed,
+  edited,
   onClose,
   onDismiss,
   onOpenRef,
+  onSaveEdit,
 }: {
   target: AnnotationDetailTarget;
   busy: boolean;
   error?: string;
   undoable: boolean;
   dismissed: boolean;
+  /** `status === 'edited'`: nội dung đề xuất đã được người dùng chỉnh lại. */
+  edited: boolean;
   onClose: () => void;
   onDismiss: () => void;
-  /** Bấm một đoạn `doc_refs` (bằng chứng viện dẫn) trong modal — mở cửa sổ
+  /** Bấm một đoạn `doc_refs` (bằng chứng viện dẫn) trong panel — mở cửa sổ
    *  xem đoạn đó trong tài liệu (xem `openRefModal`/`refModal` ở component
    *  cha). `i` là chỉ số trong mảng `doc_refs`, khớp id mark `ref:<ownerId>:<i>`
    *  do docRender sinh ra (xem requests trong docRender). */
   onOpenRef?: (ref: string, i: number) => void;
+  /** Có mặt = chỗ sửa này CHO PHÉP chỉnh nội dung đề xuất (add/edit — Xoá
+   *  không có "nội dung mới" để chỉnh; xem `editChangeQuote` ở cha). Trả kết
+   *  quả saveAction để panel biết thoát chế độ sửa hay giữ textarea cho người
+   *  dùng sửa tiếp khi ghi lỗi. */
+  onSaveEdit?: (text: string) => Promise<boolean>;
 }) {
   const c = target.kind === 'change' ? target.change : null;
   const n = target.kind === 'note' ? target.note : null;
@@ -2606,11 +2639,24 @@ function AnnotationDetailPanel({
     : 'Nhận xét';
   const ruleId = c?.rule_id ?? n?.rule_id;
   const docRefs = c?.doc_refs ?? n?.doc_refs ?? [];
+  // Chế độ chỉnh nội dung đề xuất — reset khi panel chuyển sang annotation
+  // khác (bấm một vùng bôi khác trong lúc đang sửa dở).
+  const annotationId = c ? c.id : `${NOTE_ID_PREFIX}${n!.id}`;
+  const [editing, setEditing] = useState(false);
+  const [editText, setEditText] = useState('');
+  useEffect(() => { setEditing(false); }, [annotationId]);
+  async function saveEdit() {
+    if (!onSaveEdit || !editText.trim()) return;
+    if (await onSaveEdit(editText)) setEditing(false);
+  }
   return (
     <aside className={styles.detailPanel ?? ''} role="dialog" aria-label={title}>
       <div className={styles.modalHead}>
         <div className={styles.modalTitleWrap}>
-          <span className={styles.modalTitle}>{title}</span>
+          <span className={styles.modalTitle}>
+            {title}
+            {edited ? <span className={styles.badgeEdited ?? ''}>Đã chỉnh</span> : null}
+          </span>
           {ruleId ? <span className={styles.modalQuote}>{ruleId}</span> : null}
         </div>
         <div className={styles.modalActions}>
@@ -2621,20 +2667,31 @@ function AnnotationDetailPanel({
       </div>
       <div className={styles.modalBody}>
         {c ? (
-          op === 'add' ? (
-            <p className={styles.detailPre ?? ''}>{c.quote}</p>
+          editing ? (
+            <>
+              <p className={styles.detailLabel ?? ''}>Nội dung đề xuất</p>
+              <textarea
+                className={styles.editArea ?? ''}
+                value={editText}
+                onChange={(ev) => setEditText(ev.target.value)}
+                aria-label="Nội dung sửa"
+                disabled={busy}
+              />
+            </>
+          ) : op === 'add' ? (
+            <p className={styles.detailPre ?? ''}>{displayText(c.quote ?? '')}</p>
           ) : op === 'del' ? (
-            <p className={`${styles.detailPre ?? ''} ${styles.detailStrike ?? ''}`}>{c.before}</p>
+            <p className={`${styles.detailPre ?? ''} ${styles.detailStrike ?? ''}`}>{displayText(c.before ?? '')}</p>
           ) : (
-            <EditDiffBlock before={c.before ?? ''} after={c.quote ?? ''} />
+            <EditDiffBlock before={displayText(c.before ?? '')} after={displayText(c.quote ?? '')} />
           )
         ) : (
           <>
-            <p className={styles.detailPre ?? ''}>{n!.finding}</p>
+            <p className={styles.detailPre ?? ''}>{displayText(n!.finding)}</p>
             {n!.suggestion ? (
               <>
                 <p className={styles.detailLabel ?? ''}>Đề xuất</p>
-                <p className={styles.detailPre ?? ''}>{n!.suggestion}</p>
+                <p className={styles.detailPre ?? ''}>{displayText(n!.suggestion)}</p>
               </>
             ) : null}
           </>
@@ -2642,25 +2699,52 @@ function AnnotationDetailPanel({
         {c?.reason ? (
           <>
             <p className={styles.detailLabel ?? ''}>Lý do</p>
-            <p className={styles.detailPre ?? ''}>{c.reason}</p>
+            <p className={styles.detailPre ?? ''}>{displayText(c.reason)}</p>
           </>
         ) : null}
         {docRefs.length > 0 ? (
           <>
             <p className={styles.detailLabel ?? ''}>Bằng chứng viện dẫn</p>
-            {docRefs.map((ref, i) => (
-              <button key={i} type="button" onClick={() => onOpenRef?.(ref, i)}>
-                {refLabel(ref)}
-              </button>
-            ))}
+            <div className={styles.refList ?? ''}>
+              {docRefs.map((ref, i) => (
+                <button
+                  key={i}
+                  type="button"
+                  className={styles.refButton ?? ''}
+                  title="Mở đoạn được viện dẫn trong tài liệu"
+                  onClick={() => onOpenRef?.(ref, i)}
+                >
+                  <span className={styles.refQuoteMark ?? ''} aria-hidden="true">❝</span>
+                  <span className={styles.refText ?? ''}>{refLabel(ref)}</span>
+                </button>
+              ))}
+            </div>
           </>
         ) : null}
         {error ? <p className={styles.error}>{error}</p> : null}
       </div>
       <div className={styles.modalActions}>
-        <button type="button" disabled={busy} onClick={onDismiss}>
-          {busy ? 'Đang lưu...' : dismissed ? 'Hoàn tác' : 'Bỏ'}
-        </button>
+        {editing ? (
+          <>
+            <button type="button" disabled={busy || !editText.trim()} onClick={() => void saveEdit()}>
+              {busy ? 'Đang lưu...' : 'Lưu'}
+            </button>
+            <button type="button" disabled={busy} onClick={() => setEditing(false)}>
+              Hủy
+            </button>
+          </>
+        ) : (
+          <>
+            {onSaveEdit && !dismissed ? (
+              <button type="button" disabled={busy} onClick={() => { setEditText(c?.quote ?? ''); setEditing(true); }}>
+                Sửa
+              </button>
+            ) : null}
+            <button type="button" disabled={busy} onClick={onDismiss}>
+              {busy ? 'Đang lưu...' : dismissed ? 'Hoàn tác' : 'Bỏ'}
+            </button>
+          </>
+        )}
       </div>
     </aside>
   );

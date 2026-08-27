@@ -850,8 +850,12 @@
    bỏ đi — màu đỏ/xanh + dấu "− "/"+ " tự nói rõ vế nào là chữ cũ/chữ mới, gạch
    ngang cả một câu dài không đọc nổi (phản hồi người dùng). */
 .detailLabel {
+  margin: 12px 0 4px;
+  font-size: 10.5px;
   font-weight: 700;
-  margin-right: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-soft, #4b5563);
 }
 /* wp-doc-redline-nondestructive: đoạn "Xoá" trong panel chi tiết (AnnotationDetailPanel)
    và khối "Nguyên bản" khi EditDiffBlock rơi về layout hai khối cũ — gạch
@@ -866,12 +870,83 @@
   border: 1px solid var(--border, #e1e5eb);
   border-radius: 6px;
   background: var(--bg-panel, #fff);
-  font-size: 10.5px;
+  font-size: 12px;
   line-height: 1.5;
   white-space: pre-wrap;
   word-break: break-word;
   max-height: 220px;
   overflow: auto;
+}
+
+/* Nhãn "Đã chỉnh" cạnh tiêu đề panel: nội dung đề xuất không còn là bản của
+   agent — người đọc phải thấy điều đó trước cả khi đọc diff. */
+.badgeEdited {
+  margin-left: 8px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  vertical-align: 2px;
+  color: var(--accent, #0066b3);
+  background: color-mix(in srgb, var(--accent, #0066b3) 12%, transparent);
+}
+
+/* Textarea chỉnh nội dung đề xuất (chế độ Sửa của panel). `font: inherit` +
+   cỡ chữ khớp .detailPre để chữ không nhảy cỡ khi chuyển đọc ↔ sửa. */
+.editArea {
+  width: 100%;
+  min-height: 160px;
+  resize: vertical;
+  padding: 8px 10px;
+  border: 1px solid var(--border, #e1e5eb);
+  border-radius: 8px;
+  background: var(--bg-panel, #fff);
+  color: var(--text, #1a1a1a);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* Danh sách "Bằng chứng viện dẫn": mỗi đoạn là một nút-trích-dẫn full-width,
+   dấu ❝ màu nhấn ăn khớp với kiểu gạch chấm xanh của chính vùng viện dẫn
+   trong tài liệu (HL_REF_INLINE_STYLE) — cùng một thứ, hai chỗ hiện. */
+.refList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+}
+.refButton {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid var(--border, #e1e5eb);
+  border-radius: 8px;
+  background: var(--bg-subtle, #f5f6f8);
+  color: var(--text, #1a1a1a);
+  text-align: left;
+  font-size: 11.5px;
+  line-height: 1.45;
+  cursor: pointer;
+}
+.refButton:hover {
+  border-color: color-mix(in srgb, var(--accent, #0066b3) 55%, var(--border, #e1e5eb));
+  background: color-mix(in srgb, var(--accent, #0066b3) 6%, var(--bg-subtle, #f5f6f8));
+}
+.refQuoteMark {
+  flex: none;
+  color: var(--accent, #0066b3);
+  font-size: 13px;
+  line-height: 1.2;
+}
+.refText {
+  min-width: 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 /* ── WP3 — sơ đồ mermaid trong cột tài liệu ─────────────────────────────────

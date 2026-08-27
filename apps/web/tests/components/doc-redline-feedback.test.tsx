@@ -6,16 +6,13 @@
 // `before`, không phải `quote` — TEXT phải chứa đúng câu `before`, và một câu
 // KHÁC (không trùng agent-1) để các test "tạo annotation người dùng" bôi đen.
 //
-// Rail đã bỏ hẳn: mọi hành động (Bỏ/Hoàn tác một chỗ sửa) giờ nằm trong
-// `AnnotationDetailPanel` mở ra khi bấm mark, không còn trong thẻ
+// Rail đã bỏ hẳn: mọi hành động (Bỏ/Hoàn tác, Sửa nội dung đề xuất) giờ nằm
+// trong `AnnotationDetailPanel` mở ra khi bấm mark, không còn trong thẻ
 // `[data-change-item]`. Tính năng "sửa TRỰC TIẾP nội dung quote của một chỗ
-// sửa agent đã có, giữ initialQuote làm baseline" (nút "Sửa"/ô "Nội dung sửa"
-// trong thẻ) đã KHÔNG CÒN ĐƯỜNG NÀO tới nó trong kiến trúc mới — đó là một
-// thao tác "sửa-tại-chỗ-trên-thẻ" của rail, và rail đã bỏ; sửa một câu agent
-// đã đề xuất giờ chỉ có thể làm qua "Sửa đoạn chọn" (tạo MỘT annotation MỚI
-// của người dùng, neo trên chữ gốc) — khác hẳn ngữ nghĩa "giữ baseline agent,
-// đổi quote tại chỗ". Bài test tương ứng ("keeps the agent baseline…") vì vậy
-// đã XOÁ thay vì viết lại một thứ không tồn tại.
+// sửa agent, giữ initialQuote làm baseline" từng mất đường tới nó khi rail bị
+// bỏ, nay QUAY LẠI dưới dạng non-destructive trong panel (nút "Sửa" →
+// textarea → `editChangeQuote`): chỉ ghi changes.json (status 'edited' +
+// event 'edit'), tài liệu .md không bao giờ bị đụng.
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/react';
 
@@ -192,6 +189,42 @@ describe('Docs Review annotations and confirmation', () => {
     await waitFor(() => expect(latestSidecarWrite().events.at(-1)).toMatchObject({ type: 'restore', actor: 'user' }));
     expect(latestSidecarWrite().annotations[0]).toMatchObject({ status: 'active' });
     expectNoMdWrite();
+  });
+
+  it('sửa nội dung đề xuất của agent qua panel: status edited + event edit, giữ initialQuote, không đụng .md', async () => {
+    const { container, baseElement } = render(<DocRedlinePreview projectId="p1" file={FILE} />);
+    await waitFor(() => expect(container.querySelector('mark[data-change-id="agent-1"]')).not.toBeNull());
+    fireEvent.click(container.querySelector('mark[data-change-id="agent-1"]')!);
+
+    const dialog = await waitFor(() => {
+      const el = baseElement.querySelector('[role="dialog"]');
+      expect(el, 'phải mở panel chi tiết của agent-1').not.toBeNull();
+      return el as HTMLElement;
+    });
+    const btn = (label: string) =>
+      Array.from(dialog.querySelectorAll('button')).find((b) => b.textContent === label)!;
+    fireEvent.click(btn('Sửa'));
+
+    const textarea = dialog.querySelector<HTMLTextAreaElement>('textarea[aria-label="Nội dung sửa"]');
+    expect(textarea, 'bấm Sửa phải mở textarea nội dung đề xuất').not.toBeNull();
+    // Prefill = quote HIỆN TẠI (nguyên văn, không normalize <br>) — người dùng
+    // chỉnh tiếp từ đề xuất của agent chứ không gõ lại từ đầu.
+    expect(textarea!.value).toBe('Người dùng nhập OTP.');
+    fireEvent.change(textarea!, { target: { value: 'Người dùng nhập mã OTP 6 số.' } });
+    fireEvent.click(btn('Lưu'));
+
+    await waitFor(() => expect(latestSidecarWrite().events.at(-1)).toMatchObject({ type: 'edit', actor: 'user' }));
+    expect(latestSidecarWrite().annotations[0]).toMatchObject({
+      status: 'edited',
+      quote: 'Người dùng nhập mã OTP 6 số.',
+      // Baseline agent giữ nguyên để feedback so bản agent ↔ bản người dùng;
+      // `before` không đổi nên vùng bôi không đổi chỗ.
+      initialQuote: 'Người dùng nhập OTP.',
+      before: 'Người dùng nhập mã xác thực.',
+    });
+    expectNoMdWrite();
+    // Lưu thành công thì thoát chế độ sửa — panel quay về diff với nội dung mới.
+    await waitFor(() => expect(dialog.querySelector('textarea')).toBeNull());
   });
 
   it('does not expose workflow completion inside an individual document preview', async () => {
