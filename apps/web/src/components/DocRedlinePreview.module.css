@@ -966,6 +966,130 @@
   text-decoration: line-through;
   opacity: .75;
 }
+/* Dòng dẫn cho panel của change SƠ ĐỒ — panel không lặp lại sơ đồ (đang
+   render trong tài liệu), chỉ trỏ người đọc về đó. */
+.detailHint {
+  margin: 2px 0 0;
+  color: var(--text-muted, #6b7280);
+  font-size: 11.5px;
+  font-style: italic;
+  line-height: 1.5;
+}
+
+/* Danh sách TỪNG chỗ sửa của một change sơ đồ (findings từ ux-review.json):
+   mỗi mục một thẻ — badge phép sửa (màu theo hệ add/edit/del của vùng bôi)
+   + mức độ, tiêu đề đậm, lý do, dòng đề xuất. */
+.findingList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.findingItem {
+  border: 1px solid var(--border, #e1e5eb);
+  border-radius: 8px;
+  background: var(--bg-panel, #fff);
+}
+/* Thẻ finding là NÚT (nối panel ↔ node trên sơ đồ): bấm để tô node tương
+   ứng, bấm lại để bỏ. Trạng thái đang chọn viền màu nhấn — cùng ngôn ngữ
+   hlActive của vùng bôi. */
+.findingButton {
+  display: block;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.findingButton:disabled {
+  cursor: default;
+}
+.findingItem:has(.findingButton:hover:not(:disabled)) {
+  border-color: color-mix(in srgb, var(--accent, #0066b3) 55%, var(--border, #e1e5eb));
+}
+.findingItemActive {
+  border-color: var(--accent, #0066b3);
+  background: var(--bg-subtle, #f5f6f8);
+  background: color-mix(in srgb, var(--accent, #0066b3) 6%, var(--bg-panel, #fff));
+  box-shadow: 0 0 0 1px var(--accent, #0066b3) inset;
+}
+.findingHead {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+.findingChange,
+.findingSeverity {
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--border, #e1e5eb);
+  background: var(--bg-subtle, #f5f6f8);
+  color: var(--text-soft, #4b5563);
+  font-size: 10px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.findingChangeAdded {
+  color: #166534;
+  border-color: #bbe3c8;
+  background: #eaf7ee;
+}
+.findingChangeModified {
+  color: #854d0e;
+  border-color: #f0dfa8;
+  background: #fdf6e3;
+}
+.findingChangeRemoved {
+  color: #b91c1c;
+  border-color: #f3c2c2;
+  background: #fdecec;
+}
+.findingTitle {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.45;
+}
+.findingReason {
+  margin: 3px 0 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text, #1a1a1a);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.findingRec {
+  margin: 4px 0 0;
+  padding: 4px 8px;
+  border-left: 3px solid var(--accent, #0066b3);
+  border-radius: 0 6px 6px 0;
+  background: var(--bg-subtle, #f5f6f8);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-soft, #4b5563);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Node MERMAID đang được finding chọn tô: viền màu nhấn dày đè lên mọi màu
+   thêm/sửa/bỏ có sẵn của node (!important vì mermaid inline style trên shape).
+   Drawio không cần class này — DrawioViewer tự tô qua highlightCells. */
+.diagramNodeActive rect,
+.diagramNodeActive polygon,
+.diagramNodeActive circle,
+.diagramNodeActive ellipse,
+.diagramNodeActive path {
+  stroke: var(--accent, #0066b3) !important;
+  stroke-width: 3px !important;
+}
 .detailPre {
   margin: 2px 0 0;
   padding: 6px 8px;

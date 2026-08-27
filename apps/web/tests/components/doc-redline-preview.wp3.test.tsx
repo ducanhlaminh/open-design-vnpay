@@ -27,10 +27,16 @@ import { cleanup, fireEvent, render, waitFor, within } from '@testing-library/re
 // những test khác (chúng chỉ đọc `textContent`/`data-testid`, không đếm số
 // nút trong khối này).
 vi.mock('../../src/components/MermaidDiagram', () => ({
+  // Hai <g id="flowchart-…"> giả theo đúng khuôn id DOM mermaid sinh cho node
+  // (`flowchart-<nodeId>-<n>`) — cho test "panel tô node theo finding".
   MermaidDiagram: ({ code }: { code: string }) => (
     <div data-testid="mermaid-diagram">
       <button type="button" aria-label="Zoom in">+</button>
-      <svg data-testid="mermaid-svg" viewBox="0 0 320 180"><text>{code}</text></svg>
+      <svg data-testid="mermaid-svg" viewBox="0 0 320 180">
+        <text>{code}</text>
+        <g id="flowchart-B-1" />
+        <g id="flowchart-C-2" />
+      </svg>
     </div>
   ),
 }));
@@ -78,11 +84,38 @@ const DIAGRAM_CHANGES = JSON.stringify([
   },
 ]);
 
+// Findings TỪNG chỗ sửa của luồng f1 — cùng file `flows/f1/ux-review.json` mà
+// `rule_id` của fd1 trỏ tới; panel sơ đồ liệt kê danh sách này (mỗi chỗ sửa
+// một lý do riêng, thay vì một reason gộp).
+const DIAGRAM_UX_REVIEW = JSON.stringify({
+  flowId: 'f1',
+  verdict: 'needs-improvement',
+  summary: 'Luồng thiếu bước chọn gói cước.',
+  findings: [
+    {
+      id: 'u1', severity: 'major', change: 'added',
+      title: 'Thiếu bước chọn gói cước',
+      reason: 'Người dùng bị đẩy thẳng tới xác nhận mà chưa chọn gói.',
+      recommendation: 'Thêm màn chọn gói cước trước bước Xác nhận.',
+      cells: { proposed: ['C'] },
+    },
+    {
+      id: 'u2', severity: 'minor', change: 'modified',
+      title: 'Nhãn nút chưa nói hành động',
+      reason: 'Nút "OK" không cho biết chuyện gì xảy ra tiếp.',
+      cells: { asIs: ['B'], proposed: ['B'] },
+    },
+  ],
+});
+
 function mockDiagramProject() {
   vi.doMock('../../src/providers/registry', () => ({
     fetchProjectFileText: async (_projectId: string, name: string) => {
       if (name.endsWith('.changes.json')) return DIAGRAM_CHANGES;
       if (name.endsWith('.notes.json')) return null;
+      // Panel sơ đồ fetch `<workflowPrefix>/flows/f1/ux-review.json` (flows/
+      // ở GỐC workflow, không dưới review/ — cùng cách ghép DrawioDiagramHost).
+      if (name === 'docs-review/flows/f1/ux-review.json') return DIAGRAM_UX_REVIEW;
       return DIAGRAM_EDITED;
     },
     projectRawUrl: (projectId: string, filePath: string) => `/api/projects/${projectId}/raw/${filePath}`,
@@ -516,7 +549,8 @@ describe('DocRedlinePreview — N6 (wp3b.yaml): nút zoom/pan của MermaidDiagr
     fireEvent.click(zoomBtn);
 
     // Bấm nút zoom KHÔNG được chọn change fd1 — host vẫn không nổi hlActive,
-    // và modal chi tiết KHÔNG mở (enrichment không có modal).
+    // và panel chi tiết KHÔNG mở (đó là cú bấm điều khiển sơ đồ, không phải
+    // cú bấm CHỌN).
     expect(host.className).not.toMatch(/hlActive/i);
     expect(container.querySelector('[role="dialog"]')).toBeNull();
 
@@ -527,9 +561,52 @@ describe('DocRedlinePreview — N6 (wp3b.yaml): nút zoom/pan của MermaidDiagr
     await waitFor(() => {
       expect(host.className).toMatch(/hlActive/i);
     });
-    // Nhưng vẫn không có modal — enrichment chỉ được CHỌN (nháy sáng), không
-    // có gì để "xem chi tiết" ngoài chính sơ đồ đang hiện.
-    expect(container.querySelector('[role="dialog"]')).toBeNull();
+    // Phản hồi 27/08/2026: sơ đồ nay CÓ panel chi tiết — chỗ duy nhất đọc
+    // lý do, Bỏ/Hoàn tác và bình luận cho change sơ đồ. Thân panel KHÔNG lặp
+    // lại khối rào mermaid (sơ đồ đã render trong tài liệu) và KHÔNG có nút
+    // "Chỉnh đề xuất" (sửa tay cả khối rào là footgun).
+    const dialog = await waitFor(() => {
+      const found = container.querySelector<HTMLElement>('[role="dialog"]');
+      expect(found, 'bấm host sơ đồ phải mở panel chi tiết').not.toBeNull();
+      return found as HTMLElement;
+    });
+    expect(dialog.textContent).toContain('Sơ đồ đề xuất');
+    expect(dialog.textContent).toContain(DIAGRAM_REASON);
+    expect(dialog.textContent).not.toContain('flowchart TD');
+    expect(Array.from(dialog.querySelectorAll('button')).some((b) => b.textContent?.includes('Chỉnh đề xuất'))).toBe(false);
+    // Bỏ/Hoàn tác và ô bình luận vẫn đầy đủ như mọi change khác.
+    expect(Array.from(dialog.querySelectorAll('button')).some((b) => b.textContent === 'Bỏ')).toBe(true);
+    expect(dialog.querySelector('textarea[aria-label="Bình luận mới"]')).not.toBeNull();
+
+    // TỪNG chỗ sửa + lý do riêng (findings của flows/f1/ux-review.json, fetch
+    // lazy khi panel mở) — mỗi finding hiện badge phép sửa, tiêu đề, lý do,
+    // và dòng đề xuất nếu có.
+    await waitFor(() => expect(dialog.textContent).toContain('Các chỗ sửa trong sơ đồ (2)'));
+    expect(dialog.textContent).toContain('Thiếu bước chọn gói cước');
+    expect(dialog.textContent).toContain('Người dùng bị đẩy thẳng tới xác nhận mà chưa chọn gói.');
+    expect(dialog.textContent).toContain('Đề xuất: Thêm màn chọn gói cước trước bước Xác nhận.');
+    expect(dialog.textContent).toContain('Thêm mới');
+    expect(dialog.textContent).toContain('Nhãn nút chưa nói hành động');
+    expect(dialog.textContent).toContain('Sửa đổi');
+
+    // Nối panel ↔ node: chọn finding u1 (cells.proposed=['C']) tô node C trên
+    // SVG mermaid (class diagramNodeActive theo id DOM `flowchart-C-…`), node
+    // B không dính; bấm lại thẻ đang chọn thì bỏ tô.
+    const findingBtn = Array.from(dialog.querySelectorAll('button')).find((b) =>
+      b.textContent?.includes('Thiếu bước chọn gói cước'),
+    )!;
+    expect(findingBtn, 'thẻ finding phải là nút bấm được').toBeTruthy();
+    fireEvent.click(findingBtn);
+    await waitFor(() => {
+      expect(container.querySelector('#flowchart-C-2')?.getAttribute('class') ?? '').toContain('diagramNodeActive');
+    });
+    expect(container.querySelector('#flowchart-B-1')?.getAttribute('class') ?? '').not.toContain('diagramNodeActive');
+    expect(findingBtn.getAttribute('aria-pressed')).toBe('true');
+    fireEvent.click(findingBtn);
+    await waitFor(() => {
+      expect(container.querySelector('#flowchart-C-2')?.getAttribute('class') ?? '').not.toContain('diagramNodeActive');
+    });
+    expect(findingBtn.getAttribute('aria-pressed')).toBe('false');
   });
 });
 

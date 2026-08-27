@@ -46,6 +46,7 @@ import { wordDiff } from '../runtime/word-diff';
 import { Icon } from './Icon';
 import { MermaidDiagram } from './MermaidDiagram';
 import { DrawioViewer } from './DrawioViewer';
+import { parseUxReview, SEVERITY_LABEL as UX_SEVERITY_LABEL, CHANGE_LABEL as UX_CHANGE_LABEL, type UxFinding } from './FlowUxReviewPreview';
 import { DocRedlineModeControls } from './DocRedlineModeControls';
 import { DocRedlineNavigation } from './DocRedlineNavigation';
 import { createRedlineDocumentIndex } from './redline-document';
@@ -964,6 +965,8 @@ function DrawioDiagramHost({
   changeId,
   diagramView,
   setDiagramView,
+  highlightCells,
+  onCellClick,
 }: {
   projectId: string;
   workflowPrefix: string;
@@ -971,6 +974,11 @@ function DrawioDiagramHost({
   changeId: string;
   diagramView: Record<string, 'proposed' | 'original'>;
   setDiagramView: Dispatch<SetStateAction<Record<string, 'proposed' | 'original'>>>;
+  /** Nối panel ↔ sơ đồ (xem `activeDiagramFinding` trong DocRedlinePreview):
+   *  cell của finding đang chọn để DrawioViewer tô + cuộn tới; bấm cell trên
+   *  sơ đồ báo ngược lên qua `onCellClick`. */
+  highlightCells?: readonly string[];
+  onCellClick?: (cellId: string | null) => void;
 }) {
   const drawioPath = `${workflowPrefix}/flows/${flowId}/proposed.drawio`;
   const [state, setState] = useState<
@@ -1046,7 +1054,7 @@ function DrawioDiagramHost({
         </button>
       </div>
       <div className={styles.drawioFrame ?? ''}>
-        <DrawioViewer xml={state.xml} page={page} />
+        <DrawioViewer xml={state.xml} page={page} highlightCells={highlightCells} onCellClick={onCellClick} />
       </div>
     </>
   );
@@ -1126,6 +1134,18 @@ export function DocRedlinePreview({
   // đọc được trong lúc panel mở). Xem `openAnnotationDetail`/
   // `AnnotationDetailPanel`.
   const [detailPanel, setDetailPanel] = useState<{ id: string } | null>(null);
+  // Panel của change SƠ ĐỒ liệt kê TỪNG chỗ sửa + lý do (phản hồi 27/08/2026:
+  // một sơ đồ thường thêm/sửa/xoá nhiều node, một `reason` gộp không kể nổi) —
+  // dữ liệu là `findings` của chính file `flows/<id>/ux-review.json` mà
+  // `rule_id` của change trỏ tới (daemon docs-review-enrich ghi cả hai từ một
+  // lượt rà soát, xem enrich). Cache theo rule_id: `undefined` = chưa fetch
+  // (đang tải), `null` = không có/không đọc được (panel rơi về reason gộp).
+  const [uxFindingsByRule, setUxFindingsByRule] = useState<Record<string, UxFinding[] | null>>({});
+  // Finding sơ đồ đang ĐƯỢC CHỌN trong panel — nối hai chiều panel ↔ node:
+  // chọn thẻ trong panel thì node tương ứng trên sơ đồ được tô (drawio qua
+  // `highlightCells`, mermaid qua effect gắn class lên SVG); bấm node trên
+  // sơ đồ drawio thì thẻ finding tương ứng sáng lại trong panel.
+  const [activeDiagramFinding, setActiveDiagramFinding] = useState<{ changeId: string; findingId: string } | null>(null);
   const printArticleRef = useRef<HTMLElement | null>(null);
   const [printBusy, setPrintBusy] = useState(false);
 
@@ -1182,6 +1202,37 @@ export function DocRedlinePreview({
     [changesState, documentIndex],
   );
   const notes = useMemo(() => documentIndex.sort(notesState), [documentIndex, notesState]);
+
+  // Nạp findings cho panel sơ đồ ĐÚNG LÚC panel mở tới một change sơ đồ (lazy
+  // theo rule_id, không prefetch cả trang): người đọc chỉ trả giá một lần
+  // fetch cho luồng họ thật sự bấm vào. Path ghép `${workflowPrefix}/` y như
+  // DrawioDiagramHost ghép proposed.drawio — flows/ nằm ở gốc workflow, KHÔNG
+  // dưới review/. (Nằm SAU khai báo `changes`/`notes` — effect đọc cả hai.)
+  useEffect(() => {
+    if (!detailPanel) return;
+    const target = resolveAnnotationDetail(detailPanel.id, changes, notes);
+    if (!target || target.kind !== 'change' || target.change.kind !== 'flow-diagram') return;
+    const ruleId = target.change.rule_id ?? '';
+    const flowId = /^flows\/([^/]+)\/ux-review\.json$/.exec(ruleId)?.[1];
+    if (!flowId || uxFindingsByRule[ruleId] !== undefined) return;
+    let cancelled = false;
+    void (async () => {
+      let findings: UxFinding[] | null = null;
+      try {
+        const raw = await fetchProjectFileText(projectId, `${workflowPrefix}/${ruleId}`);
+        const review = raw ? parseUxReview(raw, flowId) : null;
+        findings = review && review.findings.length > 0 ? review.findings : null;
+      } catch {
+        findings = null;
+      }
+      if (!cancelled) setUxFindingsByRule((prev) => ({ ...prev, [ruleId]: findings }));
+    })();
+    return () => { cancelled = true; };
+    // uxFindingsByRule đọc trong effect nhưng KHÔNG nằm trong deps: nó chỉ làm
+    // guard chống fetch lặp — thêm vào deps sẽ chạy lại effect ngay sau chính
+    // setState của nó (vô hại nhưng vô nghĩa).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detailPanel, changes, notes, projectId, workflowPrefix]);
   const events = useMemo(
     () => (changesState.status === 'ok' ? changesState.events : []),
     [changesState],
@@ -1454,6 +1505,78 @@ export function DocRedlinePreview({
     return extractMermaidFenceBody(owner?.before) ?? m.code;
   }
 
+  /** Findings đã nạp cho một change sơ đồ (xem `uxFindingsByRule`). */
+  const diagramFindingsFor = (change: DocRedlineChange): UxFinding[] | null | undefined =>
+    change.rule_id ? uxFindingsByRule[change.rule_id] : null;
+
+  /** Id node/cell của finding theo ĐÚNG bản sơ đồ đang xem: Gốc → cells.asIs,
+   *  Đề xuất → cells.proposed (fallback asIs — node chỉ-sửa giữ nguyên id ở
+   *  cả hai trang, cùng quy ước với FlowUxReviewPreview.highlightCells). */
+  function findingCellsForView(f: UxFinding, changeId: string): string[] {
+    if (!f.cells) return [];
+    const view = diagramView[changeId] ?? 'proposed';
+    return view === 'original' ? [...(f.cells.asIs ?? [])] : [...(f.cells.proposed ?? f.cells.asIs ?? [])];
+  }
+
+  function toggleDiagramFinding(changeId: string, findingId: string) {
+    setActiveDiagramFinding((prev) =>
+      prev && prev.changeId === changeId && prev.findingId === findingId ? null : { changeId, findingId });
+  }
+
+  /** Chiều ngược drawio → panel: bấm một node trên sơ đồ chọn thẻ finding
+   *  chứa node đó (ưu tiên khớp theo bản đang xem, rồi tới bất kỳ). */
+  function selectFindingByCell(changeId: string, cellId: string | null) {
+    if (!cellId) return;
+    const change = changes.find((c) => c.id === changeId);
+    const findings = change ? diagramFindingsFor(change) : null;
+    if (!Array.isArray(findings)) return;
+    const f = findings.find((x) => findingCellsForView(x, changeId).includes(cellId))
+      ?? findings.find((x) => [...(x.cells?.asIs ?? []), ...(x.cells?.proposed ?? [])].includes(cellId));
+    if (!f) return;
+    setSelectedId(changeId);
+    setDetailPanel({ id: changeId });
+    setActiveDiagramFinding({ changeId, findingId: f.id });
+  }
+
+  // Panel đóng/chuyển sang mục khác thì bỏ chọn finding — không để sơ đồ giữ
+  // vệt tô của một panel đã không còn hiện.
+  useEffect(() => {
+    setActiveDiagramFinding((prev) => (prev && prev.changeId !== detailPanel?.id ? null : prev));
+  }, [detailPanel?.id]);
+
+  // Tô node MERMAID theo finding đang chọn: gắn class lên các <g> node của SVG
+  // đã render (mermaid đặt id DOM dạng `flowchart-<nodeId>-<n>`), cuộn node
+  // đầu tiên vào giữa. Drawio KHÔNG đi đường này — DrawioViewer nhận
+  // `highlightCells` (tự tô + tự cuộn), xem chỗ render drawioMounts.
+  useEffect(() => {
+    const container = docColRef.current;
+    const activeClass = (styles.diagramNodeActive ?? '').trim();
+    if (!container || !activeClass) return;
+    container.querySelectorAll(`.${activeClass}`).forEach((el) => el.classList.remove(activeClass));
+    if (!activeDiagramFinding) return;
+    const change = changes.find((c) => c.id === activeDiagramFinding.changeId);
+    if (!change) return;
+    const findings = diagramFindingsFor(change);
+    const finding = Array.isArray(findings) ? findings.find((x) => x.id === activeDiagramFinding.findingId) : undefined;
+    if (!finding) return;
+    const ids = findingCellsForView(finding, change.id);
+    if (ids.length === 0) return;
+    let first: Element | null = null;
+    for (const host of marksFor(change.id, { hostOnly: true })) {
+      for (const el of Array.from(host.querySelectorAll<SVGElement>('svg [id]'))) {
+        const nodeId = /^flowchart-(.+)-\d+$/.exec(el.id)?.[1];
+        if (nodeId && ids.includes(nodeId)) {
+          el.classList.add(activeClass);
+          first ??= el;
+        }
+      }
+    }
+    first?.scrollIntoView({ block: 'center', behavior: 'auto' });
+    // marksFor/diagramFindingsFor là hàm component đọc DOM/state sống — deps
+    // theo dữ liệu (finding chọn, bản xem, docHtml, changes, findings đã nạp).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeDiagramFinding, diagramView, docHtml, changes, uxFindingsByRule]);
+
   // Block descriptors do not alter the HTML structure. They identify the
   // owning p/li/table-row/table/heading so additions and multi-line matches can be
   // tinted as one safe block without ever wrapping a mark across block tags.
@@ -1676,8 +1799,11 @@ export function DocRedlinePreview({
    *  change/note chủ. Vùng VIỆN DẪN (`ref:<ownerId>:<i>`) quy về chính thẻ đã
    *  viện dẫn nó — người đọc bấm vào một đoạn gạch chấm là đang hỏi "ai nhắc
    *  tới chỗ này?", nên câu trả lời là thẻ chủ, không phải một cửa sổ riêng
-   *  cho tham chiếu. Enrichment (sơ đồ/bảng thành phần) không có panel — bấm
-   *  vào đó không làm gì, vì nó không thuộc hệ đề xuất/duyệt. */
+   *  cho tham chiếu. Bảng thành phần (enrichment) không có panel — nó đã hiện
+   *  nguyên vẹn inline và không có gì thêm để kể; sơ đồ (`flow-diagram`) thì
+   *  CÓ (phản hồi 27/08/2026): panel là chỗ duy nhất đọc lý do/nguồn gốc, bấm
+   *  Bỏ/Hoàn tác và bình luận cho sơ đồ — thân panel không lặp lại sơ đồ (đang
+   *  hiện ngay trong tài liệu với toggle Gốc/Đề xuất). */
   function openAnnotationDetail(id: string) {
     const ownerId = id.startsWith(REF_ID_PREFIX)
       ? // bỏ tiền tố rồi cắt hậu tố `:<số>`. KHÔNG dùng split(':') — ownerId của
@@ -1686,11 +1812,10 @@ export function DocRedlinePreview({
       : id;
     const target = resolveAnnotationDetail(ownerId, changes, notes);
     if (!target) return;
-    // Luôn CHỌN (nháy sáng/cuộn tới) mark được bấm, kể cả sơ đồ/bảng — chỉ
-    // riêng PANEL chi tiết là không mở cho hai loại nội dung làm giàu này
-    // (chúng đã có tương tác riêng: toggle Gốc/Đề xuất, bảng inline).
+    // Luôn CHỌN (nháy sáng/cuộn tới) mark được bấm, kể cả bảng — chỉ riêng
+    // PANEL chi tiết là không mở cho bảng thành phần.
     setSelectedId(ownerId);
-    if (target.kind === 'change' && (target.change.kind === 'flow-diagram' || isComponentTableChange(target.change))) return;
+    if (target.kind === 'change' && isComponentTableChange(target.change)) return;
     setDetailPanel({ id: ownerId });
   }
 
@@ -2161,15 +2286,13 @@ export function DocRedlinePreview({
     if (!id) return;
     selectFromList(id);
     // Panel chi tiết đang mở thì phải ĐI THEO mục vừa điều hướng tới — không
-    // thì Trước/Sau cuộn tài liệu mà panel vẫn kể chuyện của mục cũ. Mục
-    // enrichment (sơ đồ/bảng thành phần) không có nội dung panel (xem
-    // openAnnotationDetail) — điều hướng tới nó thì ĐÓNG panel thay vì để
-    // panel đứng im với nội dung sai.
+    // thì Trước/Sau cuộn tài liệu mà panel vẫn kể chuyện của mục cũ. Bảng
+    // thành phần không có nội dung panel (xem openAnnotationDetail; sơ đồ thì
+    // CÓ từ 27/08/2026) — điều hướng tới nó thì ĐÓNG panel thay vì để panel
+    // đứng im với nội dung sai.
     if (detailPanel) {
       const target = resolveAnnotationDetail(id, changes, notes);
-      const blocked =
-        target?.kind === 'change' &&
-        (target.change.kind === 'flow-diagram' || isComponentTableChange(target.change));
+      const blocked = target?.kind === 'change' && isComponentTableChange(target.change);
       setDetailPanel(target && !blocked ? { id } : null);
     }
   }
@@ -2576,8 +2699,20 @@ export function DocRedlinePreview({
                 {/* Sơ đồ draw.io sống, portal vào host chèn NGAY SAU đoạn
                     marker (xem effect dựng drawioMounts + docblock
                     DrawioDiagramHost ở trên). */}
-                {drawioMounts.map((m, i) =>
-                  createPortal(
+                {drawioMounts.map((m, i) => {
+                  // Nối panel ↔ node: cell của finding đang chọn (nếu thuộc
+                  // đúng change này) xuống DrawioViewer để tô + cuộn tới.
+                  const activeF =
+                    activeDiagramFinding && activeDiagramFinding.changeId === m.changeId
+                      ? (() => {
+                          const change = changes.find((c) => c.id === m.changeId);
+                          const findings = change ? diagramFindingsFor(change) : null;
+                          return Array.isArray(findings)
+                            ? findings.find((x) => x.id === activeDiagramFinding.findingId)
+                            : undefined;
+                        })()
+                      : undefined;
+                  return createPortal(
                     <DrawioDiagramHost
                       key={m.changeId}
                       projectId={projectId}
@@ -2586,11 +2721,13 @@ export function DocRedlinePreview({
                       changeId={m.changeId}
                       diagramView={diagramView}
                       setDiagramView={setDiagramView}
+                      highlightCells={activeF ? findingCellsForView(activeF, m.changeId) : undefined}
+                      onCellClick={(cellId) => selectFindingByCell(m.changeId, cellId)}
                     />,
                     m.host,
                     `drawio-${i}`,
-                  ),
-                )}
+                  );
+                })}
               </div>
             {detailPanel ? (() => {
               const target = resolveAnnotationDetail(detailPanel.id, changes, notes);
@@ -2610,11 +2747,36 @@ export function DocRedlinePreview({
                   onClose={() => setDetailPanel(null)}
                   onDismiss={() => { if (isChange) void dismissChange(target.change); else void dismissNote(target.note); }}
                   onOpenRef={(ref, i) => openRefModal(`${REF_ID_PREFIX}${id}:${i}`, ref)}
-                  onSaveEdit={isChange && changeOp(target.change) !== 'del'
-                    ? (text) => editChangeQuote(target.change, text)
-                    : undefined}
+                  onSaveEdit={
+                    // Sơ đồ: KHÔNG cho sửa quote qua textarea — quote là cả
+                    // khối rào mermaid/marker draw.io, sửa tay ở đây dễ làm
+                    // hỏng khối mà không có preview nào đỡ.
+                    isChange && changeOp(target.change) !== 'del' && target.change.kind !== 'flow-diagram'
+                      ? (text) => editChangeQuote(target.change, text)
+                      : undefined
+                  }
                   onAddComment={(text) => addAnnotationComment(target, text)}
                   onDeleteComment={(commentId) => deleteAnnotationComment(target, commentId)}
+                  diagramFindings={
+                    isChange && target.change.kind === 'flow-diagram'
+                      ? (() => {
+                          const ruleId = target.change.rule_id ?? '';
+                          if (!/^flows\/[^/]+\/ux-review\.json$/.test(ruleId)) return 'none';
+                          const cached = uxFindingsByRule[ruleId];
+                          return cached === undefined ? 'loading' : cached ?? 'none';
+                        })()
+                      : undefined
+                  }
+                  activeFindingId={
+                    isChange && activeDiagramFinding?.changeId === target.change.id
+                      ? activeDiagramFinding.findingId
+                      : null
+                  }
+                  onSelectFinding={
+                    isChange && target.change.kind === 'flow-diagram'
+                      ? (f) => toggleDiagramFinding(target.change.id, f.id)
+                      : undefined
+                  }
                 />
               );
             })() : null}
@@ -2782,6 +2944,14 @@ function displayText(raw: string): string {
   return raw.replace(/<br\s*\/?>/gi, '\n');
 }
 
+/** Màu badge Thêm mới/Sửa đổi/Đề nghị bỏ của một finding sơ đồ — cùng hệ màu
+ *  add/edit/del của vùng bôi trong tài liệu (xanh/vàng/đỏ). */
+const FINDING_CHANGE_CLASS: Record<'added' | 'modified' | 'removed', string> = {
+  added: styles.findingChangeAdded ?? '',
+  modified: styles.findingChangeModified ?? '',
+  removed: styles.findingChangeRemoved ?? '',
+};
+
 function AnnotationDetailPanel({
   target,
   busy,
@@ -2796,6 +2966,9 @@ function AnnotationDetailPanel({
   onSaveEdit,
   onAddComment,
   onDeleteComment,
+  diagramFindings,
+  activeFindingId,
+  onSelectFinding,
 }: {
   target: AnnotationDetailTarget;
   busy: boolean;
@@ -2825,12 +2998,23 @@ function AnnotationDetailPanel({
    *  để panel biết xoá trắng ô nhập hay giữ lại chữ khi ghi lỗi. */
   onAddComment: (text: string) => Promise<boolean>;
   onDeleteComment: (commentId: string) => Promise<boolean>;
+  /** CHỈ cho change sơ đồ: danh sách TỪNG chỗ sửa + lý do lấy từ
+   *  `flows/<id>/ux-review.json` (cha fetch lazy, xem `uxFindingsByRule`).
+   *  `'loading'` = đang tải, `'none'` = không có file/không đọc được (panel
+   *  rơi về reason gộp), `undefined` = không phải sơ đồ. */
+  diagramFindings?: UxFinding[] | 'loading' | 'none';
+  /** Finding đang chọn (nối với node trên sơ đồ) + handler chọn/bỏ chọn khi
+   *  bấm một thẻ finding — xem `activeDiagramFinding` ở cha. */
+  activeFindingId?: string | null;
+  onSelectFinding?: (f: UxFinding) => void;
 }) {
   const c = target.kind === 'change' ? target.change : null;
   const n = target.kind === 'note' ? target.note : null;
   const op = c ? changeOp(c) : null;
   const title = c
-    ? op === 'add' ? 'Thêm nội dung' : op === 'del' ? 'Đề xuất xoá' : 'Sửa nội dung'
+    ? c.kind === 'flow-diagram'
+      ? 'Sơ đồ đề xuất'
+      : op === 'add' ? 'Thêm nội dung' : op === 'del' ? 'Đề xuất xoá' : 'Sửa nội dung'
     : 'Nhận xét';
   const ruleId = c?.rule_id ?? n?.rule_id;
   const docRefs = c?.doc_refs ?? n?.doc_refs ?? [];
@@ -2872,7 +3056,61 @@ function AnnotationDetailPanel({
       </div>
       <div className={styles.modalBody}>
         {c ? (
-          editing ? (
+          c.kind === 'flow-diagram' ? (
+            // Không lặp lại sơ đồ trong panel: `before`/`quote` của change
+            // sơ đồ là cả khối rào mermaid/marker draw.io — dạng chữ thô vô
+            // nghĩa với người đọc, còn bản RENDER thật đang hiện ngay trong
+            // tài liệu với toggle Gốc/Đề xuất. Panel mang phần sơ đồ KHÔNG
+            // tự nói được: TỪNG chỗ sửa + lý do (findings của ux-review.json),
+            // nguồn gốc, Bỏ/Hoàn tác, bình luận.
+            <>
+              <p className={styles.detailHint ?? ''}>
+                Sơ đồ hiển thị ngay trong tài liệu — dùng nút Gốc/Đề xuất trên
+                khối sơ đồ để so hai bản.
+              </p>
+              {diagramFindings === 'loading' ? (
+                <p className={styles.detailHint ?? ''}>Đang tải danh sách chỗ sửa…</p>
+              ) : Array.isArray(diagramFindings) ? (
+                <>
+                  <p className={styles.detailLabel ?? ''}>Các chỗ sửa trong sơ đồ ({diagramFindings.length})</p>
+                  {onSelectFinding ? (
+                    <p className={styles.detailHint ?? ''}>Bấm một chỗ sửa để tô node tương ứng trên sơ đồ.</p>
+                  ) : null}
+                  <ul className={styles.findingList ?? ''}>
+                    {diagramFindings.map((f) => (
+                      <li
+                        key={f.id}
+                        className={`${styles.findingItem ?? ''} ${f.id === activeFindingId ? styles.findingItemActive ?? '' : ''}`}
+                      >
+                        <button
+                          type="button"
+                          className={styles.findingButton ?? ''}
+                          disabled={!onSelectFinding}
+                          aria-pressed={f.id === activeFindingId}
+                          title={onSelectFinding ? 'Tô chỗ sửa này trên sơ đồ' : undefined}
+                          onClick={() => onSelectFinding?.(f)}
+                        >
+                          <div className={styles.findingHead ?? ''}>
+                            {f.change && f.change !== 'none' ? (
+                              <span className={`${styles.findingChange ?? ''} ${FINDING_CHANGE_CLASS[f.change] ?? ''}`}>
+                                {UX_CHANGE_LABEL[f.change]}
+                              </span>
+                            ) : null}
+                            <span className={styles.findingSeverity ?? ''}>{UX_SEVERITY_LABEL[f.severity]}</span>
+                          </div>
+                          <p className={styles.findingTitle ?? ''}>{f.title}</p>
+                          {f.reason ? <p className={styles.findingReason ?? ''}>{f.reason}</p> : null}
+                          {f.recommendation ? (
+                            <p className={styles.findingRec ?? ''}>Đề xuất: {f.recommendation}</p>
+                          ) : null}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              ) : null}
+            </>
+          ) : editing ? (
             <>
               <p className={styles.detailLabel ?? ''}>Nội dung đề xuất</p>
               <textarea
