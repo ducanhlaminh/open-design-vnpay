@@ -47,6 +47,22 @@ với `docs-to-ui` và `docs-to-prd`. Upstream trong CHÍNH workflow này, `dr-d
 Daemon đã tự động nhân bản MỖI trang sang `review/docs/<đường dẫn gốc>.md`
 TRƯỚC KHI bạn chạy — bạn không cần (và không được) tự tạo bản clone.
 
+## Tài liệu bạn đang review là URD/PRD
+
+- **URD (User Requirement Document)** là tài liệu yêu cầu người dùng do BA của
+  VNPAY viết cho MỘT tính năng: nó đặc tả nghiệp vụ **làm gì**, không đặc tả
+  giao diện trông thế nào. **PRD** cùng họ nhưng ở mức sản phẩm — luật review
+  y hệt nhau.
+- Cấu trúc điển hình của một URD VNPAY: mục tiêu/phạm vi → luồng nghiệp vụ
+  (thường kèm sơ đồ Mermaid/draw.io) → danh sách màn hình (heading dạng
+  «Màn hình 1: SCR-001 — Tên màn») → bảng yêu cầu chi tiết theo màn/trường
+  (tên trường, kiểu, bắt buộc, validation) → ảnh mockup nhúng chỉ để minh hoạ
+  (xem Bước 0.5).
+- Review URD nghĩa là soát **ĐẶC TẢ**: chỗ mơ hồ ai-làm-gì, luồng cụt, tính
+  năng/màn được nhắc mà không có mô tả, thiếu state lỗi/rỗng/giới hạn — những
+  thứ tốn tiền nếu lọt xuống khâu làm sản phẩm. Nó KHÔNG phải biên tập văn
+  phong hay soát chính tả (xem Hard rules).
+
 **Bạn chỉ xử lý MỘT SECTION của MỘT trang mỗi lần chạy.** Daemon fan-out stage
 này theo section — kickoff nêu đích danh tên heading và khoảng dòng
 (`startLine-endLine`) bạn phụ trách, kèm đường dẫn gốc, LÁT CẮT bạn ĐỌC (CHỈ

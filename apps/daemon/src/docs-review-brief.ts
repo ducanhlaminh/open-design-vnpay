@@ -42,7 +42,7 @@ export function buildDocsReviewSectionBrief(opts: DocsReviewSectionBriefOptions)
   if (opts.imageRefs.length > 0) {
     lines.push(
       `- Section có ${opts.imageRefs.length} ảnh: ${opts.imageRefs.map((ref) => `\`${ref}\``).join(', ')}.`,
-      '- Bắt buộc mở từng ảnh bằng Read trước khi kết luận về component, biến thể, trạng thái hoặc layout; chưa mở ảnh thì không tạo change/note nhóm component.',
+      '- Ảnh chỉ là minh hoạ: KHÔNG mở ảnh và KHÔNG suy diễn từ ảnh về flow, gap, component hay layout; nhóm component chỉ đọc kết quả `comp/<SCREEN-KEY>.screen.json` của bước dr-comp.',
     );
   } else {
     lines.push('- Section không nhúng ảnh.');
@@ -59,17 +59,17 @@ export function buildDocsReviewSectionBrief(opts: DocsReviewSectionBriefOptions)
   lines.push(
     '',
     '## Việc cần làm',
-    `- Chỉ Edit \`${opts.slicePath}\`; mỗi thay đổi dùng một targeted edit, không Write đè toàn file.`,
+    '- CHỈ ĐỌC tài liệu rồi khai ĐỀ XUẤT — bạn không sửa bất kỳ file tài liệu nào; đề xuất không được áp vào tài liệu, web hiển thị chúng bằng highlight + modal.',
     '- Đối chiếu `criteria/` khi thư mục tồn tại; nếu thiếu thì dùng criteria mặc định của skill.',
-    `- Ghi mọi thay đổi thực tế vào \`${opts.changesPath}\` dưới dạng JSON array các DocChange.`,
-    `- Ghi finding không thể sửa bằng chữ vào \`${opts.notesPath}\` dưới dạng JSON array các DocNote.`,
+    `- Ghi mọi đề xuất Thêm/Sửa/Xóa vào \`${opts.changesPath}\` dưới dạng JSON array các DocChange.`,
+    `- Ghi finding không diễn đạt được bằng một cặp before/quote vào \`${opts.notesPath}\` dưới dạng JSON array các DocNote.`,
+    '- COPY nguyên văn `before`/`anchor`/`doc_refs` từ lát cắt, đừng gõ lại — daemon đối chiếu từng chữ, trích sai là section bị loại.',
     '',
     '## Ràng buộc ghi file',
-    `- Tuyệt đối không sửa \`${opts.reviewPath}\`; daemon sẽ ghép các slice sau khi mọi section hoàn tất.`,
-    '- Không ghi slice bằng shell, heredoc, echo/cat hoặc Set-Content; không dán output của tool vào tài liệu.',
+    `- Tuyệt đối không sửa \`${opts.slicePath}\` lẫn \`${opts.reviewPath}\` — không Edit, không Write, không shell (echo/cat, heredoc, Set-Content); lát cắt là nguồn chỉ-đọc để trích nguyên văn, daemon ghép trang từ các lát baseline sau khi mọi section hoàn tất.`,
     '- Không chèn “[Rà soát …]” hay chú giải review trực tiếp vào slice; finding phải nằm trong notes JSON.',
     '- Không ghi `review/index.json` hoặc `review/summary.md`; pipeline tự tổng hợp.',
-    '- Đây là stage chỉ ghi file; không commit hoặc push.',
+    `- Hai file duy nhất bạn được ghi: \`${opts.changesPath}\` và \`${opts.notesPath}\`. Không commit hoặc push.`,
   );
 
   if (opts.enrichContext?.trim()) {
