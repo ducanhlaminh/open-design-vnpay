@@ -119,10 +119,11 @@
     z-index: 30;
   }
 }
-/* Vùng bôi được cuộn tới không được nằm sát mép trên — `.strip` phía trên sẽ
-   che mất mép của nó (cùng lý do như scrollMarginTop trong DsShowcasePreview). */
+/* Vùng bôi được cuộn tới không được nằm sát mép trên — thanh công cụ sticky
+   (.docToolbarWp3, nay có nền phủ) sẽ che mất nó (cùng lý do như
+   scrollMarginTop trong DsShowcasePreview). */
 .docCol mark {
-  scroll-margin-top: 16px;
+  scroll-margin-top: 72px;
 }
 
 .blockTintAdd {
@@ -1120,6 +1121,18 @@
   z-index: 1;
   display: flex;
   justify-content: flex-end;
+  /* Lớp nền phủ cho thanh sticky: không có nó thì chữ tài liệu cuộn XUYÊN QUA
+     sau lưng cụm Thay đổi/Nhận xét + Trước/Sau. Margin âm trải nền hết bề
+     ngang .docCol (nuốt padding 20px/24px của cột), padding bù lại đúng chỗ
+     cũ cho controls. Dòng background thứ hai (color-mix, kính mờ + blur) đè
+     lên dòng nền đặc ở trên — Chromium cũ bỏ qua color-mix thì vẫn còn nền
+     đặc var(--bg), không bao giờ rơi về trong suốt. */
+  margin: -20px -24px 12px;
+  padding: 12px 24px 10px;
+  border-bottom: 1px solid var(--border, #e1e5eb);
+  background: var(--bg, #fff);
+  background: color-mix(in srgb, var(--bg, #fff) 86%, transparent);
+  backdrop-filter: blur(8px);
 }
 /* Tab dọc mỏng ở mép phải khi panel đang ẩn — bấm mở lại panel. */
 /* N7 (wp3b.yaml): `position: absolute` trong `.wrap` (position: relative) —
