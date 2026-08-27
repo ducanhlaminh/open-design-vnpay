@@ -26,7 +26,7 @@
 // chỉ hiện ra thành chữ. Cũng KHÔNG mổ DOM sau khi render như bản trước: cách
 // đó phụ thuộc ref đã gắn chưa và React có dựng lại nút hay không, cả hai đều
 // đã thực sự làm vùng bôi biến mất.
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
 import { createPortal } from 'react-dom';
 import type {
@@ -604,6 +604,29 @@ async function waitForPrintableMermaid(article: HTMLElement, hostClass: string, 
     };
     check();
   });
+}
+
+/**
+ * Mount sanitized document HTML without assigning `innerHTML` to a live
+ * element in the React tree. Chromium can retain a stale caret anchor on a
+ * React-managed `dangerouslySetInnerHTML` host after the redline re-renders;
+ * dragging from the middle then selects from the beginning of the document.
+ * Parsing through a detached template keeps the live wrapper's selection
+ * state clean while preserving the same sanitized DOM.
+ */
+export function SelectionSafeHtmlChunk({ html, className }: { html: string; className: string }) {
+  const hostRef = useRef<HTMLDivElement>(null);
+
+  useLayoutEffect(() => {
+    const host = hostRef.current;
+    if (!host) return;
+    const template = document.createElement('template');
+    template.innerHTML = html;
+    host.replaceChildren(template.content);
+    return () => host.replaceChildren();
+  }, [html]);
+
+  return <div ref={hostRef} className={className} />;
 }
 
 /** Chụp article ĐÃ render để sheet in có SVG/Draw.io thật thay vì `docHtml`
@@ -2273,7 +2296,7 @@ export function DocRedlinePreview({
                 >
                   {mermaidDocumentParts.map((part, i) => {
                     if (part.kind === 'html') {
-                      return <div key={`html-${i}`} className={styles.htmlChunk ?? ''} dangerouslySetInnerHTML={{ __html: part.html }} />;
+                      return <SelectionSafeHtmlChunk key={`html-${i}`} className={styles.htmlChunk ?? ''} html={part.html} />;
                     }
                     const Host = part.changeId ? 'mark' : 'div';
                     const hostClass = part.changeId
