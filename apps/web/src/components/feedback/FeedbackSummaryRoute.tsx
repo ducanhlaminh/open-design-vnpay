@@ -17,7 +17,12 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { FeedbackSubmission, FeedbackSummaryResponse } from '@open-design/contracts';
 import { FeedbackOverview } from './FeedbackOverview';
 import { FeedbackSummaryView, sectionAnchorId } from './FeedbackSummaryView';
+import { DocsReviewReportHome } from './DocsReviewReportHome';
 import styles from './FeedbackSummaryRoute.module.css';
+
+// Tab MẶC ĐỊNH là báo cáo docs-review (dr-confirm v2, gom từ media store);
+// hai tab khảo sát form (Tổng quan / Chi tiết) gom vào nhóm "Khảo sát".
+export type FeedbackHomeTab = 'docs-review' | 'overview' | 'detail';
 
 type LoadState =
   | { status: 'idle' }
@@ -50,7 +55,8 @@ export function FeedbackHomeView() {
   const [projects, setProjects] = useState<ProjectRow[] | null>(null);
   const [projectId, setProjectId] = useState<string>(projectFromQuery);
   const [state, setState] = useState<LoadState>({ status: 'idle' });
-  const [tab, setTab] = useState<'overview' | 'detail'>('overview');
+  const [tab, setTab] = useState<FeedbackHomeTab>('docs-review');
+  const surveyTab = tab !== 'docs-review';
   const [workflow, setWorkflow] = useState('');
   const [hideDev, setHideDev] = useState(true);
 
@@ -126,10 +132,10 @@ export function FeedbackHomeView() {
           <span className={styles.eyebrow}>Feedback</span>
           <h1 className={styles.heading}>Tổng hợp phản hồi</h1>
           <p className={styles.lede}>
-            Kết quả đánh giá chất lượng pipeline từ mọi người dùng — nhóm theo version form, kèm ảnh và output từng bước.
+            Báo cáo docs-review đã xác nhận hoàn tất (5 bước, đề xuất AI giữ/sửa/bỏ, bình luận) và kết quả khảo sát chất lượng pipeline từ mọi người dùng.
           </p>
         </div>
-        <div className={styles.toolbar}>
+        <div className={styles.toolbar} hidden={!surveyTab}>
           <label className={styles.picker}>
             <span className={styles.pickerLabel}>Dự án</span>
             <select value={projectId} onChange={(ev) => setProjectId(ev.target.value)}>
@@ -151,13 +157,19 @@ export function FeedbackHomeView() {
         </div>
       </header>
 
-      {data && !data.storeReachable ? (
+      {surveyTab && data && !data.storeReachable ? (
         <div className={styles.warning}>Chưa kết nối media store — dữ liệu có thể thiếu</div>
       ) : null}
 
       {/* Thanh điều khiển chung: tab segmented + filter + stat dồn phải. */}
       <div className={styles.controls}>
         <div className={styles.tabs} role="tablist" aria-label="Chế độ xem">
+          <button type="button" role="tab" aria-selected={tab === 'docs-review'} className={styles.tabButton} data-active={tab === 'docs-review' ? 'yes' : 'no'} onClick={() => setTab('docs-review')}>
+            Báo cáo docs-review
+          </button>
+        </div>
+        <div className={styles.tabs} role="tablist" aria-label="Khảo sát">
+          <span className={styles.tabGroupLabel}>Khảo sát</span>
           <button type="button" role="tab" aria-selected={tab === 'overview'} className={styles.tabButton} data-active={tab === 'overview' ? 'yes' : 'no'} onClick={() => setTab('overview')}>
             Tổng quan
           </button>
@@ -165,6 +177,7 @@ export function FeedbackHomeView() {
             Chi tiết
           </button>
         </div>
+        {surveyTab ? (<>
         <label className={styles.filter}>
           <span className={styles.filterLabel}>Workflow</span>
           <select className={styles.select} value={workflow} onChange={(event) => setWorkflow(event.target.value)}>
@@ -185,14 +198,16 @@ export function FeedbackHomeView() {
           <span className={styles.stat}><b>{users.size}</b> người gửi</span>
           <span className={styles.stat}><b>{latest ? new Date(latest).toLocaleString('vi-VN') : '—'}</b> gần nhất</span>
         </div>
+        </>) : null}
       </div>
 
-      {projects !== null && projects.length === 0 ? (
+      {tab === 'docs-review' ? <DocsReviewReportHome /> : null}
+      {surveyTab && projects !== null && projects.length === 0 ? (
         <p className={styles.note}>Chưa có dự án pipeline nào — tạo hoặc pull một dự án trước.</p>
       ) : null}
-      {state.status === 'loading' ? <p className={styles.note}>Đang tải…</p> : null}
-      {state.status === 'error' ? <p className={styles.error}>Không tải được thống kê: {state.message}</p> : null}
-      {data ? (
+      {surveyTab && state.status === 'loading' ? <p className={styles.note}>Đang tải…</p> : null}
+      {surveyTab && state.status === 'error' ? <p className={styles.error}>Không tải được thống kê: {state.message}</p> : null}
+      {surveyTab && data ? (
         tab === 'overview' ? (
           <FeedbackOverview forms={data.forms} submissions={visible} onDrill={drill} />
         ) : (

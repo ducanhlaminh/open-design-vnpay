@@ -80,6 +80,8 @@ import { MermaidDiagram } from './MermaidDiagram';
 import { ScreensDiscoveredPreview, isScreensDiscoveredDoc, type ScreensDiscoveredDoc } from './ScreensDiscoveredPreview';
 import { SCREEN_FLOW_ID, isScreenFlowId, screenFlowPlatformLabel, screenFlowPlatformOf, type ScreenFlowPlatform } from './screen-flow-ids';
 import styles from './FlowUxReviewPreview.module.css';
+import { StageCommentPanel } from './docs-review/StageCommentPanel';
+import stageCommentStyles from './docs-review/StageCommentPanel.module.css';
 
 export type UxSeverity = 'blocker' | 'major' | 'minor' | 'note';
 export type UxVerdict = 'good' | 'needs-improvement' | 'poor';
@@ -981,6 +983,10 @@ export function FlowUxReviewPreview({
         {data.review?.summary ? <p className={styles.summary}>{data.review.summary}</p> : null}
       </header>
 
+      {/* wp-docs-review-confirm-v2: cột bình luận cấp bước bên phải cả khung
+          (ngoài grid sơ đồ+panel UX). Bước theo cách mở: đối chiếu (ux-review
+          / proposed) = dr-flow-improve, còn lại = dr-flow; neo theo luồng. */}
+      <div className={stageCommentStyles.host}>
       <div className={`${styles.body} ${panelOpen && showPanel ? '' : styles.bodyPanelHidden ?? ''}`}>
         <section className={styles.diagram} aria-label="Sơ đồ luồng">
           <div className={styles.diagramBar}>
@@ -1447,6 +1453,13 @@ export function FlowUxReviewPreview({
             {findings.length}
           </button>
         )}
+      </div>
+      <StageCommentPanel
+        projectId={projectId}
+        stageId={presentation === 'compare' ? 'dr-flow-improve' : 'dr-flow'}
+        target={{ kind: 'flow', key: loc.flowId, label: title }}
+        collapsedByDefault={showPanel}
+      />
       </div>
     </>
   );

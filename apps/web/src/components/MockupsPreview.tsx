@@ -24,6 +24,7 @@ import type { ProjectFile } from '../types';
 
 import { fetchProjectFileText, projectRawUrl } from '../providers/registry';
 import styles from './MockupsPreview.module.css';
+import { StageCommentPanel } from './docs-review/StageCommentPanel';
 
 /** Một dòng trong `mockups/index.json[].screens` (contract WP dr-mockup). */
 export interface MockupScreenEntry {
@@ -357,6 +358,13 @@ export function MockupsPreview({ projectId, file }: { projectId: string; file: P
           })}
         </nav>
         <div className={styles.stage}>{stage}</div>
+        {/* wp-docs-review-confirm-v2: bình luận cấp bước dr-mockup, neo theo
+            màn đang chọn (đổi màn → panel lọc theo màn mới). */}
+        <StageCommentPanel
+          projectId={projectId}
+          stageId="dr-mockup"
+          target={active ? { kind: 'screen', key: active.key, ...(active.name ? { label: active.name } : {}) } : undefined}
+        />
       </div>
     </>
   );

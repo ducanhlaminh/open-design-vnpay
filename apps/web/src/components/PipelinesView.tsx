@@ -72,6 +72,8 @@ import { applyPendingStarts } from '../runtime/pipeline-pending-starts';
 import { PullConflictModal } from './pipelines/PullConflictModal';
 import { PlModal } from './pipelines/PlModal';
 import { FeedbackHub } from './feedback/FeedbackHub';
+import { DocsReviewConfirmModal } from './docs-review/DocsReviewConfirmModal';
+import { fetchDocsReviewCommentCounts } from './docs-review/StageCommentPanel';
 import navStyles from './pipelines/PipelineNavViews.module.css';
 import { pullApply, pullPlan } from '../providers/pullConflict';
 import { useT } from '../i18n';
@@ -776,7 +778,14 @@ export function PipelinesView() {
   }, []);
   const [configDrawerOpen, setConfigDrawerOpen] = useState(false);
   const [runAllBusy, setRunAllBusy] = useState(false);
-  const [docsReviewConfirmBusy, setDocsReviewConfirmBusy] = useState(false);
+  // "Xác nhận hoàn tất" docs-review (wp-docs-review-confirm-v2): mở modal
+  // liệt kê các bước + số bình luận + tick "đã xem hết" trước khi POST.
+  const [docsReviewConfirmOpen, setDocsReviewConfirmOpen] = useState(false);
+  // Số bình luận cấp bước của mỗi bước docs-review (badge 💬 trên stepper +
+  // modal xác nhận). Đọc 1 lần khi mở docs-review, đọc lại sau khi xác nhận /
+  // đóng modal (người dùng có thể vừa ghi thêm trong Quick result).
+  const [docsReviewCommentCounts, setDocsReviewCommentCounts] = useState<Record<string, number>>({});
+  const [docsReviewCommentsGen, setDocsReviewCommentsGen] = useState(0);
   // "Chạy pipeline" đang chờ xác nhận vì lần chạy này sẽ xoá kết quả có sẵn
   // của (những) bước trong `stageNames`, HOẶC (những) bước sắp chạy sẽ đọc
   // đầu vào từ một bước cũ ngoài lượt (`staleInputs`) — payload đã dựng sẵn,
@@ -1015,32 +1024,28 @@ export function PipelinesView() {
     pipelines.every((pipeline) => pipeline.status === 'succeeded');
   const prevRunningRef = useRef(false);
 
-  const confirmDocsReview = useCallback(async () => {
-    if (!projectId || !docsReviewReadyToConfirm || docsReviewConfirmBusy) return;
-    setDocsReviewConfirmBusy(true);
-    try {
-      const review = pipelines.find((pipeline) => pipeline.id === 'dr-review');
-      const response = await fetch(
-        `/api/projects/${encodeURIComponent(projectId)}/docs-review/confirm`,
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ ...(review?.lastRunId ? { sourceRunId: review.lastRunId } : {}) }),
-        },
-      );
-      const body = await response.json().catch(() => ({})) as { error?: string };
-      if (!response.ok) throw new Error(body.error || `confirm failed: ${response.status}`);
-      pushToast({ message: 'Đã xác nhận hoàn tất và gửi số liệu review.' });
-      await load(projectId, { background: true });
-      await loadProjects();
-    } catch (cause) {
-      pushToast({
-        message: cause instanceof Error ? cause.message : 'Không thể xác nhận hoàn tất.',
-      });
-    } finally {
-      setDocsReviewConfirmBusy(false);
+  useEffect(() => {
+    if (!projectId || workflowId !== 'docs-review') {
+      setDocsReviewCommentCounts({});
+      return;
     }
-  }, [projectId, docsReviewReadyToConfirm, docsReviewConfirmBusy, pipelines, pushToast, load, loadProjects]);
+    let cancelled = false;
+    void fetchDocsReviewCommentCounts(projectId).then((counts) => {
+      if (!cancelled) setDocsReviewCommentCounts(counts);
+    });
+    return () => { cancelled = true; };
+  }, [projectId, workflowId, docsReviewCommentsGen]);
+
+  // POST confirm nằm trong DocsReviewConfirmModal (sau khi tick "đã xem hết");
+  // ở đây chỉ nhận 201 → toast + tải lại trạng thái. Modal giữ mở để bấm
+  // "Mở báo cáo".
+  const onDocsReviewConfirmed = useCallback(async () => {
+    if (!projectId) return;
+    pushToast({ message: 'Đã xác nhận hoàn tất và gửi kết quả review lên studio.' });
+    setDocsReviewCommentsGen((n) => n + 1);
+    await load(projectId, { background: true });
+    await loadProjects();
+  }, [projectId, pushToast, load, loadProjects]);
 
   // Dừng cả pipeline = hủy MỌI bước đang chạy của nó. Endpoint cancel là theo
   // từng bước (`/:projectId/:pipelineId/cancel`, đã dùng trong modal Status),
@@ -2804,6 +2809,16 @@ export function PipelinesView() {
                         {isSkipped ? 'Bỏ qua' : p.recovery ? 'Cần hỗ trợ' : (STATUS_LABEL[p.status] ?? p.status)}
                       </span>
                       {isNext ? <span className="pl-step__next">Bước tiếp theo</span> : null}
+                      {/* docs-review: số bình luận cấp bước (wp-docs-review-confirm-v2). */}
+                      {workflowId === 'docs-review' && (docsReviewCommentCounts[p.id] ?? 0) > 0 ? (
+                        <span
+                          className="pl-status pl-status--comments"
+                          data-testid={`pipeline-step-comments-${p.id}`}
+                          title={`${docsReviewCommentCounts[p.id]} bình luận cấp bước`}
+                        >
+                          <span aria-hidden="true">💬</span> {docsReviewCommentCounts[p.id]}
+                        </span>
+                      ) : null}
                       {/* Multi-target: chấm trạng thái THEO TARGET của riêng
                           bước này (suy từ file outputs dưới <wf>/<target>/).
                           Bước shared (docs, bản đồ hệ thống) không có entry
@@ -3016,16 +3031,16 @@ export function PipelinesView() {
               type="button"
               className="pl-btn pl-btn--confirm-workflow"
               data-testid="pipeline-docs-review-confirm"
-              onClick={() => void confirmDocsReview()}
-              disabled={!docsReviewReadyToConfirm || docsReviewConfirmBusy || anyRunning}
+              onClick={() => setDocsReviewConfirmOpen(true)}
+              disabled={!docsReviewReadyToConfirm || docsReviewConfirmOpen || anyRunning}
               title={
                 docsReviewReadyToConfirm
-                  ? 'Tổng hợp số liệu chỉnh sửa và xác nhận hoàn tất workflow Review tài liệu.'
+                  ? 'Gửi toàn bộ kết quả các bước + bình luận lên studio và xác nhận hoàn tất workflow Review tài liệu.'
                   : 'Hoàn tất tất cả các bước phía trên để bật nút này.'
               }
             >
-              <Icon name={docsReviewConfirmBusy ? 'spinner' : 'check'} size={14} />
-              <span>{docsReviewConfirmBusy ? 'Đang xác nhận…' : 'Xác nhận hoàn tất'}</span>
+              <Icon name="check" size={14} />
+              <span>Xác nhận hoàn tất</span>
             </button>
           ) : null}
           </div>
@@ -3660,6 +3675,20 @@ export function PipelinesView() {
                 : {}),
             });
           }}
+        />
+      ) : null}
+
+      {docsReviewConfirmOpen && projectId ? (
+        <DocsReviewConfirmModal
+          projectId={projectId}
+          stages={pipelines.map((p) => ({ id: p.id, name: p.name, status: p.status }))}
+          commentCounts={docsReviewCommentCounts}
+          sourceRunId={pipelines.find((pipeline) => pipeline.id === 'dr-review')?.lastRunId}
+          onClose={() => {
+            setDocsReviewConfirmOpen(false);
+            setDocsReviewCommentsGen((n) => n + 1);
+          }}
+          onConfirmed={() => void onDocsReviewConfirmed()}
         />
       ) : null}
 

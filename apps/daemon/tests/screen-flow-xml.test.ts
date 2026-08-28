@@ -330,7 +330,7 @@ test('saveScreenFlowEdit: chặn khi chưa có SCREEN-FLOW hoặc XML hỏng; l�
 
 // WP dr-flow-improve: editor gửi mxfile 2 trang (Nguyên bản | Cải thiện).
 test('saveScreenFlowEdit 2 trang: trang 1 → proposed.drawio đủ 2 trang + marker proposed.edited.json khi khác bản cũ; trang 0 đổi khi đang có đề xuất → warning; lưu lại y nguyên → không marker mới', async () => {
-  const { PROPOSED_EDITED_FILE } = await import('../src/flow-ux/screen-flow-xml.js');
+  const { PROPOSED_EDITED_FILE, AS_IS_EDITED_FILE } = await import('../src/flow-ux/screen-flow-xml.js');
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sfx-'));
   const dir = path.join(cwd, 'flows', SCREEN_FLOW_ID);
   fs.mkdirSync(dir, { recursive: true });
@@ -360,6 +360,8 @@ test('saveScreenFlowEdit 2 trang: trang 1 → proposed.drawio đủ 2 trang + ma
   assert.equal(first.savedProposed, true);
   assert.equal(first.proposedEdited, true);
   assert.ok(!first.warnings.some((w) => w.includes('Nguyên bản đã sửa tay')), 'trang 0 không đổi → không cảnh báo lệch');
+  // wp-docs-review-confirm-v2: trang 0 (as-is) không đổi → KHÔNG marker as-is.edited.json.
+  assert.ok(!fs.existsSync(path.join(dir, AS_IS_EDITED_FILE)), 'trang 0 không đổi → không ghi as-is.edited.json');
   const pages = decodeMxfile(fs.readFileSync(path.join(dir, 'proposed.drawio'), 'utf8'));
   assert.equal(pages.length, 2);
   assert.equal(pages[1]!.name, 'Cải thiện');
@@ -380,6 +382,9 @@ test('saveScreenFlowEdit 2 trang: trang 1 → proposed.drawio đủ 2 trang + ma
   const third = await saveScreenFlowEdit(cwd, twoPages(movedAsIs, proposedGraph));
   assert.equal(third.ok, true);
   assert.ok(third.warnings.some((w) => w.includes('Nguyên bản đã sửa tay')), third.warnings.join(' | '));
+  // …trang 0 đổi → marker as-is.edited.json {at} (dr-confirm v2 đọc thành metrics.drawioEdited).
+  assert.ok(fs.existsSync(path.join(dir, AS_IS_EDITED_FILE)), 'trang 0 đổi → ghi as-is.edited.json');
+  assert.equal(typeof (JSON.parse(fs.readFileSync(path.join(dir, AS_IS_EDITED_FILE), 'utf8')) as { at?: unknown }).at, 'string');
   const pages3 = decodeMxfile(fs.readFileSync(path.join(dir, 'proposed.drawio'), 'utf8'));
   assert.ok(listCells(pages3[0]!.graphXml).some((c) => c.label === 'Bắt đầu (đã sửa)'), 'trang 0 của proposed.drawio theo as-is mới');
 

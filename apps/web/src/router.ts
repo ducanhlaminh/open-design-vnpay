@@ -68,7 +68,11 @@ export type Route =
   // phải mở được, nên nhánh đó được kiểm TRƯỚC trong parseRoute.
   | { kind: 'pipelines-app'; appId: string }
   | { kind: 'pipelines-feature'; appId: string; featureId: string }
-  | { kind: 'pipelines-run'; appId: string; featureId: string; pipelineId: string };
+  | { kind: 'pipelines-run'; appId: string; featureId: string; pipelineId: string }
+  // Chi tiết một bản xác nhận docs-review (dr-confirm v2) dưới trang Phản hồi:
+  // `/feedback/docs-review/:projectId/:confirmationId`. Sống dưới shell
+  // `feedback` (EntryShell map kind này về view 'feedback').
+  | { kind: 'docs-review-report'; projectId: string; confirmationId: string };
 
 /** Rổ chứa feature chưa gắn app nào (mirror pipeline-studio's bucket id). */
 export const UNASSIGNED_APP = '__unassigned';
@@ -147,6 +151,14 @@ export function parseRoute(pathname: string): Route {
   // không lồng trong dự án: người xem thống kê chọn dự án ngay trong trang
   // (?project=<id>, component tự đọc/ghi query).
   if (parts[0] === 'feedback') {
+    // /feedback/docs-review/:projectId/:confirmationId → chi tiết bản xác nhận.
+    if (parts[1] === 'docs-review' && parts[2] && parts[3]) {
+      return {
+        kind: 'docs-review-report',
+        projectId: decodeURIComponent(parts[2]),
+        confirmationId: decodeURIComponent(parts[3]),
+      };
+    }
     return { kind: 'home', view: 'feedback' };
   }
   if (parts[0] === 'pipelines') {
@@ -220,6 +232,9 @@ export function buildPath(route: Route): string {
   }
   if (route.kind === 'pipeline-result') {
     return `/pipelines/${encodeURIComponent(route.projectId)}/result/${encodeURIComponent(route.pipelineId)}`;
+  }
+  if (route.kind === 'docs-review-report') {
+    return `/feedback/docs-review/${encodeURIComponent(route.projectId)}/${encodeURIComponent(route.confirmationId)}`;
   }
   if (route.kind === 'pipelines-app') {
     return `/pipelines/app/${encodeURIComponent(route.appId)}`;

@@ -98,6 +98,7 @@ import type { KnownProvider } from '../state/config';
 import { testApiProvider } from '../providers/connection-test';
 import { fetchProviderModels } from '../providers/provider-models';
 import { FeedbackHomeView } from './feedback/FeedbackSummaryRoute';
+import { DocsReviewReportDetail } from './feedback/DocsReviewReportDetail';
 
 // The topbar chips (GitHub star, model switcher, Use everywhere)
 // collapse into the settings dropdown when the viewport gets
@@ -395,7 +396,9 @@ export function EntryShell({
           route.kind === 'pipelines-feature' ||
           route.kind === 'pipelines-run'
         ? 'pipelines'
-        : 'home';
+        : route.kind === 'docs-review-report'
+          ? 'feedback'
+          : 'home';
   const [previewSystemId, setPreviewSystemId] = useState<string | null>(null);
   // Card corner "Fullscreen" action: open the react-bundle detail modal
   // already expanded to the viewport.
@@ -657,7 +660,17 @@ export function EntryShell({
               />
             ) : null}
             {view === 'pipelines' ? <PipelinesRoute /> : null}
-            {view === 'feedback' ? <FeedbackHomeView /> : null}
+            {view === 'feedback' ? (
+              route.kind === 'docs-review-report' ? (
+                <DocsReviewReportDetail
+                  key={`${route.projectId}/${route.confirmationId}`}
+                  projectId={route.projectId}
+                  confirmationId={route.confirmationId}
+                />
+              ) : (
+                <FeedbackHomeView />
+              )
+            ) : null}
             {view === 'plugins' ? (
               <PluginsView
                 onCreatePlugin={startPluginAuthoring}

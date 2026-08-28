@@ -1,3 +1,5 @@
+import type { ScreenPlatformScope } from './pipelines.js';
+
 export type DocReviewChangeOperation = 'add' | 'edited' | 'delete';
 /** `'system'` = daemon-generated change (currently only the flow-diagram
  *  replacement written by dr-review's enrich step, see docs-review.ts's
@@ -6,6 +8,16 @@ export type DocReviewChangeOperation = 'add' | 'edited' | 'delete';
  *  can count it without conflating the two sources. */
 export type DocReviewAnnotationOrigin = 'agent' | 'user' | 'system';
 export type DocReviewAnnotationStatus = 'active' | 'edited' | 'dismissed';
+
+/** Bình luận của người dùng gắn vào một change/note trong sidecar
+ *  (`.changes.json` / `.notes.json`). Trước 0.8.164 chỉ web biết shape này;
+ *  parser giữ nguyên để dr-confirm v2 gửi được lên studio. */
+export interface DocAnnotationComment {
+  id: string;
+  text: string;
+  at: number;
+  by?: string;
+}
 
 export interface DocReviewAnnotation {
   id: string;
@@ -21,6 +33,7 @@ export interface DocReviewAnnotation {
   severity?: string;
   rule_id?: string;
   reason?: string;
+  comments?: DocAnnotationComment[];
 }
 
 export interface DocReviewAnnotationEvent {
@@ -94,11 +107,130 @@ export interface ConfirmDocsReviewRequest {
   sourceRunId?: string;
 }
 
+// ─── dr-confirm v2 (2026-08-28, wp-docs-review-confirm-v2) ──────────────────
+// Xác nhận hoàn tất gửi TOÀN BỘ kết quả 5 bước (output + comment + metrics)
+// thay vì chỉ số đếm dr-review. Studio "Phản hồi" đọc `report.json` này.
+
+export type DocsReviewStageId = 'dr-docs' | 'dr-flow' | 'dr-flow-improve' | 'dr-mockup' | 'dr-review';
+
+/** Comment cấp bước, file `docs-review/comments/<stageId>.json` (ngoài outputs
+ *  → sống sót re-run). `target` tuỳ chọn neo vào màn / flow / trang. */
+export interface DocsReviewStageComment {
+  id: string;
+  stageId: DocsReviewStageId;
+  text: string;
+  by: string;
+  at: number;
+  target?: { kind: 'screen' | 'flow' | 'page'; key: string; label?: string };
+}
+export interface DocsReviewStageCommentsFile { schemaVersion: 1; comments: DocsReviewStageComment[] }
+
+/** `GET /api/projects/:id/docs-review/comments/:stageId` */
+export interface DocsReviewStageCommentsResponse { stageId: DocsReviewStageId; comments: DocsReviewStageComment[] }
+/** `POST /api/projects/:id/docs-review/comments/:stageId` */
+export interface CreateDocsReviewStageCommentRequest {
+  text: string;
+  target?: DocsReviewStageComment['target'];
+}
+export interface CreateDocsReviewStageCommentResponse { comment: DocsReviewStageComment }
+
+/** Một file output của bước, đã upload kèm report (`mediaPath` trong cùng
+ *  folder media của project: `docs-review-feedback/<install>/<confirmId>/outputs/<path>`). */
+export interface DocsReviewOutputRef { path: string; size: number; mediaPath: string }
+
+export type DocsReviewFlowVariant = 'original' | 'improved';
+export type DocsReviewFlowSelectionSource = 'user' | 'run-all' | 'default';
+
+export type DocsReviewStageMetrics =
+  | { kind: 'dr-docs'; pages: number }
+  | {
+      kind: 'dr-flow';
+      flows: number;
+      screens: number;
+      platform: ScreenPlatformScope | null;
+      drawioEdited: boolean;
+      overrides: { add: number; rename: number; remove: number };
+    }
+  | {
+      kind: 'dr-flow-improve';
+      flows: Array<{
+        flowId: string;
+        variant: DocsReviewFlowVariant;
+        source: DocsReviewFlowSelectionSource;
+        patchOps: number;
+        findings: number;
+        proposedScreens: number;
+        removedScreens: number;
+        proposedEdited: boolean;
+      }>;
+    }
+  | { kind: 'dr-mockup'; screens: number; variant: string | null }
+  | {
+      kind: 'dr-review';
+      agent: DocReviewAgentCounts;
+      userChanges: DocReviewOperationCounts;
+      notes: { total: number; dismissed: number; user: number };
+      annotationComments: number;
+      pages: DocReviewFeedbackPageMetrics[];
+      enrich: { diagrams: DocsReviewEnrichMetrics['diagrams'] };
+    };
+
+export interface DocsReviewStageReport {
+  stageId: DocsReviewStageId;
+  name: string;
+  runId?: string;
+  status: 'succeeded';
+  outputs: DocsReviewOutputRef[];
+  /** File bị bỏ khỏi snapshot (quá 5 MB / attachments) — để studio nói rõ. */
+  skipped?: Array<{ path: string; reason: string }>;
+  comments: DocsReviewStageComment[];
+  metrics: DocsReviewStageMetrics;
+}
+
+/** Kết cục đề xuất của AI dưới tay người: giữ / sửa / bỏ. Định nghĩa gộp
+ *  (dr-review annotation + dr-flow-improve gói + overrides remove) — xem spec. */
+export interface DocsReviewAiOutcome { proposals: number; accepted: number; edited: number; dismissed: number }
+
+export interface DocsReviewFeedbackArtifactV2 {
+  schemaVersion: 2;
+  confirmationId: string;
+  projectId: string;
+  workflowId: 'docs-review';
+  installationId: string;
+  user: string;
+  channel: 'dev' | 'packaged';
+  confirmedAt: number;
+  app: { id: string; name: string } | null;
+  feature: { id: string; name: string };
+  screenPlatform: ScreenPlatformScope | null;
+  stages: DocsReviewStageReport[];
+  summary: { agentProposals: number; humanEdits: number; comments: number; aiOutcome: DocsReviewAiOutcome };
+  /** Giữ để studio cũ (parser v1) và trang `/analytics/docs-review` hiện tại
+   *  vẫn đọc được: đúng các số của dr-review như artifact v1. */
+  agent: DocReviewAgentCounts;
+  userChanges: DocReviewOperationCounts;
+  pages: DocReviewFeedbackPageMetrics[];
+}
+
 export interface ConfirmDocsReviewResponse {
   ok: true;
-  artifact: DocsReviewFeedbackArtifact;
+  artifact: DocsReviewFeedbackArtifactV2;
   mediaPath: string;
   localPath: string;
+  /** `<OD_STUDIO_URL>/analytics/docs-review/<projectId>/<confirmationId>` khi env có. */
+  studioUrl?: string;
+}
+
+function parseAnnotationComments(raw: unknown[]): DocAnnotationComment[] {
+  const out: DocAnnotationComment[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const v = item as Record<string, unknown>;
+    if (typeof v.id !== 'string' || !v.id.trim() || typeof v.text !== 'string' || !v.text.trim()) continue;
+    if (typeof v.at !== 'number' || !Number.isFinite(v.at)) continue;
+    out.push({ id: v.id, text: v.text, at: v.at, ...(typeof v.by === 'string' && v.by.trim() ? { by: v.by } : {}) });
+  }
+  return out;
 }
 
 function operationOf(value: { before?: string; quote?: string }): DocReviewChangeOperation {
@@ -144,6 +276,7 @@ export function parseDocReviewAnnotationFile(raw: string): DocReviewAnnotationFi
       ...(typeof value.severity === 'string' ? { severity: value.severity } : {}),
       ...(typeof value.rule_id === 'string' ? { rule_id: value.rule_id } : {}),
       ...(typeof value.reason === 'string' ? { reason: value.reason } : {}),
+      ...(Array.isArray(value.comments) && value.comments.length ? { comments: parseAnnotationComments(value.comments) } : {}),
     });
   }
   const rawEvents = !legacy && Array.isArray((parsed as { events?: unknown }).events)

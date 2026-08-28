@@ -207,13 +207,6 @@ import {
 } from './flow-ux/screen-flow-improve.js';
 import { parseScreenFlowScreensV2, renderDiscoveredMd, toDiscoveredDocs } from './flow-ux/screen-flow-screens.js';
 import { persistScreenDiscovery } from './screen-discovery.js';
-import {
-  canonicalizeRecoveredScreens,
-  parseScreenRecovery,
-  validateScreenRecovery,
-  type RecoveryScreensFile,
-  type ScreenRecoveryCell,
-} from './screen-recovery.js';
 import { createScreenFormatReporter } from './screen-format-reports.js';
 import { serveDrawioViewerJs } from './flow-ux/viewer-asset.js';
 import { ensureProposedMermaidHighlight } from './flow-ux/mermaid-highlight.js';
@@ -602,21 +595,20 @@ import { registerProjectRoutes, registerProjectArtifactRoutes, registerProjectFi
 import { registerFinalizeRoutes, registerImportRoutes, registerProjectExportRoutes } from './import-export-routes.js';
 import { registerRemoteProjectsRoutes } from './remote-projects-routes.js';
 import { registerProjectSyncRoutes } from './project-sync-routes.js';
+import { registerDocsReviewReportRoutes } from './docs-review-reports.js';
 import { registerHandoffRoutes } from './handoff-routes.js';
 import { EmptyTranscriptError, synthesizeHandoffPrompt } from './handoff-design.js';
 import { TranscriptExportLockedError } from './transcript-export.js';
 import { publishFeedback, pullMergedFeedback } from './feedback.js';
-import { confirmDocsReview } from './docs-review-feedback.js';
+import { confirmDocsReview, docsReviewConfirmContextOf } from './docs-review-feedback.js';
 import { buildDocsReviewSectionBrief } from './docs-review-brief.js';
 import {
   buildDsCriteriaExtractKickoff,
   buildDsRulesExtractKickoff,
-  buildFlowUxRecoveryKickoff,
   buildModuleSpecKickoff,
   buildPipelineKickoff,
   buildPrdPageReviewKickoff,
   buildScreenComponentsKickoff,
-  buildScreenLinkRecoveryKickoff,
   buildScreenRunKickoff,
   screenPlatformDirective,
 } from './pipeline-kickoffs.js';
@@ -18432,11 +18424,6 @@ export async function startServer({
         const { index, summaryMd } = mergeScreenComponents(okDocs, inputs, failedScreens, new Date().toISOString());
         const anySucceeded = okDocs.length > 0;
         let topologyValidation: Awaited<ReturnType<typeof validateScreenFlowRecoveryArtifacts>> | null = null;
-        // "Exactly one pass prevents loops" (same invariant as the dr-flow
-        // auto-recovery site below) — this flag exists purely so the gate
-        // below reads as a documented invariant even though the enclosing
-        // `if` only runs once per completion; see the auto-link block.
-        let didAutoLinkScreens = false;
         if (anySucceeded) {
           await fs.promises.writeFile(path.join(cwd, 'comp/index.json'), JSON.stringify(index, null, 2), 'utf8');
           await fs.promises.writeFile(path.join(cwd, 'comp/summary.md'), summaryMd, 'utf8');
@@ -18458,194 +18445,11 @@ export async function startServer({
               .catch(() => null);
           });
           topologyValidation = await validateScreenFlowRecoveryArtifacts(cwd);
-          // Auto-link (mirrors dr-flow's own auto-recovery at the
-          // docs-flow-ux completion site above): BEFORE turning any
-          // remaining UNLINKED/orphan/unreachable screen into a mere
-          // warning, spend exactly ONE unattended agent pass trying to
-          // place it in a real flow using document evidence. Gate: only
-          // advisory topology (never for BLOCKING defects or component
-          // failures), and never more than once per completion.
-          const advisoryNeedsHelp = (topologyValidation.needsHelp ?? []).filter((problem) => problem.advisory !== false);
-          if (failedScreens.length === 0 && advisoryNeedsHelp.length > 0 && !didAutoLinkScreens) {
-            didAutoLinkScreens = true;
-            try {
-              const flowsIndexRaw = await fs.promises.readFile(path.join(cwd, 'flows', 'index.json'), 'utf8').catch(() => null);
-              let flowEntries: Array<{ id?: unknown; title?: unknown; screens?: Array<{ key?: unknown; name?: unknown }> }> = [];
-              if (flowsIndexRaw != null) {
-                try {
-                  const parsed = JSON.parse(flowsIndexRaw) as unknown;
-                  if (Array.isArray(parsed)) flowEntries = parsed as typeof flowEntries;
-                } catch {
-                  flowEntries = [];
-                }
-              }
-              const realFlows = flowEntries
-                .map((entry) => ({
-                  id: typeof entry.id === 'string' ? entry.id.trim() : '',
-                  title: typeof entry.title === 'string' && entry.title.trim() ? entry.title.trim() : '',
-                  screenNames: (entry.screens ?? [])
-                    .map((screen) => (typeof screen.name === 'string' ? screen.name : typeof screen.key === 'string' ? screen.key : ''))
-                    .filter((name) => name.length > 0),
-                }))
-                .filter((entry) => entry.id.length > 0 && entry.id !== 'UNLINKED');
-              const markdownBySource: Record<string, string> = {};
-              for (const page of pages) {
-                const markdown = await fs.promises.readFile(path.join(cwd, page.mdPath), 'utf8').catch(() => null);
-                if (markdown != null) markdownBySource[page.mdPath] = markdown;
-              }
-
-              const linkRecoveryRel = 'flows/_screen-recovery.json';
-              await fs.promises.rm(path.join(cwd, linkRecoveryRel), { force: true }).catch(() => null);
-              const linkConversationId = `pipeline-conv-${randomUUID()}`;
-              const linkAssistantId = `pipeline-assistant-${randomUUID()}`;
-              const linkTitle = 'Tự nối màn vào luồng';
-              insertConversation(db, {
-                id: linkConversationId,
-                projectId,
-                title: `${def.name} · ${linkTitle}`,
-                createdAt: Date.now(),
-                updatedAt: Date.now(),
-              });
-              const linkRun = design.runs.create({
-                projectId,
-                conversationId: linkConversationId,
-                assistantMessageId: linkAssistantId,
-                clientRequestId: `docs-comp-screen-link-${randomUUID()}`,
-                agentId: agentId!,
-              });
-              const linkTask = { id: linkConversationId, title: linkTitle, status: 'running' as 'running' | 'succeeded' | 'failed' };
-              setProjectPipelineStatus(db, projectId, pipelineId, { status: 'running', subConversations: [{ ...linkTask }] });
-              const linkKickoff = buildScreenLinkRecoveryKickoff({
-                projectId,
-                advisoryScreens: advisoryNeedsHelp.map((problem) => ({ key: problem.key, name: problem.name, reason: problem.reason })),
-                flows: realFlows,
-                pageMdPaths: pages.map((page) => page.mdPath),
-                recoveryFile: linkRecoveryRel,
-              });
-              // Canceler riêng cho lượt tự nối màn: cancelKey chính (khai ở
-              // đầu hàm) vẫn còn sống tới `finally` cuối completion — đăng
-              // ký lại CÙNG key với activeRuns MỚI để nút Dừng nhắm đúng run
-              // đang chạy (xem cùng note ở site dr-flow, server.ts ~23122).
-              const linkCancelKey = cancelKey;
-              const linkActiveRuns = new Set<{ id: string }>([linkRun]);
-              registerPipelineCanceler(linkCancelKey, linkActiveRuns, () => {});
-              let linkFinal: Awaited<ReturnType<typeof design.runs.wait>>;
-              try {
-                upsertMessage(db, linkConversationId, { id: `pipeline-user-${linkRun.id}`, role: 'user', content: linkKickoff });
-                upsertMessage(db, linkConversationId, {
-                  id: linkAssistantId,
-                  role: 'assistant',
-                  content: '',
-                  agentId: agentId!,
-                  agentName: getAgentDef(agentId!)?.name ?? agentId!,
-                  runId: linkRun.id,
-                  runStatus: 'queued',
-                  startedAt: Date.now(),
-                });
-                design.runs.start(linkRun, () => startChatRun({
-                  agentId: agentId!,
-                  projectId,
-                  conversationId: linkConversationId,
-                  assistantMessageId: linkAssistantId,
-                  clientRequestId: linkRun.clientRequestId,
-                  skillId: 'docs-flow-ux',
-                  ...(wfDir ? { cwdSubdir: wfDir } : {}),
-                  model: modelPrefs.model ?? null,
-                  reasoning: modelPrefs.reasoning ?? null,
-                  message: linkKickoff,
-                  promptProfile: 'pipeline',
-                  pipelineUsesDesignSystem: false,
-                  systemPrompt: 'Bạn đang chạy một job không có người ngồi cạnh: chọn mặc định hợp lý theo bằng chứng sẵn có, không hỏi lại, không dừng chờ xác nhận.',
-                }, linkRun));
-                linkFinal = await design.runs.wait(linkRun);
-              } finally {
-                pipelineCancelers.delete(linkCancelKey);
-              }
-              db.prepare(`UPDATE messages SET run_status = ?, ended_at = ? WHERE id = ?`).run(linkFinal.status, Date.now(), linkAssistantId);
-
-              let linkedCount = 0;
-              if (linkFinal.status === 'succeeded') {
-                const raw = await fs.promises.readFile(path.join(cwd, linkRecoveryRel), 'utf8').catch(() => null);
-                if (raw != null) {
-                  const parsed = parseScreenRecovery(raw);
-                  if (parsed.document) {
-                    const flowsCtx: Record<string, { cells: ScreenRecoveryCell[] }> = {};
-                    for (const flow of realFlows) {
-                      let cells: ScreenRecoveryCell[] = [];
-                      const cellsRaw = await fs.promises.readFile(path.join(cwd, 'flows', flow.id, 'cells.json'), 'utf8').catch(() => null);
-                      if (cellsRaw != null) {
-                        try {
-                          const parsedCells = JSON.parse(cellsRaw) as unknown;
-                          if (Array.isArray(parsedCells)) {
-                            cells = parsedCells
-                              .filter((cell): cell is Record<string, unknown> => !!cell && typeof cell === 'object' && !Array.isArray(cell))
-                              .map((cell) => ({
-                                id: typeof cell.id === 'string' ? cell.id : '',
-                                label: typeof cell.label === 'string' ? cell.label : '',
-                                ...(typeof cell.kind === 'string' ? { kind: cell.kind } : {}),
-                              }))
-                              .filter((cell) => cell.id.length > 0);
-                          }
-                        } catch {
-                          cells = [];
-                        }
-                      }
-                      if (cells.length === 0) {
-                        try {
-                          const chart = JSON.parse(await fs.promises.readFile(path.join(cwd, `flows/${flow.id}.flowchart.json`), 'utf8')) as {
-                            nodes?: Array<{ id?: unknown; label?: unknown; type?: unknown }>;
-                          };
-                          cells = (chart.nodes ?? [])
-                            .map((node) => ({
-                              id: typeof node.id === 'string' ? node.id : '',
-                              label: typeof node.label === 'string' ? node.label : '',
-                              ...(typeof node.type === 'string' ? { type: node.type } : {}),
-                            }))
-                            .filter((cell) => cell.id.length > 0);
-                        } catch {
-                          cells = [];
-                        }
-                      }
-                      flowsCtx[flow.id] = { cells };
-                    }
-                    const validation = validateScreenRecovery(parsed.document, { markdownBySource, flows: flowsCtx });
-                    const advisoryByKey = new Map(advisoryNeedsHelp.map((problem) => [problem.key, problem]));
-                    for (const candidate of validation.accepted) {
-                      // The agent is asked to put the exact dr-comp SCREEN-KEY
-                      // in `name` (candidate.key is a document-derived hash,
-                      // not one of our keys — see pipeline-kickoffs.ts). Only
-                      // apply candidates that (a) resolve one of the screens
-                      // we actually asked about and (b) target a flow that
-                      // genuinely exists (validateScreenRecovery already
-                      // refused unknown flow ids).
-                      const targetKey = candidate.name.trim();
-                      if (!advisoryByKey.has(targetKey)) continue;
-                      const screenInput = screenInputs.find((screen) => screen.key === targetKey);
-                      if (!screenInput) continue;
-                      screenInput.flowId = candidate.flowId;
-                      const matchedFlow = realFlows.find((flow) => flow.id === candidate.flowId);
-                      if (matchedFlow?.title) screenInput.flowTitle = matchedFlow.title;
-                      linkedCount += 1;
-                    }
-                    if (linkedCount > 0) {
-                      await persistInputs();
-                      await buildScreenFlowArtifacts(cwd, screenInputs).catch((error) => {
-                        console.warn(`[docs-comp] tự nối màn: dựng lại luồng thất bại (giữ cảnh báo cũ):`, error);
-                      });
-                      topologyValidation = await validateScreenFlowRecoveryArtifacts(cwd);
-                    }
-                  }
-                }
-              }
-              linkTask.status = linkedCount > 0 ? 'succeeded' : 'failed';
-              setProjectPipelineStatus(db, projectId, pipelineId, { status: 'running', subConversations: [{ ...linkTask }] });
-              console.log(`[docs-comp] tự nối màn: +${linkedCount}/${advisoryNeedsHelp.length} màn (agent ${linkFinal.status})`);
-            } catch (error) {
-              // Agent lỗi/không nối được KHÔNG được làm hỏng stage — advisory
-              // linkage gaps vẫn chỉ là cảnh báo ở bước dưới.
-              console.warn('[docs-comp] tự nối màn thất bại (bỏ qua, giữ cảnh báo):', error);
-            }
-          }
+          // Auto-link (vòng recovery agent skill `docs-flow-ux`) đã bỏ
+          // 2026-08-28 (wp-docs-review-confirm-v2): màn UNLINKED/orphan/
+          // unreachable là linkage GAP advisory — vẫn chỉ là cảnh báo ở bước
+          // dưới (pipeline-recovery.ts's advisory/blocking split), không còn
+          // lượt agent tự nối màn.
         } else {
           await writeDocsComponentFailureNote(cwd, summaryMd);
           await fs.promises.rm(wireframesDir, { recursive: true, force: true }).catch(() => null);
@@ -22875,12 +22679,16 @@ export async function startServer({
           const config = await readAppConfig(RUNTIME_DATA_DIR);
           const machine = getMachineUser();
           const installationId = config.installationId || 'unknown-install';
+          // v2 (wp-docs-review-confirm-v2): App/feature/nền tảng + runId từng
+          // bước lấy từ project metadata + pipeline state — report gửi lên
+          // media là snapshot đủ 5 bước, không chỉ số đếm dr-review.
           const result = await confirmDocsReview({
             projectId,
             workflowRoot: path.join(PROJECTS_DIR, projectId, baseWfDir ?? 'docs-review'),
             installationId,
             user: machine?.email || config.feedbackUsername?.trim() || installationId,
             channel: isPackagedRuntime() ? 'packaged' : 'dev',
+            ...docsReviewConfirmContextOf(getProject(db, projectId), getProjectPipelineState(db, projectId)),
             ...(opts.docsReviewConfirmationId ? { confirmationId: opts.docsReviewConfirmationId } : {}),
             ...(opts.docsReviewSourceRunId ? { sourceRunId: opts.docsReviewSourceRunId } : {}),
           });
@@ -23680,9 +23488,9 @@ export async function startServer({
     // dr-flow: decode every draw.io / Mermaid diagram the docs carry into
     // ./flows/<FLOW-ID>/ BEFORE the agent starts (after the re-run clear
     // above, which wipes flows/). The skill reads flows/_inputs.json — the old
-    // review skill (docs-flow-ux) treats them as the subject, the new
-    // generator skill (docs-screen-flow) as SEED evidence for the screen flow.
-    if ((def.skillId === 'docs-flow-ux' || def.skillId === 'docs-screen-flow') && pipelineCwd) {
+    // generator skill (docs-screen-flow) reads them as SEED evidence for the
+    // screen flow (the old review skill docs-flow-ux was removed 2026-08-28).
+    if (def.skillId === 'docs-screen-flow' && pipelineCwd) {
       const runCwd = wfDir ? path.join(pipelineCwd, wfDir) : pipelineCwd;
       try {
         const prep = await prepareFlowUxInputs(runCwd);
@@ -23889,278 +23697,13 @@ export async function startServer({
             next = 'failed';
           }
         }
-        // dr-flow (docs-flow-ux): the agent emitted small JSON files; the daemon
-        // now applies patch.json -> proposed.drawio, derives flowchart.json and
-        // rebuilds flows/index.json. A finalize failure IS a stage failure —
-        // downstream stages need those files.
-        if (next === 'succeeded' && def.skillId === 'docs-flow-ux' && pipelineCwd) {
-          const runCwd = wfDir ? path.join(pipelineCwd, wfDir) : pipelineCwd;
-          try {
-            let fin = await finalizeFlowUx(runCwd);
-            console.log(`[flow-ux] ${projectId}: finalized ${fin.index.length} flow(s)${fin.warnings.length ? ` — ${fin.warnings.length} warning(s): ${fin.warnings.join(' | ')}` : ''}`);
-
-            // Every flow needs at least one canonical screen mapping before it
-            // is a valid input for dr-comp. Check coverage PER FLOW: a single
-            // healthy flow must not hide another flow whose document format
-            // was not recognised. Ask for one evidence-backed recovery pass,
-            // validate it deterministically, then rebuild the canonical index.
-            // Exactly one pass prevents loops.
-            const screenCount = () => fin.index.reduce((sum, entry) => sum + entry.screens.length, 0);
-            const uncoveredFlowIds = () => fin.index.filter((entry) => entry.screens.length === 0).map((entry) => entry.id);
-            const recoveryTargets = uncoveredFlowIds();
-            const missingFlowTopology = fin.index.length === 0;
-            if (missingFlowTopology || recoveryTargets.length > 0) {
-              const pages = await listDocPages(runCwd);
-              const markdownBySource: Record<string, string> = {};
-              for (const page of pages) {
-                const markdown = await fs.promises.readFile(path.join(runCwd, page.mdPath), 'utf8').catch(() => null);
-                if (markdown != null) markdownBySource[page.mdPath] = markdown;
-              }
-
-              const recoveryRel = 'flows/_screen-recovery.json';
-              await fs.promises.rm(path.join(runCwd, recoveryRel), { force: true }).catch(() => null);
-              const recoveryConversationId = `pipeline-conv-${randomUUID()}`;
-              const recoveryAssistantId = `pipeline-assistant-${randomUUID()}`;
-              const recoveryTitle = 'Khôi phục màn hình từ format tài liệu lạ';
-              insertConversation(db, {
-                id: recoveryConversationId,
-                projectId,
-                title: `${def.name} · ${recoveryTitle}`,
-                createdAt: Date.now(),
-                updatedAt: Date.now(),
-              });
-              const recoveryRun = design.runs.create({
-                projectId,
-                conversationId: recoveryConversationId,
-                assistantMessageId: recoveryAssistantId,
-                clientRequestId: `docs-flow-recovery-${randomUUID()}`,
-                agentId,
-              });
-              const recoveryTask = { id: recoveryConversationId, title: recoveryTitle, status: 'running' as 'running' | 'succeeded' | 'failed' };
-              setProjectPipelineStatus(db, projectId, pipelineId, { status: 'running', subConversations: [{ ...recoveryTask }] });
-              const recoveryKickoff = buildFlowUxRecoveryKickoff({
-                projectId,
-                missingFlowTopology,
-                recoveryTargetIds: recoveryTargets,
-                totalFlowCount: fin.index.length,
-                pageMdPaths: pages.map((page) => page.mdPath),
-                recoveryFile: recoveryRel,
-              });
-              // Canceler riêng cho recovery run: stage đơn vốn cancel qua
-              // lastRunId, nhưng lastRunId lúc này trỏ vào run CHÍNH đã kết
-              // thúc. KHÔNG dùng `activeRuns` — biến đó chỉ tồn tại trong các
-              // hàm fan-out; tham chiếu ở đây là ReferenceError runtime (file
-              // này @ts-nocheck nên tsc không bắt được).
-              const recoveryCancelKey = `${projectId}::${pipelineId}`;
-              const recoveryActiveRuns = new Set<{ id: string }>([recoveryRun]);
-              registerPipelineCanceler(recoveryCancelKey, recoveryActiveRuns, () => {});
-              let recoveryFinal: Awaited<ReturnType<typeof design.runs.wait>>;
-              try {
-                upsertMessage(db, recoveryConversationId, { id: `pipeline-user-${recoveryRun.id}`, role: 'user', content: recoveryKickoff });
-                upsertMessage(db, recoveryConversationId, {
-                  id: recoveryAssistantId,
-                  role: 'assistant',
-                  content: '',
-                  agentId,
-                  agentName: getAgentDef(agentId)?.name ?? agentId,
-                  runId: recoveryRun.id,
-                  runStatus: 'queued',
-                  startedAt: Date.now(),
-                });
-                design.runs.start(recoveryRun, () => startChatRun({
-                  agentId,
-                  projectId,
-                  conversationId: recoveryConversationId,
-                  assistantMessageId: recoveryAssistantId,
-                  clientRequestId: recoveryRun.clientRequestId,
-                  skillId: def.skillId,
-                  ...(wfDir ? { cwdSubdir: wfDir } : {}),
-                  model: modelPrefs.model ?? null,
-                  reasoning: modelPrefs.reasoning ?? null,
-                  message: recoveryKickoff,
-                  promptProfile: 'pipeline',
-                  pipelineUsesDesignSystem: def.acceptsDesignSystem === true,
-                }, recoveryRun));
-                recoveryFinal = await design.runs.wait(recoveryRun);
-              } finally {
-                pipelineCancelers.delete(recoveryCancelKey);
-              }
-              db.prepare(`UPDATE messages SET run_status = ?, ended_at = ? WHERE id = ?`)
-                .run(recoveryFinal.status, Date.now(), recoveryAssistantId);
-
-              const parseIssues: string[] = [];
-              let accepted: ReturnType<typeof validateScreenRecovery>['accepted'] = [];
-              let rejected: ReturnType<typeof validateScreenRecovery>['rejected'] = [];
-              if (recoveryFinal.status !== 'succeeded') {
-                parseIssues.push(`Recovery agent kết thúc với trạng thái "${recoveryFinal.status}".`);
-              } else {
-                const raw = await fs.promises.readFile(path.join(runCwd, recoveryRel), 'utf8').catch(() => null);
-                if (raw == null) parseIssues.push(`Recovery agent không ghi "${recoveryRel}".`);
-                else {
-                  const parsed = parseScreenRecovery(raw);
-                  parseIssues.push(...parsed.issues);
-                  if (parsed.document) {
-                    const flows: Record<string, { cells: ScreenRecoveryCell[] }> = {};
-                    for (const entry of fin.index) {
-                      const cellsRaw = await fs.promises.readFile(path.join(runCwd, 'flows', entry.id, 'cells.json'), 'utf8').catch(() => null);
-                      let cells: ScreenRecoveryCell[] = [];
-                      if (cellsRaw != null) {
-                        try {
-                          const parsedCells = JSON.parse(cellsRaw) as unknown;
-                          if (Array.isArray(parsedCells)) {
-                            cells = parsedCells
-                              .filter((cell): cell is Record<string, unknown> => !!cell && typeof cell === 'object' && !Array.isArray(cell))
-                              .map((cell) => ({
-                                id: typeof cell.id === 'string' ? cell.id : '',
-                                label: typeof cell.label === 'string' ? cell.label : '',
-                                ...(typeof cell.kind === 'string' ? { kind: cell.kind } : {}),
-                              }))
-                              .filter((cell) => cell.id.length > 0);
-                          }
-                        } catch {
-                          cells = [];
-                        }
-                      }
-                      if (cells.length === 0 && entry.files?.flowchart) {
-                        try {
-                          const chart = JSON.parse(await fs.promises.readFile(path.join(runCwd, entry.files.flowchart), 'utf8')) as {
-                            nodes?: Array<{ id?: unknown; label?: unknown; type?: unknown }>;
-                          };
-                          cells = (chart.nodes ?? [])
-                            .map((node) => ({
-                              id: typeof node.id === 'string' ? node.id : '',
-                              label: typeof node.label === 'string' ? node.label : '',
-                              ...(typeof node.type === 'string' ? { type: node.type } : {}),
-                            }))
-                            .filter((cell) => cell.id.length > 0);
-                        } catch {
-                          cells = [];
-                        }
-                      }
-                      flows[entry.id] = { cells };
-                    }
-                    const validation = validateScreenRecovery(parsed.document, { markdownBySource, flows });
-                    const targetSet = new Set(recoveryTargets);
-                    accepted = validation.accepted.filter((candidate) => targetSet.has(candidate.flowId));
-                    rejected = [
-                      ...validation.rejected,
-                      ...validation.accepted
-                        .filter((candidate) => !targetSet.has(candidate.flowId))
-                        .map((candidate, index) => ({
-                          index,
-                          candidate,
-                          reasons: [`Flow "${candidate.flowId}" đã có screen trước recovery — không được ghi đè coverage hợp lệ.`],
-                        })),
-                    ];
-                  }
-                }
-              }
-
-              if (accepted.length > 0) {
-                for (const entry of fin.index) {
-                  const recovered = accepted.filter((screen) => screen.flowId === entry.id);
-                  if (recovered.length === 0) continue;
-                  const screensPath = path.join(runCwd, 'flows', entry.id, 'screens.json');
-                  let existing: RecoveryScreensFile = {};
-                  try {
-                    existing = JSON.parse(await fs.promises.readFile(screensPath, 'utf8')) as RecoveryScreensFile;
-                  } catch {
-                    existing = {};
-                  }
-                  await fs.promises.writeFile(
-                    screensPath,
-                    `${JSON.stringify(canonicalizeRecoveredScreens(existing, recovered), null, 2)}\n`,
-                    'utf8',
-                  );
-                }
-                fin = await finalizeFlowUx(runCwd);
-              } else if (missingFlowTopology && recoveryFinal.status === 'succeeded') {
-                // In no-topology mode the recovery agent writes canonical
-                // text-only flow folders, not _screen-recovery.json.
-                fin = await finalizeFlowUx(runCwd);
-              }
-
-              const remainingUncovered = uncoveredFlowIds();
-              const recoveredCount = screenCount();
-              recoveryTask.status = fin.index.length > 0 && remainingUncovered.length === 0 ? 'succeeded' : 'failed';
-              setProjectPipelineStatus(db, projectId, pipelineId, { status: 'running', subConversations: [{ ...recoveryTask }] });
-
-              // Send the full original Markdown and referenced local files for
-              // both successful and unsuccessful fallback attempts. Upload is
-              // background/fail-soft; the returned id links a failure report.
-              const [versionInfo, reportConfig] = await Promise.all([
-                readCurrentAppVersionInfo().catch(() => ({ version: '0.0.0', channel: 'unknown', packaged: isPackagedRuntime(), platform: process.platform, arch: process.arch })),
-                readAppConfig(RUNTIME_DATA_DIR).catch(() => ({})),
-              ]);
-              const scannerTrace = {
-                trigger: 'uncovered-flow',
-                screensFound: recoveredCount,
-                recoveryTargets,
-                remainingUncovered,
-                pages: pages.map((page) => ({ source: page.mdPath, deterministicScreens: scanDocScreens(markdownBySource[page.mdPath] ?? '').length })),
-                flows: fin.index.map((entry) => ({ id: entry.id, kind: entry.kind, warnings: entry.screensDropped?.length ?? 0 })),
-              };
-              screenFormatObservationId = screenFormatReporter.report({
-                projectId,
-                ...(getProject(db, projectId)?.name ? { projectName: getProject(db, projectId)!.name } : {}),
-                workflowId: workflowDirForPipeline(pipelineId) ?? 'docs-review',
-                stageId: pipelineId,
-                severity: fin.index.length > 0 && remainingUncovered.length === 0 ? 'info' : 'error',
-                app: { version: versionInfo.version, channel: versionInfo.channel, packaged: versionInfo.packaged },
-                installationId: typeof reportConfig.installationId === 'string' && reportConfig.installationId ? reportConfig.installationId : 'unknown-install',
-                scannerTrace,
-                recovery: {
-                  accepted: JSON.parse(JSON.stringify(accepted)) as never[],
-                  rejected: JSON.parse(JSON.stringify([...rejected, ...parseIssues.map((reason) => ({ reason }))])) as never[],
-                },
-                projectRoot: runCwd,
-                sources: pages.map((page) => page.mdPath),
-              });
-
-              if (fin.index.length === 0 || remainingUncovered.length > 0) {
-                recoveryErrorCode = 'DR_FLOW_UNSUPPORTED_SCREEN_FORMAT';
-                const unresolvedIds = fin.index.length === 0 ? ['__flow-discovery__'] : remainingUncovered;
-                interactiveRecovery = {
-                  schemaVersion: 1,
-                  kind: 'flow',
-                  state: 'needs-assistance',
-                  updatedAt: Date.now(),
-                  units: unresolvedIds.map((flowId) => ({
-                    id: flowId,
-                    title: flowId === '__flow-discovery__' ? 'Xác định flow và màn hình' : `Flow ${flowId}`,
-                    conversationId: recoveryConversationId,
-                    errors: [
-                      flowId === '__flow-discovery__'
-                        ? 'Agent chưa xác định được topology luồng. Hãy trao đổi thêm trong chat rồi tạo flow Mermaid cùng screens.json có evidence.'
-                        : `Agent chưa nhận diện được screen hợp lệ cho flow "${flowId}". Hãy trao đổi thêm trong chat rồi cập nhật screens.json của flow.`,
-                    ],
-                  })),
-                };
-                upsertMessage(db, recoveryConversationId, {
-                  id: `pipeline-recovery-ready-${randomUUID()}`,
-                  role: 'assistant',
-                  content:
-                    `Recovery workspace đã mở cho phần chưa được phủ: ${unresolvedIds.join(', ')}. ` +
-                    `Bạn có thể trao đổi với tôi nhiều lượt để chỉ rõ tài liệu đang biểu diễn màn hình ở đâu. ` +
-                    `Khi đã đủ ngữ cảnh, hãy yêu cầu tôi cập nhật flows/<flow-id>/screens.json bằng evidence thật; ` +
-                    `sau đó quay lại Pipeline và bấm “Kiểm tra & tiếp tục”. Daemon sẽ finalize và validate lại, không bỏ qua evidence gate.`,
-                });
-                finalizeError =
-                  (fin.index.length === 0
-                    ? 'Không nhận diện được topology luồng sau fallback agent. '
-                    : `Không nhận diện đủ màn hình sau fallback agent; flow chưa được phủ: ${remainingUncovered.join(', ')}. `) +
-                  `Mở recovery chat để bổ sung ngữ cảnh, sau đó bấm Kiểm tra & tiếp tục. ` +
-                  `Đã gửi tài liệu và diagnostics với mã #${screenFormatObservationId}.`;
-                next = 'failed';
-              } else {
-                console.log(`[flow-ux] ${projectId}: recovery +${recoveredCount} screen(s), format observation #${screenFormatObservationId}`);
-              }
-            }
-          } catch (error) {
-            finalizeError = `Hoàn tất sơ đồ luồng thất bại: ${String((error as Error)?.message ?? error)}`;
-            console.warn('[flow-ux] finalize failed:', error);
-            next = 'failed';
-          }
+        // Nhánh finalize + recovery loop của skill `docs-flow-ux` (dr-flow cũ)
+        // đã bỏ 2026-08-28 (wp-docs-review-confirm-v2) — dr-flow nay chạy
+        // `docs-screen-flow` (finalize ở nhánh phía trên). Gặp lại skill này
+        // là cấu hình lỗi, không phải đường chạy hợp lệ.
+        if (next === 'succeeded' && def.skillId === 'docs-flow-ux') {
+          finalizeError = 'Skill docs-flow-ux đã bỏ — dr-flow dùng docs-screen-flow';
+          next = 'failed';
         }
         // CHẨN ĐOÁN "stage chết trong run-all nhưng chạy lẻ thành công, không
         // có bảng `runs` để khám nghiệm lượt đã hỏng" (xem incident docs-map):
@@ -25327,6 +24870,8 @@ export async function startServer({
     pipelines: pipelineDeps,
   });
   registerProjectSyncRoutes(app, { db, http: httpDeps, paths: pathDeps });
+  // Báo cáo docs-review tổng hợp cho /feedback (đọc media, cache 60 s).
+  registerDocsReviewReportRoutes(app, { mimeFor });
 
   // proxy routes (anthropic / openai / azure / google / ollama) live
   // in chat-routes.ts now — garnet had a partial duplicate here that

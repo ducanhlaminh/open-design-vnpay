@@ -6,12 +6,25 @@
 // vào srcdoc) → host đổi màn + lịch sử "Quay lại"; badge "đề xuất" cho màn
 // provenance=proposed; thiếu file màn → thông báo thay vì iframe rỗng.
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 
 const FILES: Record<string, string | null> = {};
 vi.mock('../../src/providers/registry', () => ({
   fetchProjectFileText: async (_projectId: string, name: string) => FILES[name] ?? null,
   projectRawUrl: (projectId: string, name: string) => `/api/projects/${projectId}/raw/${name}`,
+}));
+
+// wp-docs-review-confirm-v2: panel bình luận cấp bước cắm vào viewer này —
+// stub ghi props (panel thật tự GET comments lúc mount, làm lệch các đếm
+// fetchMock ở dưới; hợp đồng panel test riêng ở
+// tests/components/docs-review/stage-comment-panel.test.tsx).
+type StagePanelProps = { projectId: string; stageId: string; target?: { kind: string; key: string; label?: string }; collapsedByDefault?: boolean };
+let stagePanelCalls: StagePanelProps[] = [];
+vi.mock('../../src/components/docs-review/StageCommentPanel', () => ({
+  StageCommentPanel: (props: StagePanelProps) => {
+    stagePanelCalls.push(props);
+    return <aside data-testid="stage-comment-panel" data-stage-id={props.stageId} data-target-kind={props.target?.kind ?? ''} data-target-key={props.target?.key ?? ''} data-target-label={props.target?.label ?? ''} />;
+  },
 }));
 
 const { MockupsPreview, isMockupsIndexDoc, isMockupsIndexFile, withNavScript, NAV_SCRIPT, mockupLayoutOf, mockupScreenPath } =
@@ -20,6 +33,7 @@ const { MockupsPreview, isMockupsIndexDoc, isMockupsIndexFile, withNavScript, NA
 afterEach(() => {
   cleanup();
   for (const k of Object.keys(FILES)) delete FILES[k];
+  stagePanelCalls = [];
 });
 
 const file = (name: string, mtime = 1) => ({ name, size: 1, mtime, kind: 'code' as const, mime: 'application/json' });
@@ -186,5 +200,23 @@ describe('MockupsPreview — tab App | Web', () => {
     expect(screen.queryByTestId('mockup-tab-App')).toBeNull();
     expect(screen.getByTestId('mockup-rail-SCR-001')).toBeTruthy();
     expect(screen.getByTestId('mockup-rail-SCR-002')).toBeTruthy();
+  });
+});
+
+// wp-docs-review-confirm-v2 (J2): panel bình luận bước dr-mockup neo theo màn
+// đang chọn — đổi màn trên rail → target đổi theo (key + label = tên màn).
+describe('MockupsPreview — panel bình luận cấp bước (wp-docs-review-confirm-v2)', () => {
+  it('stageId dr-mockup, target screen theo màn đang chọn, đổi màn → target mới', async () => {
+    await renderPreview();
+    const panel = () => screen.getByTestId('stage-comment-panel');
+    expect(panel().getAttribute('data-stage-id')).toBe('dr-mockup');
+    expect(panel().getAttribute('data-target-kind')).toBe('screen');
+    expect(panel().getAttribute('data-target-key')).toBe('SCR-001');
+    expect(panel().getAttribute('data-target-label')).toBe('Trang chủ');
+    expect(stagePanelCalls[stagePanelCalls.length - 1]!.projectId).toBe('p');
+
+    fireEvent.click(screen.getByTestId('mockup-rail-SCR-002'));
+    await waitFor(() => expect(panel().getAttribute('data-target-key')).toBe('SCR-002'));
+    expect(panel().getAttribute('data-target-label')).toBe('Chọn gói cước');
   });
 });

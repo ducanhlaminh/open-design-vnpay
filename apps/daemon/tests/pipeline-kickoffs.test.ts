@@ -3,12 +3,10 @@ import { describe, expect, it } from 'vitest';
 import {
   buildDsCriteriaExtractKickoff,
   buildDsRulesExtractKickoff,
-  buildFlowUxRecoveryKickoff,
   buildModuleSpecKickoff,
   buildPipelineKickoff,
   buildPrdPageReviewKickoff,
   buildScreenComponentsKickoff,
-  buildScreenLinkRecoveryKickoff,
   buildScreenRunKickoff,
 } from '../src/pipeline-kickoffs.js';
 
@@ -251,53 +249,6 @@ describe('buildScreenRunKickoff', () => {
   });
 });
 
-describe('buildScreenLinkRecoveryKickoff', () => {
-  it('lists advisory screens + existing flows, targets screens (not flows), RECOVERY-schema-v1', () => {
-    const brief = buildScreenLinkRecoveryKickoff({
-      projectId: 'feat-1',
-      advisoryScreens: [
-        { key: 'VOUCHER', name: 'Mã voucher', reason: 'chưa có bằng chứng để thuộc một flow hợp lệ (UNLINKED)' },
-        { key: 'DETAIL', name: 'Chi tiết gói', reason: 'không có cạnh topology hợp lệ (orphan)' },
-      ],
-      flows: [
-        { id: 'FLOW-buy', title: 'Mua SIM', screenNames: ['Trang chủ', 'Chi tiết gói'] },
-      ],
-      pageMdPaths: ['docs/a.md'],
-      recoveryFile: 'flows/_screen-recovery.json',
-    });
-    expect(brief).toMatch(/^# /);
-    expect(brief).toContain('RECOVERY');
-    expect(brief).toContain('`docs-flow-ux`');
-    expect(brief).toContain('MÀN dr-comp đã dựng');
-    expect(brief).toContain('`VOUCHER`');
-    expect(brief).toContain('Mã voucher');
-    expect(brief).toContain('UNLINKED');
-    expect(brief).toContain('`DETAIL`');
-    expect(brief).toContain('orphan');
-    expect(brief).toContain('`FLOW-buy`');
-    expect(brief).toContain('Mua SIM');
-    expect(brief).toContain('Trang chủ, Chi tiết gói');
-    expect(brief).toContain('`docs/a.md`');
-    expect(brief).toContain('`flows/_screen-recovery.json`');
-    expect(brief).toContain('schema RECOVERY v1');
-    expect(brief).toContain('SCREEN-KEY');
-    expect(brief).toContain('không hỏi lại');
-  });
-
-  it('empty flows/pages render a fallback line instead of an empty bullet', () => {
-    const brief = buildScreenLinkRecoveryKickoff({
-      projectId: 'feat-1',
-      advisoryScreens: [],
-      flows: [],
-      pageMdPaths: [],
-      recoveryFile: 'flows/_screen-recovery.json',
-    });
-    expect(brief).toContain('0 màn chưa gắn được flow');
-    expect(brief).toContain('để nguyên UNLINKED');
-    expect(brief).toContain('(không có)');
-  });
-});
-
 describe('buildPipelineKickoff', () => {
   it('lists only non-empty directives, in the legacy concatenation order', () => {
     const brief = buildPipelineKickoff({
@@ -331,37 +282,3 @@ describe('buildPipelineKickoff', () => {
   });
 });
 
-describe('buildFlowUxRecoveryKickoff', () => {
-  it('missing topology branch: no recovery ids, different status/constraint text', () => {
-    const brief = buildFlowUxRecoveryKickoff({
-      projectId: 'feat-1',
-      missingFlowTopology: true,
-      recoveryTargetIds: [],
-      totalFlowCount: 0,
-      pageMdPaths: ['docs/a.md'],
-      recoveryFile: 'flows/_screen-recovery.json',
-    });
-    expect(brief).toMatch(/^# /);
-    expect(brief).toContain('RECOVERY');
-    expect(brief).toContain('`docs-flow-ux`');
-    expect(brief).toContain('`docs/a.md`');
-    expect(brief).toContain('KHÔNG tạo được flow topology');
-    expect(brief).not.toContain('flows/_screen-recovery.json');
-  });
-
-  it('uncovered-flows branch: lists recovery ids and the recovery file path verbatim', () => {
-    const brief = buildFlowUxRecoveryKickoff({
-      projectId: 'feat-1',
-      missingFlowTopology: false,
-      recoveryTargetIds: ['flow-a', 'flow-b'],
-      totalFlowCount: 3,
-      pageMdPaths: ['docs/a.md'],
-      recoveryFile: 'flows/_screen-recovery.json',
-    });
-    expect(brief).toContain('2/3 flow');
-    expect(brief).toContain('"flow-a"');
-    expect(brief).toContain('"flow-b"');
-    expect(brief).toContain('`flows/_screen-recovery.json`');
-    expect(brief).toContain('schema RECOVERY v1');
-  });
-});

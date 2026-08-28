@@ -3328,3 +3328,53 @@
   gap: 2px;
   padding: 4px 0;
 }
+
+/* ---- docs-review: bình luận cấp bước + modal xác nhận hoàn tất -------- */
+/* (wp-docs-review-confirm-v2) Badge "💬 n" trên thẻ bước — cùng khuôn
+   .pl-status, tông accent nhạt để không lẫn với trạng thái chạy. */
+.pl-status--comments {
+  gap: 4px;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 28%, transparent);
+}
+
+.pl-docs-confirm {
+  display: grid;
+  gap: 12px;
+}
+.pl-docs-confirm__hint {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-soft);
+}
+.pl-docs-confirm__stages {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+}
+.pl-docs-confirm__stage {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: var(--bg-subtle);
+}
+.pl-docs-confirm__name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-strong);
+}
+.pl-docs-confirm__comments {
+  flex: none;
+  font-size: 12px;
+  color: var(--text-soft);
+  white-space: nowrap;
+}

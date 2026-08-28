@@ -59,12 +59,26 @@ vi.mock('../../src/components/MermaidDiagram', () => ({
   ),
 }));
 
+// wp-docs-review-confirm-v2: panel bình luận cấp bước cắm vào viewer này —
+// stub ghi props (panel thật tự GET comments lúc mount, làm lệch các đếm
+// fetchMock ở dưới; hợp đồng panel test riêng ở
+// tests/components/docs-review/stage-comment-panel.test.tsx).
+type StagePanelProps = { projectId: string; stageId: string; target?: { kind: string; key: string; label?: string }; collapsedByDefault?: boolean };
+let stagePanelCalls: StagePanelProps[] = [];
+vi.mock('../../src/components/docs-review/StageCommentPanel', () => ({
+  StageCommentPanel: (props: StagePanelProps) => {
+    stagePanelCalls.push(props);
+    return <aside data-testid="stage-comment-panel" data-stage-id={props.stageId} data-target-kind={props.target?.kind ?? ''} data-target-key={props.target?.key ?? ''} data-target-label={props.target?.label ?? ''} />;
+  },
+}));
+
 const { FlowUxReviewPreview, isFlowUxFile, flowUxLocationOf, parseUxReview, drawioPageCount, drawioPageNames, evidenceLabel } = await import('../../src/components/FlowUxReviewPreview');
 
 afterEach(() => {
   cleanup();
   for (const k of Object.keys(FILES)) delete FILES[k];
   viewerCalls = [];
+  stagePanelCalls = [];
   localStorage.clear();
 });
 
@@ -1303,5 +1317,41 @@ describe('FlowUxReviewPreview — SCREEN-FLOW tách nền tảng (WP screen-flow
       vi.useRealTimers();
       vi.unstubAllGlobals();
     }
+  });
+});
+
+// wp-docs-review-confirm-v2 (J2): bước theo cách mở — đối chiếu (ux-review /
+// proposed) = dr-flow-improve (gập sẵn vì đã có panel UX), as-is.drawio (Quick
+// result dr-flow) = dr-flow (mở sẵn); target neo theo luồng với label = tiêu đề.
+describe('FlowUxReviewPreview — panel bình luận cấp bước (wp-docs-review-confirm-v2)', () => {
+  const XML = '<mxfile><diagram id="screen-flow" name="Luồng"><mxGraphModel/></diagram></mxfile>';
+  function seedFlow() {
+    FILES['docs-review/flows/SCREEN-FLOW/ux-review.json'] = JSON.stringify({ verdict: 'good', summary: '', findings: [] });
+    FILES['docs-review/flows/SCREEN-FLOW/as-is.drawio'] = XML;
+    FILES['docs-review/flows/index.json'] = JSON.stringify([{ id: 'SCREEN-FLOW', title: 'Luồng màn hình — Mua SIM', kind: 'drawio', source: 'docs-feature/x.md' }]);
+  }
+
+  it('mở ux-review.json (đối chiếu) → stageId dr-flow-improve, target flow SCREEN-FLOW + label tiêu đề, gập sẵn', async () => {
+    seedFlow();
+    render(<FlowUxReviewPreview projectId="p" file={file('docs-review/flows/SCREEN-FLOW/ux-review.json')} />);
+    await waitFor(() => expect(screen.getByTestId('drawio-stub')).toBeTruthy());
+    const panel = screen.getByTestId('stage-comment-panel');
+    expect(panel.getAttribute('data-stage-id')).toBe('dr-flow-improve');
+    expect(panel.getAttribute('data-target-kind')).toBe('flow');
+    expect(panel.getAttribute('data-target-key')).toBe('SCREEN-FLOW');
+    expect(panel.getAttribute('data-target-label')).toBe('Luồng màn hình — Mua SIM');
+    const last = stagePanelCalls[stagePanelCalls.length - 1]!;
+    expect(last.projectId).toBe('p');
+    expect(last.collapsedByDefault).toBe(true);
+  });
+
+  it('mở as-is.drawio (chỉ nguyên bản) → stageId dr-flow, mở sẵn', async () => {
+    seedFlow();
+    render(<FlowUxReviewPreview projectId="p" file={file('docs-review/flows/SCREEN-FLOW/as-is.drawio')} />);
+    await waitFor(() => expect(screen.getByTestId('drawio-stub')).toBeTruthy());
+    const panel = screen.getByTestId('stage-comment-panel');
+    expect(panel.getAttribute('data-stage-id')).toBe('dr-flow');
+    expect(panel.getAttribute('data-target-key')).toBe('SCREEN-FLOW');
+    expect(stagePanelCalls[stagePanelCalls.length - 1]!.collapsedByDefault).toBe(false);
   });
 });

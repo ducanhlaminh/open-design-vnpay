@@ -180,3 +180,14 @@
 .stat b { color: var(--text-strong); font-size: 17px; font-weight: 680; line-height: 1.1; }
 
 @media (max-width: 700px) { .stats { margin-left: 0; } }
+
+/* Nhãn nhóm tab "Khảo sát" (đứng trước 2 tab Tổng quan / Chi tiết). */
+.tabGroupLabel {
+  align-self: center;
+  padding: 0 6px 0 10px;
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-soft);
+}

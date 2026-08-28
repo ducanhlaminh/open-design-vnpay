@@ -3,7 +3,7 @@ import path from 'node:path';
 
 import express from 'express';
 import type { Express, Response } from 'express';
-import type { DocsReviewComponentSource, DocsReviewFigmaLink, PipelinePulseIssue, PipelinePulseRating, PipelineRunMode, PipelineRunSource, PipelineStatus, ProjectPipelineState, RunAllConfig, TargetPlatform, UiTarget, WorkflowTerminal } from '@open-design/contracts';
+import type { CreateDocsReviewStageCommentRequest, CreateDocsReviewStageCommentResponse, DocsReviewStageCommentsResponse, DocsReviewComponentSource, DocsReviewFigmaLink, PipelinePulseIssue, PipelinePulseRating, PipelineRunMode, PipelineRunSource, PipelineStatus, ProjectPipelineState, RunAllConfig, TargetPlatform, UiTarget, WorkflowTerminal } from '@open-design/contracts';
 import { TARGETS_CONFIG_BASENAME, UI_TARGETS, buildTargetsConfig, isUiTarget } from '@open-design/contracts';
 
 import {
@@ -25,6 +25,13 @@ import {
   getFigmaDesignSystemSource,
 } from './db.js';
 import { isSafeId, removeProjectDir } from './projects.js';
+import {
+  DocsReviewCommentError,
+  addDocsReviewStageComment,
+  deleteDocsReviewStageComment,
+  isDocsReviewStageId,
+  readDocsReviewStageComments,
+} from './docs-review-comments.js';
 import {
   DEFAULT_WORKFLOW_ID,
   WORKFLOWS,
@@ -1252,6 +1259,65 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
       res.status(201).json(await started.docsReviewConfirmation);
     } catch (error) {
       res.status(502).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  // ── Comment cấp bước của docs-review (wp-docs-review-confirm-v2) ──────────
+  // File `<projectDir>/docs-review/comments/<stageId>.json`, NGOÀI outputs mọi
+  // stage (sống sót re-run/clear). Logic + validate ở docs-review-comments.ts;
+  // route chỉ resolve project + danh tính (cùng resolveFeedbackIdentity).
+  const docsReviewWorkflowRoot = (projectId: string) =>
+    path.join(ctx.paths.PROJECTS_DIR, projectId, workflowDirForPipeline('dr-docs') ?? 'docs-review');
+  const docsReviewCommentError = (res: Response, error: unknown) => {
+    const status = error instanceof DocsReviewCommentError ? error.status : 500;
+    res.status(status).json({ error: error instanceof Error ? error.message : String(error) });
+  };
+
+  app.get('/api/projects/:id/docs-review/comments/:stageId', async (req, res) => {
+    const projectId = req.params.id;
+    const stageId = req.params.stageId;
+    if (!getProject(db, projectId)) return res.status(404).json({ error: 'project not found' });
+    if (!isDocsReviewStageId(stageId)) return res.status(404).json({ error: `Bước "${stageId}" không thuộc workflow docs-review` });
+    try {
+      const comments = await readDocsReviewStageComments(docsReviewWorkflowRoot(projectId), stageId);
+      const body: DocsReviewStageCommentsResponse = { stageId, comments };
+      res.json(body);
+    } catch (error) {
+      docsReviewCommentError(res, error);
+    }
+  });
+
+  app.post('/api/projects/:id/docs-review/comments/:stageId', async (req, res) => {
+    const projectId = req.params.id;
+    const stageId = req.params.stageId;
+    if (!getProject(db, projectId)) return res.status(404).json({ error: 'project not found' });
+    if (!isDocsReviewStageId(stageId)) return res.status(404).json({ error: `Bước "${stageId}" không thuộc workflow docs-review` });
+    const body = (req.body ?? {}) as Partial<CreateDocsReviewStageCommentRequest>;
+    try {
+      const { user } = await resolveFeedbackIdentity();
+      const comment = await addDocsReviewStageComment(docsReviewWorkflowRoot(projectId), stageId, {
+        text: body.text,
+        target: body.target,
+        by: user,
+      });
+      const out: CreateDocsReviewStageCommentResponse = { comment };
+      res.status(201).json(out);
+    } catch (error) {
+      docsReviewCommentError(res, error);
+    }
+  });
+
+  app.delete('/api/projects/:id/docs-review/comments/:stageId/:commentId', async (req, res) => {
+    const projectId = req.params.id;
+    const stageId = req.params.stageId;
+    if (!getProject(db, projectId)) return res.status(404).json({ error: 'project not found' });
+    if (!isDocsReviewStageId(stageId)) return res.status(404).json({ error: `Bước "${stageId}" không thuộc workflow docs-review` });
+    try {
+      const removed = await deleteDocsReviewStageComment(docsReviewWorkflowRoot(projectId), stageId, req.params.commentId);
+      if (!removed) return res.status(404).json({ error: 'comment not found' });
+      res.status(204).end();
+    } catch (error) {
+      docsReviewCommentError(res, error);
     }
   });
 

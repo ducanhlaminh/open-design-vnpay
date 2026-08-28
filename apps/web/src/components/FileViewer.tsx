@@ -66,6 +66,8 @@ import { ScreenComponentsPreview, isScreenComponentsFile } from './ScreenCompone
 import { FlowchartPreview, isFlowchartFile } from './FlowchartPreview';
 import { FlowUxReviewPreview, isFlowUxFile } from './FlowUxReviewPreview';
 import { MockupsPreview, isMockupsIndexFile } from './MockupsPreview';
+import { StageCommentPanel, isDocsReviewDocsPage } from './docs-review/StageCommentPanel';
+import stageCommentStyles from './docs-review/StageCommentPanel.module.css';
 import { MermaidDiagram } from './MermaidDiagram';
 import { inlineMarkdownImages } from '../runtime/markdown-images';
 import { SpecFlowCanvas, isFlowDoc, type FlowDoc } from './SpecFlowCanvas';
@@ -9031,6 +9033,30 @@ function MarkdownViewer({
     }, 1800);
   }
 
+  // dr-docs (wp-docs-review-confirm-v2): trang tài liệu docs-review/docs*/ có
+  // cột bình luận cấp bước bên phải, neo theo trang (target page = đường dẫn).
+  const docsReviewPage = isDocsReviewDocsPage(file.name);
+  const viewerBody = (
+      <div className="viewer-body">
+        {html === null ? (
+          <div className="viewer-empty">{t('fileViewer.loading')}</div>
+        ) : (
+          <>
+            {isStreaming ? <div className="markdown-status">{t('fileViewer.markdownStreamingStatus')}</div> : null}
+            {isError ? <div className="markdown-status markdown-status-error">{t('fileViewer.markdownErrorStatus')}</div> : null}
+            {/* Safe by contract: renderMarkdownToSafeHtml escapes raw HTML and rejects unsafe link protocols. */}
+            <article
+              ref={markdownArticleRef}
+              className="markdown-rendered"
+              onClick={(event) => void handleMarkdownBodyClick(event)}
+              dangerouslySetInnerHTML={articleHtml ?? { __html: html }}
+            />
+            {mermaidMounts.map((m, i) => createPortal(<MermaidDiagram code={m.code} initialFit="width" />, m.host, `mermaid-${i}`))}
+          </>
+        )}
+      </div>
+  );
+
   return (
     <div className="viewer text-viewer">
       <div className="viewer-toolbar">
@@ -9059,24 +9085,16 @@ function MarkdownViewer({
           </button>
         </div>
       </div>
-      <div className="viewer-body">
-        {html === null ? (
-          <div className="viewer-empty">{t('fileViewer.loading')}</div>
-        ) : (
-          <>
-            {isStreaming ? <div className="markdown-status">{t('fileViewer.markdownStreamingStatus')}</div> : null}
-            {isError ? <div className="markdown-status markdown-status-error">{t('fileViewer.markdownErrorStatus')}</div> : null}
-            {/* Safe by contract: renderMarkdownToSafeHtml escapes raw HTML and rejects unsafe link protocols. */}
-            <article
-              ref={markdownArticleRef}
-              className="markdown-rendered"
-              onClick={(event) => void handleMarkdownBodyClick(event)}
-              dangerouslySetInnerHTML={articleHtml ?? { __html: html }}
-            />
-            {mermaidMounts.map((m, i) => createPortal(<MermaidDiagram code={m.code} initialFit="width" />, m.host, `mermaid-${i}`))}
-          </>
-        )}
-      </div>
+      {docsReviewPage ? (
+        <div className={stageCommentStyles.host}>
+          {viewerBody}
+          <StageCommentPanel
+            projectId={projectId}
+            stageId="dr-docs"
+            target={{ kind: 'page', key: file.name, label: file.name.split('/').pop() ?? file.name }}
+          />
+        </div>
+      ) : viewerBody}
     </div>
   );
 }

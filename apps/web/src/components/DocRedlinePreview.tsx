@@ -32,9 +32,12 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
 import { createPortal } from 'react-dom';
 import type {
+  DocAnnotationComment,
   DocReviewAnnotationEvent,
   DocReviewAnnotationFileV2,
 } from '@open-design/contracts';
+import { getCurrentUserName } from './docs-review/current-user';
+import { StageCommentPanel } from './docs-review/StageCommentPanel';
 import type { ProjectFile } from '../types';
 import { fetchProjectFileText } from '../providers/registry';
 import { renderMarkdownToSafeHtml } from '../artifacts/markdown';
@@ -118,15 +121,11 @@ export interface DocRedlineChange {
  *  không có `before`/`quote` — chỉ có `anchor` để định vị vào tài liệu. */
 /** Một bình luận người dùng gắn vào MỘT change/note — lưu ngay trong phần tử
  *  tương ứng của `.changes.json`/`.notes.json` (field `comments`), cùng đường
- *  ghi non-destructive `saveAction` như mọi thao tác khác. Không có `author`:
- *  mọi bình luận đều do người dùng viết từ panel (agent/daemon không ghi
- *  field này), thêm field chỉ để lặp lại điều đó là mở đường dữ liệu mâu
- *  thuẫn. */
-export interface DocAnnotationComment {
-  id: string;
-  text: string;
-  at: number;
-}
+ *  ghi non-destructive `saveAction` như mọi thao tác khác. Shape dùng chung
+ *  với daemon/studio qua contracts (`DocAnnotationComment`, 0.8.164): `by`
+ *  tuỳ chọn = tên người viết (từ `/api/auth/me`, xem `getCurrentUserName`)
+ *  để báo cáo dr-confirm v2 biết ai nói gì. */
+export type { DocAnnotationComment };
 
 export interface DocRedlineNote {
   id: string;
@@ -1198,6 +1197,9 @@ export function DocRedlinePreview({
   // `flows/<flowId>/proposed.drawio` cho host sơ đồ draw.io (mục D
   // wp-drreview-drawio-preview.yaml).
   const workflowPrefix = file.name.split('/review/')[0] ?? '';
+  // Trang đang review, tương đối so với `<wf>/review/` (vd `docs/urd.md`) —
+  // key neo bình luận cấp bước dr-review (wp-docs-review-confirm-v2).
+  const reviewPage = file.name.slice(workflowPrefix.length + '/review/'.length);
   const [editedText, setEditedText] = useState<string | null>(null);
   const [changesState, setChangesState] = useState<ChangesState>({ status: 'loading' });
   const [notesState, setNotes] = useState<DocRedlineNote[]>(NO_NOTES);
@@ -2205,7 +2207,8 @@ export function DocRedlinePreview({
   async function addAnnotationComment(target: AnnotationDetailTarget, text: string): Promise<boolean> {
     const trimmed = text.trim();
     if (!trimmed) return false;
-    const comment: DocAnnotationComment = { id: uid('comment'), text: trimmed, at: Date.now() };
+    const by = await getCurrentUserName();
+    const comment: DocAnnotationComment = { id: uid('comment'), text: trimmed, at: Date.now(), ...(by ? { by } : {}) };
     if (target.kind === 'change') {
       const c = target.change;
       return saveAction(c.id, () => updateChange(c, { comments: [...(c.comments ?? []), comment] }));
@@ -3079,6 +3082,15 @@ export function DocRedlinePreview({
                 />
               );
             })() : null}
+            {/* Bình luận CẤP TRANG (bước dr-review) — cạnh panel chi tiết, KHÔNG
+                thay bình luận per-annotation trong panel chi tiết. Gập sẵn để
+                không giành chỗ với panel chi tiết. */}
+            <StageCommentPanel
+              projectId={projectId}
+              stageId="dr-review"
+              target={{ kind: 'page', key: reviewPage, label: reviewPage.split('/').pop() ?? reviewPage }}
+              collapsedByDefault
+            />
             </div>
           </div>
         )}
@@ -3521,7 +3533,7 @@ function AnnotationDetailPanel({
               <li key={comment.id} className={styles.commentItem ?? ''}>
                 <p className={styles.commentText ?? ''}>{comment.text}</p>
                 <div className={styles.commentMeta ?? ''}>
-                  <span>{new Date(comment.at).toLocaleString('vi-VN')}</span>
+                  <span>{comment.by ? `${comment.by} · ` : ''}{new Date(comment.at).toLocaleString('vi-VN')}</span>
                   <button
                     type="button"
                     className={styles.commentDelete ?? ''}

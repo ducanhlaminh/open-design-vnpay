@@ -43,8 +43,21 @@ vi.mock('../../src/providers/registry', () => ({
   projectRawUrl: (projectId: string, filePath: string) => `/api/projects/${projectId}/raw/${filePath}`,
 }));
 vi.mock('../../src/components/Icon', () => ({ Icon: () => null }));
+// wp-docs-review-confirm-v2: panel bình luận cấp bước cắm vào viewer này —
+// stub ghi props (panel thật tự GET comments lúc mount, làm lệch các đếm
+// fetchMock ở dưới; hợp đồng panel test riêng ở
+// tests/components/docs-review/stage-comment-panel.test.tsx).
+type StagePanelProps = { projectId: string; stageId: string; target?: { kind: string; key: string; label?: string }; collapsedByDefault?: boolean };
+let stagePanelCalls: StagePanelProps[] = [];
+vi.mock('../../src/components/docs-review/StageCommentPanel', () => ({
+  StageCommentPanel: (props: StagePanelProps) => {
+    stagePanelCalls.push(props);
+    return <aside data-testid="stage-comment-panel" data-stage-id={props.stageId} data-target-kind={props.target?.kind ?? ''} data-target-key={props.target?.key ?? ''} data-target-label={props.target?.label ?? ''} />;
+  },
+}));
 
 const { DocRedlinePreview, parseDocChangesFile, narrowEditedLines } = await import('../../src/components/DocRedlinePreview');
+const { resetCurrentUserCache } = await import('../../src/components/docs-review/current-user');
 
 const FILE = {
   name: 'docs-review/review/docs/urd.md',
@@ -66,6 +79,10 @@ beforeEach(() => {
     headers: { 'Content-Type': 'application/json' },
   }));
   vi.stubGlobal('fetch', fetchMock);
+  // `by` của bình luận annotation đọc /api/auth/me một lần rồi nhớ — xoá cache
+  // để mỗi test tự quyết có user hay không.
+  resetCurrentUserCache();
+  stagePanelCalls = [];
 });
 
 afterEach(() => cleanup());
@@ -405,5 +422,68 @@ describe('Docs Review annotations and confirmation', () => {
     fireEvent.click(getByRole('button', { name: 'Tự chỉnh' }));
     await waitFor(() => expect(queryByRole('button', { name: 'Sửa đoạn chọn' })).toBeTruthy());
     expect(queryByRole('button', { name: 'Xác nhận hoàn tất' })).toBeNull();
+  });
+});
+
+// wp-docs-review-confirm-v2 (J2): trang redline có thêm panel bình luận CẤP
+// TRANG (bước dr-review, target page = đường dẫn tương đối so với review/),
+// cạnh panel chi tiết và KHÔNG thay bình luận per-annotation; bình luận
+// annotation giờ ghi `by` (tên từ /api/auth/me) khi có user.
+describe('DocRedlinePreview — bình luận cấp trang + `by` (wp-docs-review-confirm-v2)', () => {
+  it('panel cấp trang: stageId dr-review, target page docs/urd.md, gập sẵn', async () => {
+    const { container } = render(<DocRedlinePreview projectId="p1" file={FILE} />);
+    await waitFor(() => expect(container.querySelector('mark[data-change-id="agent-1"]')).not.toBeNull());
+    const panel = container.querySelector('[data-testid="stage-comment-panel"]')!;
+    expect(panel).not.toBeNull();
+    expect(panel.getAttribute('data-stage-id')).toBe('dr-review');
+    expect(panel.getAttribute('data-target-kind')).toBe('page');
+    expect(panel.getAttribute('data-target-key')).toBe('docs/urd.md');
+    expect(panel.getAttribute('data-target-label')).toBe('urd.md');
+    const last = stagePanelCalls[stagePanelCalls.length - 1]!;
+    expect(last.projectId).toBe('p1');
+    expect(last.collapsedByDefault).toBe(true);
+  });
+
+  it('bình luận annotation ghi `by` = user.name từ /api/auth/me; panel chi tiết hiện tên', async () => {
+    fetchMock.mockImplementation(async (input: string) => {
+      const url = String(input);
+      if (url === '/api/auth/me') {
+        return new Response(JSON.stringify({ user: { name: 'Anh Nguyen', email: 'anh@vnpay.vn' } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ file: FILE }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
+    const { container, baseElement } = render(<DocRedlinePreview projectId="p1" file={FILE} />);
+    await waitFor(() => expect(container.querySelector('mark[data-change-id="agent-1"]')).not.toBeNull());
+    fireEvent.click(container.querySelector('mark[data-change-id="agent-1"]')!);
+    const dialog = await waitFor(() => {
+      const el = baseElement.querySelector('[role="dialog"]');
+      expect(el).not.toBeNull();
+      return el as HTMLElement;
+    });
+    fireEvent.change(dialog.querySelector<HTMLTextAreaElement>('textarea[aria-label="Bình luận mới"]')!, { target: { value: 'Cần BA xác nhận.' } });
+    fireEvent.click(Array.from(dialog.querySelectorAll('button')).find((b) => b.textContent === 'Gửi')!);
+    await waitFor(() => expect(latestSidecarWrite().annotations[0]?.comments).toMatchObject([
+      { text: 'Cần BA xác nhận.', by: 'Anh Nguyen' },
+    ]));
+    expect(latestSidecarWrite().events).toEqual([]);
+    expectNoMdWrite();
+    await waitFor(() => expect(dialog.textContent).toContain('Anh Nguyen · '));
+  });
+
+  it('không có user (/api/auth/me không trả user) → bình luận không có `by`', async () => {
+    const { container, baseElement } = render(<DocRedlinePreview projectId="p1" file={FILE} />);
+    await waitFor(() => expect(container.querySelector('mark[data-change-id="agent-1"]')).not.toBeNull());
+    fireEvent.click(container.querySelector('mark[data-change-id="agent-1"]')!);
+    const dialog = await waitFor(() => {
+      const el = baseElement.querySelector('[role="dialog"]');
+      expect(el).not.toBeNull();
+      return el as HTMLElement;
+    });
+    fireEvent.change(dialog.querySelector<HTMLTextAreaElement>('textarea[aria-label="Bình luận mới"]')!, { target: { value: 'Ẩn danh.' } });
+    fireEvent.click(Array.from(dialog.querySelectorAll('button')).find((b) => b.textContent === 'Gửi')!);
+    await waitFor(() => expect(latestSidecarWrite().annotations[0]?.comments).toHaveLength(1));
+    expect(latestSidecarWrite().annotations[0]!.comments as Array<Record<string, unknown>>).toEqual([
+      expect.not.objectContaining({ by: expect.anything() }),
+    ]);
   });
 });

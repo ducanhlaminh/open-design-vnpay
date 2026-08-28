@@ -106,6 +106,10 @@ export async function listScreenFlowIds(cwd: string): Promise<string[]> {
 export const SELECTION_FILE = 'selection.json';
 /** `{ at }` — người dùng đã sửa TAY trang Cải thiện: finalize KHÔNG áp lại patch. */
 export const PROPOSED_EDITED_FILE = 'proposed.edited.json';
+/** `{ at }` — người dùng đã sửa TAY trang Nguyên bản (trang 0 / as-is) từ
+ *  editor nhúng. Chỉ là dấu vết cho dr-confirm v2 (`metrics.drawioEdited`);
+ *  finalize KHÔNG đọc nó. Nằm trong `flows/` nên re-run dr-flow xoá theo. */
+export const AS_IS_EDITED_FILE = 'as-is.edited.json';
 /** Danh sách màn của bản cải thiện (daemon sinh ở finalize improve). */
 export const SCREENS_IMPROVED_FILE = 'screens.improved.json';
 
@@ -755,6 +759,9 @@ export async function saveScreenFlowEdit(cwd: string, mxfileXml: string, flowId:
   await fs.writeFile(asIsPath, encodeMxfile([page]), 'utf8');
   const cellDump = listCells(page.graphXml).map(({ style: _style, ...rest }) => rest);
   await fs.writeFile(path.join(dir, 'cells.json'), `${JSON.stringify(cellDump, null, 2)}\n`, 'utf8');
+  if (asIsChanged) {
+    await fs.writeFile(path.join(dir, AS_IS_EDITED_FILE), `${JSON.stringify({ at: new Date().toISOString() }, null, 2)}\n`, 'utf8');
+  }
 
   // Trang Cải thiện.
   const proposedPath = path.join(dir, 'proposed.drawio');

@@ -1,0 +1,255 @@
+/* StageCommentPanel — cùng khuôn với rail Quick result (.pl-result-rail*):
+   nền --bg-subtle, viền --border-soft, bo --radius-sm, chữ phụ --text-soft;
+   light/dark theo token sẵn có (fallback cho chỗ chưa nạp tokens). */
+
+/* Wrapper hàng ngang cho viewer chủ: [nội dung viewer][panel]. Con đầu tiên
+   (nội dung) co giãn, panel giữ bề rộng cố định. Dùng ở MarkdownViewer /
+   FlowUxReviewPreview / MockupsPreview thay vì sửa CSS riêng từng viewer. */
+.host {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: stretch;
+  min-height: 0;
+  min-width: 0;
+}
+.host > :first-child {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+}
+
+.panel {
+  flex: 0 0 280px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  border-left: 1px solid var(--border-soft, var(--border, #e1e5eb));
+  background: var(--bg-subtle, #f4f6f8);
+  color: var(--text, #1a1916);
+  font-size: 12.5px;
+}
+.panelCollapsed {
+  flex-basis: 36px;
+  align-items: center;
+  padding: 6px 4px;
+  overflow: hidden;
+}
+
+.head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px 8px 12px;
+  border-bottom: 1px solid var(--border-soft, var(--border, #e1e5eb));
+}
+.title {
+  font-weight: 650;
+  color: var(--text-strong, var(--text, #1a1916));
+}
+
+.toggle {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-width: 26px;
+  height: 26px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: var(--radius-sm, 6px);
+  background: transparent;
+  color: var(--text-soft, #57544e);
+  font: inherit;
+  cursor: pointer;
+}
+.toggle:hover {
+  background: var(--bg-app, rgba(0, 0, 0, 0.05));
+  color: var(--text, #1a1916);
+}
+.panelCollapsed .toggle {
+  flex-direction: column;
+  height: auto;
+  padding: 6px 2px;
+}
+.toggleCount {
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.scopeBar {
+  flex: none;
+  display: flex;
+  gap: 4px;
+  padding: 8px 10px 0;
+}
+.scopeBtn {
+  flex: 1 1 0;
+  padding: 4px 8px;
+  border: 1px solid var(--border, #d9dee5);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-soft, #57544e);
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.scopeBtnActive {
+  border-color: var(--accent, #0066b3);
+  background: color-mix(in srgb, var(--accent, #0066b3) 12%, transparent);
+  color: var(--accent, #0066b3);
+}
+
+.body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px 10px;
+}
+.muted {
+  margin: 4px 2px;
+  color: var(--text-soft, #57544e);
+}
+.error {
+  margin: 4px 2px;
+  color: var(--red, #c0392b);
+}
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.item {
+  padding: 8px 10px;
+  border: 1px solid var(--border-soft, var(--border, #e1e5eb));
+  border-radius: var(--radius-sm, 6px);
+  background: var(--bg-panel, var(--bg, #fff));
+}
+.meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-soft, #57544e);
+}
+.by {
+  font-weight: 650;
+  color: var(--text, #1a1916);
+}
+.dot {
+  opacity: 0.6;
+}
+.chip {
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent, #0066b3) 12%, transparent);
+  color: var(--accent, #0066b3);
+  font-weight: 600;
+}
+.delete {
+  margin-left: auto;
+  width: 20px;
+  height: 20px;
+  border: 0;
+  border-radius: var(--radius-sm, 6px);
+  background: transparent;
+  color: var(--text-soft, #57544e);
+  font: inherit;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+.delete:hover:not(:disabled) {
+  background: var(--bg-app, rgba(0, 0, 0, 0.05));
+  color: var(--red, #c0392b);
+}
+.confirm {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.confirmYes,
+.confirmNo {
+  padding: 1px 7px;
+  border: 1px solid var(--border, #d9dee5);
+  border-radius: 999px;
+  background: transparent;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.confirmYes {
+  border-color: var(--red, #c0392b);
+  color: var(--red, #c0392b);
+}
+.text {
+  margin: 4px 0 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.45;
+}
+
+.composer {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px 10px;
+  border-top: 1px solid var(--border-soft, var(--border, #e1e5eb));
+}
+.input {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  min-height: 56px;
+  padding: 6px 8px;
+  border: 1px solid var(--border, #d9dee5);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--bg-panel, var(--bg, #fff));
+  color: var(--text, #1a1916);
+  font: inherit;
+  font-size: 12.5px;
+}
+.input:focus {
+  outline: none;
+  border-color: var(--accent, #0066b3);
+}
+.composerRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.hint {
+  font-size: 10.5px;
+  color: var(--text-soft, #57544e);
+}
+.send {
+  padding: 4px 12px;
+  border: 1px solid var(--accent, #0066b3);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--accent, #0066b3);
+  color: #fff;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.send:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
