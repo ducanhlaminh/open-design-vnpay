@@ -1122,3 +1122,186 @@ describe('FlowUxReviewPreview — editor đúng trang + highlight theo loại (W
     expect(screen.queryByTestId('edit-hint')).toBeNull();
   });
 });
+
+// ── WP screen-flow-platform-split (2026-08-28) ───────────────────────────────
+// Tài liệu ≥2 nền tảng → hai flow `SCREEN-FLOW--app` / `SCREEN-FLOW--web`
+// (index.json entry mang `platform`). Web: nhận id tách là luồng màn hình
+// (Chỉnh sửa/Danh sách màn/chọn bản), badge App/Web cạnh tiêu đề, fetch
+// selection/editor gửi `flowId`, tab Danh sách màn lọc theo nền tảng. Flow
+// đơn `SCREEN-FLOW` giữ URL/body fetch y hệt (snapshot).
+describe('FlowUxReviewPreview — SCREEN-FLOW tách nền tảng (WP screen-flow-platform-split)', () => {
+  const XML1 = '<mxfile><diagram id="screen-flow" name="Luồng"><mxGraphModel/></diagram></mxfile>';
+  const XML2 = '<mxfile><diagram id="screen-flow" name="Nguyên bản"><mxGraphModel/></diagram><diagram id="screen-flow-proposed" name="Cải thiện"><mxGraphModel/></diagram></mxfile>';
+  const DISCOVERED = {
+    schema_version: 1,
+    generatedAt: '2026-08-28T00:00:00.000Z',
+    pages: [
+      {
+        source: 'docs-feature/cr.md',
+        screens: [
+          { code: null, name: 'Trang chủ App', anchorText: '2.2.1 MB', platform: 'app' },
+          { code: null, name: 'Trang chủ Web', anchorText: '2.3.1 IB', platform: 'web' },
+          { code: 'BO-1', name: 'Quản trị yêu cầu', anchorText: '2.4 BO', platform: 'web' },
+          { code: 'X9', name: 'Màn chung', anchorText: 'chung' },
+        ],
+      },
+      { source: 'docs-feature/app-only.md', screens: [{ code: null, name: 'Chỉ App', anchorText: 'app', platform: 'app' }] },
+    ],
+    excluded: [],
+  };
+  function seedSplit() {
+    FILES['docs-review/flows/index.json'] = JSON.stringify([
+      { id: 'SCREEN-FLOW--app', title: 'Luồng màn hình (App) — Hỗ trợ trực tuyến', kind: 'drawio', platform: 'app', source: 'docs-feature/cr.md' },
+      { id: 'SCREEN-FLOW--web', title: 'Luồng màn hình (Web) — Hỗ trợ trực tuyến', kind: 'drawio', platform: 'web', hasProposal: true, source: 'docs-feature/cr.md' },
+    ]);
+    FILES['docs-review/flows/SCREEN-FLOW--app/ux-review.json'] = JSON.stringify({ flowId: 'SCREEN-FLOW--app', verdict: 'good', summary: '', findings: [] });
+    FILES['docs-review/flows/SCREEN-FLOW--app/as-is.drawio'] = XML1;
+    FILES['docs-review/flows/SCREEN-FLOW--web/ux-review.json'] = JSON.stringify({ flowId: 'SCREEN-FLOW--web', verdict: 'good', summary: '', findings: [] });
+    FILES['docs-review/flows/SCREEN-FLOW--web/as-is.drawio'] = XML1;
+    FILES['docs-review/flows/SCREEN-FLOW--web/proposed.drawio'] = XML2;
+    FILES['docs-review/screens-discovered.json'] = JSON.stringify(DISCOVERED);
+  }
+
+  it('filterScreensByPlatform: null → trả nguyên doc (cùng tham chiếu); app/web → giữ màn cùng nền tảng + màn không platform, bỏ trang rỗng', async () => {
+    const { filterScreensByPlatform, screenFlowApiUrl } = await import('../../src/components/FlowUxReviewPreview');
+    const doc = DISCOVERED as unknown as Parameters<typeof filterScreensByPlatform>[0];
+    expect(filterScreensByPlatform(doc, null)).toBe(doc);
+    const web = filterScreensByPlatform(doc, 'web');
+    expect(web.pages.map((p) => [p.source, p.screens.map((s) => s.name)])).toEqual([
+      ['docs-feature/cr.md', ['Trang chủ Web', 'Quản trị yêu cầu', 'Màn chung']],
+    ]);
+    const app = filterScreensByPlatform(doc, 'app');
+    expect(app.pages.map((p) => [p.source, p.screens.map((s) => s.name)])).toEqual([
+      ['docs-feature/cr.md', ['Trang chủ App', 'Màn chung']],
+      ['docs-feature/app-only.md', ['Chỉ App']],
+    ]);
+    // Route daemon: flow đơn không query; flow tách có ?flowId=.
+    expect(screenFlowApiUrl('p', 'SCREEN-FLOW', '/selection')).toBe('/api/projects/p/docs-review/screen-flow/selection');
+    expect(screenFlowApiUrl('p', 'SCREEN-FLOW', '')).toBe('/api/projects/p/docs-review/screen-flow');
+    expect(screenFlowApiUrl('p', 'SCREEN-FLOW--web', '/selection')).toBe('/api/projects/p/docs-review/screen-flow/selection?flowId=SCREEN-FLOW--web');
+    expect(screenFlowApiUrl('p x', 'SCREEN-FLOW--app', '')).toBe('/api/projects/p%20x/docs-review/screen-flow?flowId=SCREEN-FLOW--app');
+  });
+
+  it('mở flow --web: badge "Web", có Chỉnh sửa + Danh sách màn + chọn bản; PUT selection gửi ?flowId= + flowId trong body; tab Danh sách màn chỉ hiện màn web + màn không platform', async () => {
+    seedSplit();
+    const fetchMock = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ ok: true, variant: 'improved', screens: [], downstreamStale: false }) }));
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      render(<FlowUxReviewPreview projectId="p" file={file('docs-review/flows/SCREEN-FLOW--web/ux-review.json')} />);
+      await waitFor(() => expect(screen.getAllByTestId('drawio-stub').length).toBe(2));
+      expect(screen.getByRole('heading', { level: 2 }).textContent).toBe('Luồng màn hình (Web) — Hỗ trợ trực tuyến');
+      expect(screen.getByTestId('platform-badge').textContent).toBe('Web');
+      expect(screen.getByRole('button', { name: 'Chỉnh sửa' })).toBeTruthy();
+      expect(screen.getByRole('tab', { name: 'Danh sách màn' })).toBeTruthy();
+      // Không selection trong index → mặc định Nguyên bản; đổi sang Cải thiện.
+      const group = screen.getByRole('radiogroup', { name: 'Dùng bản để chạy tiếp' });
+      const radioImproved = within(group).getByRole('radio', { name: 'Cải thiện' }) as HTMLInputElement;
+      expect(radioImproved.checked).toBe(false);
+      fireEvent.click(radioImproved);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+      expect(url).toBe('/api/projects/p/docs-review/screen-flow/selection?flowId=SCREEN-FLOW--web');
+      expect(init.method).toBe('PUT');
+      expect(JSON.parse(String(init.body))).toEqual({ variant: 'improved', flowId: 'SCREEN-FLOW--web' });
+      await waitFor(() => expect(radioImproved.disabled).toBe(false));
+      expect(radioImproved.checked).toBe(true);
+
+      fireEvent.click(screen.getByRole('tab', { name: 'Danh sách màn' }));
+      await waitFor(() => expect(screen.getByTestId('screens-discovered-preview')).toBeTruthy());
+      expect(screen.getByText('Trang chủ Web')).toBeTruthy();
+      expect(screen.getByText('Quản trị yêu cầu')).toBeTruthy();
+      expect(screen.getByText('Màn chung')).toBeTruthy();
+      expect(screen.queryByText('Trang chủ App')).toBeNull();
+      expect(screen.queryByText('Chỉ App')).toBeNull();
+      expect(screen.queryByTestId('sd-page-docs-feature/app-only.md')).toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('mở flow --app: badge "App"; lưu editor POST …/screen-flow?flowId=SCREEN-FLOW--app với flowId trong body; Danh sách màn hiện màn app + màn không platform', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    seedSplit();
+    const fetchMock = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ ok: true, warnings: [], screens: [] }) }));
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      render(<FlowUxReviewPreview projectId="p" file={file('docs-review/flows/SCREEN-FLOW--app/ux-review.json')} />);
+      await waitFor(() => expect(screen.getByTestId('drawio-stub')).toBeTruthy());
+      expect(screen.getByTestId('platform-badge').textContent).toBe('App');
+      // Không có bản Cải thiện → không khối chọn bản.
+      expect(screen.queryByRole('radiogroup')).toBeNull();
+      fireEvent.click(screen.getByRole('button', { name: 'Chỉnh sửa' }));
+      const host = await waitFor(() => screen.getByTestId('drawio-editor'));
+      const iframe = host.querySelector('iframe') as HTMLIFrameElement;
+      const win = iframe.contentWindow as Window;
+      win.postMessage = (() => undefined) as typeof win.postMessage;
+      fireEvent(window, new MessageEvent('message', { data: JSON.stringify({ event: 'init' }), source: win }));
+      const EDITED = XML1.replace('name="Luồng"', 'name="Luồng App"');
+      fireEvent(window, new MessageEvent('message', { data: JSON.stringify({ event: 'autosave', xml: EDITED }), source: win }));
+      await vi.advanceTimersByTimeAsync(1600);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+      expect(url).toBe('/api/projects/p/docs-review/screen-flow?flowId=SCREEN-FLOW--app');
+      expect(init.method).toBe('POST');
+      expect(JSON.parse(String(init.body))).toEqual({ xml: EDITED, flowId: 'SCREEN-FLOW--app' });
+
+      fireEvent.click(screen.getByRole('tab', { name: 'Danh sách màn' }));
+      await waitFor(() => expect(screen.getByTestId('screens-discovered-preview')).toBeTruthy());
+      expect(screen.getByText('Trang chủ App')).toBeTruthy();
+      expect(screen.getByText('Chỉ App')).toBeTruthy();
+      expect(screen.getByText('Màn chung')).toBeTruthy();
+      expect(screen.queryByText('Trang chủ Web')).toBeNull();
+      expect(screen.queryByText('Quản trị yêu cầu')).toBeNull();
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('flow đơn SCREEN-FLOW: snapshot URL + body PUT selection và POST editor y hệt trước (không flowId), không badge nền tảng, Danh sách màn không lọc', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    FILES['docs-review/flows/SCREEN-FLOW/ux-review.json'] = JSON.stringify({ flowId: 'SCREEN-FLOW', verdict: 'good', summary: '', findings: [] });
+    FILES['docs-review/flows/SCREEN-FLOW/as-is.drawio'] = XML1;
+    FILES['docs-review/flows/SCREEN-FLOW/proposed.drawio'] = XML2;
+    FILES['docs-review/flows/index.json'] = JSON.stringify([{ id: 'SCREEN-FLOW', title: 'Luồng màn hình — OTP', kind: 'drawio', hasProposal: true, selection: { variant: 'improved', source: 'user' } }]);
+    FILES['docs-review/screens-discovered.json'] = JSON.stringify(DISCOVERED);
+    const fetchMock = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ ok: true, variant: 'original', warnings: [], screens: [] }) }));
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      render(<FlowUxReviewPreview projectId="p" file={file('docs-review/flows/SCREEN-FLOW/ux-review.json')} />);
+      await waitFor(() => expect(screen.getAllByTestId('drawio-stub').length).toBe(2));
+      expect(screen.queryByTestId('platform-badge')).toBeNull();
+      const group = screen.getByRole('radiogroup', { name: 'Dùng bản để chạy tiếp' });
+      fireEvent.click(within(group).getByRole('radio', { name: 'Nguyên bản' }));
+      await waitFor(() => expect((within(group).getByRole('radio', { name: 'Nguyên bản' }) as HTMLInputElement).disabled).toBe(false));
+
+      fireEvent.click(screen.getByRole('button', { name: 'Chỉnh sửa' }));
+      const host = await waitFor(() => screen.getByTestId('drawio-editor'));
+      const iframe = host.querySelector('iframe') as HTMLIFrameElement;
+      const win = iframe.contentWindow as Window;
+      win.postMessage = (() => undefined) as typeof win.postMessage;
+      fireEvent(window, new MessageEvent('message', { data: JSON.stringify({ event: 'init' }), source: win }));
+      const EDITED = XML2.replace('name="Cải thiện"', 'name="Cải thiện 2"');
+      fireEvent(window, new MessageEvent('message', { data: JSON.stringify({ event: 'autosave', xml: EDITED }), source: win }));
+      await vi.advanceTimersByTimeAsync(1600);
+      // Snapshot: đúng 2 lượt fetch, URL/method/body nguyên xi như trước WP.
+      expect(fetchMock.mock.calls.map((c) => {
+        const [u, i] = c as unknown as [string, RequestInit];
+        return [u, i.method, String(i.body)];
+      })).toEqual([
+        ['/api/projects/p/docs-review/screen-flow/selection', 'PUT', '{"variant":"original"}'],
+        ['/api/projects/p/docs-review/screen-flow', 'POST', JSON.stringify({ xml: EDITED })],
+      ]);
+
+      fireEvent.click(screen.getByRole('tab', { name: 'Danh sách màn' }));
+      await waitFor(() => expect(screen.getByTestId('screens-discovered-preview')).toBeTruthy());
+      // Không lọc: mọi màn đều hiện (kể cả có platform).
+      expect(screen.getByText('Trang chủ App')).toBeTruthy();
+      expect(screen.getByText('Trang chủ Web')).toBeTruthy();
+      expect(screen.getByText('Chỉ App')).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
+  });
+});

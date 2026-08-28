@@ -112,13 +112,18 @@ test('toDiscoveredDoc: pages nhóm theo source (mặc định source cấp file)
   assert.equal(disc.generatedAt, '2026-08-27T00:00:00.000Z');
   assert.deepEqual(disc.pages.map((p) => p.source), ['docs-feature/prd.md', 'docs-feature/other.md']);
   assert.deepEqual(disc.pages[0]!.screens.map((s) => s.code), ['6.1.1', '6.4.1', '6.3.2']);
-  assert.deepEqual(disc.pages[1]!.screens, [{ code: null, name: 'Màn trang khác', anchorText: '## Màn trang khác' }]);
+  // WP screen-flow-platform-split A0: `key` đi kèm (thẩm quyền duy nhất — persist
+  // KHÔNG đánh lại X<n>); code null vẫn null.
+  assert.deepEqual(disc.pages[1]!.screens, [{ key: 'other__X', code: null, name: 'Màn trang khác', anchorText: '## Màn trang khác' }]);
   assert.equal(disc.pages[0]!.screens[0]!.why, 'Màn khởi đầu.');
   assert.deepEqual(disc.pages[0]!.screens[1]!.blocks, [{ name: 'Mã voucher', anchorText: '#### 6.4.4. Mã voucher', why: 'Bottom-sheet trong màn.' }]);
   assert.equal('blocks' in disc.pages[0]!.screens[0]!, false);
-  // `cell`/`key` là chuyện của luồng — không rò sang contract discovery.
+  // `cell` là chuyện của luồng — không rò sang contract discovery; `key` thì
+  // PHẢI có (A0). Tài liệu một nền tảng: không `platform`/`groupKey`.
   assert.equal('cell' in disc.pages[0]!.screens[0]!, false);
-  assert.equal('key' in disc.pages[0]!.screens[0]!, false);
+  assert.equal(disc.pages[0]!.screens[0]!.key, 'prd__6.1.1');
+  assert.equal('platform' in disc.pages[0]!.screens[0]!, false);
+  assert.equal('groupKey' in disc.pages[0]!.screens[0]!, false);
   assert.deepEqual(disc.excluded, [
     { name: '6. Khung giao diện sơ bộ', source: 'docs-feature/prd.md', reason: 'Heading nhóm.' },
     { name: 'Phụ lục', source: 'docs-feature/other.md', reason: 'Bảng.', partOf: 'prd__6.1.1' },

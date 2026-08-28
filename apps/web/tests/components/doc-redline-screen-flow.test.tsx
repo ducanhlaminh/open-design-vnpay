@@ -236,10 +236,17 @@ describe('parseScreenFlowRef / splitEdgeKey / parseScreenCells (thuần)', () =>
     vi.resetModules();
     mockProject();
     const { parseScreenFlowRef, splitEdgeKey, parseScreenCells } = await import('../../src/components/DocRedlinePreview');
-    expect(parseScreenFlowRef('flows/SCREEN-FLOW/ux-review.json#UX-01')).toEqual({ file: 'ux-review', id: 'UX-01' });
-    expect(parseScreenFlowRef('flows/SCREEN-FLOW/screens.json#urd__S1')).toEqual({ file: 'screens', id: 'urd__S1' });
-    expect(parseScreenFlowRef('flows/SCREEN-FLOW/screens.improved.json#urd__X1')).toEqual({ file: 'screens', id: 'urd__X1' });
-    expect(parseScreenFlowRef('flows/SCREEN-FLOW.flowchart.json#od-a→od-b')).toEqual({ file: 'flowchart', id: 'od-a→od-b' });
+    expect(parseScreenFlowRef('flows/SCREEN-FLOW/ux-review.json#UX-01')).toEqual({ file: 'ux-review', id: 'UX-01', flowId: 'SCREEN-FLOW' });
+    expect(parseScreenFlowRef('flows/SCREEN-FLOW/screens.json#urd__S1')).toEqual({ file: 'screens', id: 'urd__S1', flowId: 'SCREEN-FLOW' });
+    expect(parseScreenFlowRef('flows/SCREEN-FLOW/screens.improved.json#urd__X1')).toEqual({ file: 'screens', id: 'urd__X1', flowId: 'SCREEN-FLOW' });
+    expect(parseScreenFlowRef('flows/SCREEN-FLOW.flowchart.json#od-a→od-b')).toEqual({ file: 'flowchart', id: 'od-a→od-b', flowId: 'SCREEN-FLOW' });
+    // WP screen-flow-platform-split: id tách nền tảng → flowId theo thư mục.
+    expect(parseScreenFlowRef('flows/SCREEN-FLOW--app/ux-review.json#UX-02')).toEqual({ file: 'ux-review', id: 'UX-02', flowId: 'SCREEN-FLOW--app' });
+    expect(parseScreenFlowRef('flows/SCREEN-FLOW--web/screens.json#urd__S1--web')).toEqual({ file: 'screens', id: 'urd__S1--web', flowId: 'SCREEN-FLOW--web' });
+    expect(parseScreenFlowRef('flows/SCREEN-FLOW--web/screens.improved.json#k')).toEqual({ file: 'screens', id: 'k', flowId: 'SCREEN-FLOW--web' });
+    expect(parseScreenFlowRef('flows/SCREEN-FLOW--app.flowchart.json#a→b')).toEqual({ file: 'flowchart', id: 'a→b', flowId: 'SCREEN-FLOW--app' });
+    expect(parseScreenFlowRef('flows/SCREEN-FLOW--ios/ux-review.json#UX-01')).toBeNull();
+    expect(parseScreenFlowRef('flows/SCREEN-FLOW--app/patch.json#x')).toBeNull();
     expect(parseScreenFlowRef('default#flow')).toBeNull();
     expect(parseScreenFlowRef('flows/SCREEN-FLOW/ux-review.json')).toBeNull();
     expect(parseScreenFlowRef('flows/FLOW-x/ux-review.json#UX-01')).toBeNull();
@@ -444,5 +451,152 @@ describe('DocRedlinePreview — right panel Luồng màn hình bản đã chọn
     const dialog = await openChange(container, baseElement, 'c-w');
     expect(dialog.textContent).toContain('default#ux-writing');
     expect(dialog.querySelector('[data-testid="panel-screen-flow"]')).toBeNull();
+  });
+});
+
+// ── WP screen-flow-platform-split (2026-08-28) ───────────────────────────────
+// Tài liệu ≥2 nền tảng → hai flow `SCREEN-FLOW--app` / `SCREEN-FLOW--web`,
+// KHÔNG còn `flows/SCREEN-FLOW/`. Ref `rule_id` mang id thư mục → panel phải
+// nạp selection/sơ đồ/screens của ĐÚNG flow đó; flow đơn giữ fetch y hệt.
+const SPLIT_CHANGES = JSON.stringify([
+  {
+    id: 'c-ux-app',
+    kind: 'flow',
+    severity: 'major',
+    rule_id: 'flows/SCREEN-FLOW--app/ux-review.json#UX-01',
+    before: 'Người dùng nhập OTP.',
+    quote: 'Người dùng nhập OTP rồi xác nhận.',
+    reason: 'Bản cải thiện App thêm màn xác nhận (UX-01).',
+  },
+  {
+    id: 'c-edge-web',
+    kind: 'flow',
+    severity: 'minor',
+    rule_id: 'flows/SCREEN-FLOW--web.flowchart.json#od-a→od-n1',
+    before: 'Sau khi xác nhận hệ thống chuyển sang màn kết quả.',
+    quote: 'Sau khi đăng nhập hệ thống chuyển sang màn kết quả.',
+    reason: 'Câu điều hướng lệch cạnh trên bản Web.',
+  },
+]);
+const SPLIT_NOTES = JSON.stringify([
+  {
+    id: 'n-gap-web',
+    kind: 'gap',
+    severity: 'major',
+    rule_id: 'flows/SCREEN-FLOW--web/screens.json#urd__S1--web',
+    anchor: 'Màn đăng nhập hiện form.',
+    finding: 'Luồng Web có màn «Đăng nhập» nhưng tài liệu chưa có mục mô tả',
+    suggestion: 'Bổ sung mục mô tả màn.',
+  },
+]);
+const SCREENS_WEB = JSON.stringify({
+  screens: [{ key: 'urd__S1--web', code: 'S1', name: 'Đăng nhập', platform: 'web', cell: 'od-b' }],
+});
+const SCREENS_WEB_IMPROVED = JSON.stringify({
+  schema_version: 1,
+  screens: [{ key: 'urd__X1--web', name: 'Xác nhận', platform: 'web', cell: 'od-n1', provenance: 'proposed' }],
+});
+
+/** Dự án tách nền tảng: app = Nguyên bản (selection 404), web = Cải thiện. */
+function mockSplitProject() {
+  const fetchCalls: string[] = [];
+  vi.doMock('../../src/providers/registry', () => ({
+    fetchProjectFileText: async (_projectId: string, name: string) => {
+      fetchCalls.push(name);
+      if (name.endsWith('.changes.json')) return SPLIT_CHANGES;
+      if (name.endsWith('.notes.json')) return SPLIT_NOTES;
+      if (name.endsWith('.md')) return EDITED;
+      // Không còn thư mục flow đơn.
+      if (name.includes('/flows/SCREEN-FLOW/')) return null;
+      if (name.endsWith('/SCREEN-FLOW--app/selection.json')) return null;
+      if (name.endsWith('/SCREEN-FLOW--app/as-is.drawio')) return AS_IS_XML;
+      if (name.endsWith('/SCREEN-FLOW--app/ux-review.json')) return UX_REVIEW.replace('"SCREEN-FLOW"', '"SCREEN-FLOW--app"');
+      if (name.endsWith('/SCREEN-FLOW--web/selection.json')) return JSON.stringify({ variant: 'improved', source: 'user' });
+      if (name.endsWith('/SCREEN-FLOW--web/proposed.drawio')) return PROPOSED_XML;
+      if (name.endsWith('/SCREEN-FLOW--web/as-is.drawio')) return AS_IS_XML;
+      if (name.endsWith('/SCREEN-FLOW--web/screens.json')) return SCREENS_WEB;
+      if (name.endsWith('/SCREEN-FLOW--web/screens.improved.json')) return SCREENS_WEB_IMPROVED;
+      return null;
+    },
+    projectRawUrl: (projectId: string, filePath: string) => `/api/projects/${projectId}/raw/${filePath}`,
+  }));
+  return fetchCalls;
+}
+
+async function mountSplit() {
+  vi.resetModules();
+  const fetchCalls = mockSplitProject();
+  const mod = await import('../../src/components/DocRedlinePreview');
+  const utils = render(<mod.DocRedlinePreview projectId="p1" file={FILE} />);
+  return { ...utils, fetchCalls };
+}
+
+describe('DocRedlinePreview — ref theo flow tách nền tảng (WP screen-flow-platform-split)', () => {
+  it('ref flows/SCREEN-FLOW--app/ux-review.json#UX-01 → panel nạp selection/as-is/ux-review của --app, badge App, tô cells.asIs (app = Nguyên bản)', async () => {
+    const { container, baseElement, fetchCalls } = await mountSplit();
+    const dialog = await openChange(container, baseElement, 'c-ux-app');
+    await waitFor(() => {
+      const { cells } = panelViewer(dialog);
+      expect(cells).toEqual([{ id: 'od-a', kind: 'added' }]);
+    });
+    const { el } = panelViewer(dialog);
+    expect(el.dataset.page).toBe('0');
+    const viewer = dialog.querySelector<HTMLElement>('[data-testid="panel-screen-flow"] [data-testid="screen-flow-viewer"]');
+    expect(viewer?.dataset.flowId).toBe('SCREEN-FLOW--app');
+    expect(dialog.querySelector('[data-testid="screen-flow-platform"]')?.textContent).toBe('App');
+    expect(dialog.querySelector('[data-testid="screen-flow-variant"]')?.textContent).toContain('Nguyên bản');
+    expect(fetchCalls).toContain(`${PREFIX}/flows/SCREEN-FLOW--app/selection.json`);
+    expect(fetchCalls).toContain(`${PREFIX}/flows/SCREEN-FLOW--app/as-is.drawio`);
+    expect(fetchCalls).toContain(`${PREFIX}/flows/SCREEN-FLOW--app/ux-review.json`);
+    // Không đọc nhầm flow web.
+    expect(fetchCalls.filter((n) => n.includes('/SCREEN-FLOW--web/'))).toEqual([]);
+  });
+
+  it('note gap flows/SCREEN-FLOW--web/screens.json#KEY → panel nạp proposed.drawio page 1 của --web (selection improved), badge Web, tô cell của màn từ screens.json ∪ screens.improved.json', async () => {
+    const { container, baseElement, fetchCalls } = await mountSplit();
+    const dialog = await openNote(container, baseElement, 'n-gap-web');
+    await waitFor(() => {
+      const { cells } = panelViewer(dialog);
+      expect(cells).toEqual(['od-b']);
+    });
+    const { el } = panelViewer(dialog);
+    expect(el.dataset.page).toBe('1');
+    const viewer = dialog.querySelector<HTMLElement>('[data-testid="panel-screen-flow"] [data-testid="screen-flow-viewer"]');
+    expect(viewer?.dataset.flowId).toBe('SCREEN-FLOW--web');
+    expect(dialog.querySelector('[data-testid="screen-flow-platform"]')?.textContent).toBe('Web');
+    expect(dialog.querySelector('[data-testid="screen-flow-variant"]')?.textContent).toContain('Cải thiện');
+    expect(fetchCalls).toContain(`${PREFIX}/flows/SCREEN-FLOW--web/selection.json`);
+    expect(fetchCalls).toContain(`${PREFIX}/flows/SCREEN-FLOW--web/proposed.drawio`);
+    expect(fetchCalls).toContain(`${PREFIX}/flows/SCREEN-FLOW--web/screens.json`);
+    expect(fetchCalls).toContain(`${PREFIX}/flows/SCREEN-FLOW--web/screens.improved.json`);
+    expect(fetchCalls).not.toContain(`${PREFIX}/flows/SCREEN-FLOW--web/as-is.drawio`);
+  });
+
+  it('ref flows/SCREEN-FLOW--web.flowchart.json#from→to → tìm id cạnh trong XML trang Đề xuất của --web', async () => {
+    const { container, baseElement } = await mountSplit();
+    const dialog = await openChange(container, baseElement, 'c-edge-web');
+    await waitFor(() => {
+      const { cells } = panelViewer(dialog);
+      expect(cells).toEqual(['od-e2']);
+    });
+    expect(dialog.querySelector('[data-testid="screen-flow-platform"]')?.textContent).toBe('Web');
+  });
+
+  it('flow đơn SCREEN-FLOW: tập file flows/ được fetch y hệt trước (snapshot), không badge nền tảng, không đụng thư mục --app/--web', async () => {
+    const { container, baseElement, fetchCalls } = await mount({ selection: 'improved' });
+    const dialog = await openChange(container, baseElement, 'c-ux');
+    await waitFor(() => {
+      const { cells } = panelViewer(dialog);
+      expect(cells).toEqual([{ id: 'od-n1', kind: 'added' }]);
+    });
+    const flowFetches = Array.from(new Set(fetchCalls.filter((n) => n.includes('/flows/')))).sort();
+    expect(flowFetches).toEqual([
+      `${PREFIX}/flows/SCREEN-FLOW/proposed.drawio`,
+      `${PREFIX}/flows/SCREEN-FLOW/selection.json`,
+      `${PREFIX}/flows/SCREEN-FLOW/ux-review.json`,
+    ]);
+    expect(dialog.querySelector('[data-testid="screen-flow-platform"]')).toBeNull();
+    const viewer = dialog.querySelector<HTMLElement>('[data-testid="panel-screen-flow"] [data-testid="screen-flow-viewer"]');
+    expect(viewer?.dataset.flowId).toBe('SCREEN-FLOW');
   });
 });

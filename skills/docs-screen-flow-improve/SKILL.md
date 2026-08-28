@@ -10,7 +10,10 @@ description: |
   (findings with reason / evidence / cells). The daemon applies the patch into
   the colour-coded `proposed.drawio` (page "Nguyên bản" | "Cải thiện"), builds
   `screens.improved.json`, and the user picks which variant downstream stages
-  use. Lean subset of `docs-flow-ux` with a FIXED input (SCREEN-FLOW only).
+  use. Lean subset of `docs-flow-ux` with a FIXED input (the screen-flow
+  folders only). Since 2026-08-28 a document with two platforms has TWO flows
+  (`flows/SCREEN-FLOW--app/` + `flows/SCREEN-FLOW--web/`) — review each flow
+  separately, `flowId` = the folder name.
   Activate when the user runs the "Cải thiện luồng" pipeline or asks to
   improve / UX-review a generated screen flow.
 triggers:
@@ -27,20 +30,24 @@ od:
 # docs-screen-flow-improve — review + đề xuất cải thiện LUỒNG MÀN HÌNH (`docs-review`)
 
 Bạn là bước **Cải thiện luồng** của workflow `docs-review`. Bước Luồng màn hình
-(`dr-flow`) đã vẽ `flows/SCREEN-FLOW/as-is.drawio` từ tài liệu. Việc của bạn:
+(`dr-flow`) đã vẽ `flows/<SCREEN-FLOW-ID>/as-is.drawio` từ tài liệu — với
+`<SCREEN-FLOW-ID>` là `SCREEN-FLOW` (tài liệu một nền tảng) HOẶC cặp
+`SCREEN-FLOW--app` + `SCREEN-FLOW--web` (tài liệu hai nền tảng; kickoff liệt
+kê từng flow). **Review TỪNG flow RIÊNG**: mỗi flow có bộ input/output của
+mình, không trộn cell/màn/finding giữa App và Web. Việc của bạn:
 đọc luồng đó CÙNG tài liệu, chấm theo checklist UX bên dưới, và — khi có vấn
 đề — đề xuất bản tốt hơn bằng vài thao tác SỬA NHỎ trên chính sơ đồ. Daemon tô
 màu (xanh = thêm, vàng = sửa, đỏ gạch = bỏ) và người xem so "Nguyên bản" với
 "Cải thiện" rồi tự chọn bản nào chạy tiếp (`selection.json` — KHÔNG phải việc
 của bạn).
 
-## Input (chỉ đọc, từ cwd của dự án)
+## Input (chỉ đọc, từ cwd của dự án) — cho MỖI flow `flows/<SCREEN-FLOW-ID>/`
 
-- `flows/SCREEN-FLOW/cells.json` — id ↔ nhãn của mọi node/cạnh (bản đồ để gọi
-  tên cell trong `patch.json` / `ux-review.json`).
-- `flows/SCREEN-FLOW/as-is.drawio` — XML thuần, mở khi cần xem style/bố cục.
-- `flows/SCREEN-FLOW/screens.json` — danh sách màn (`screens[]` key/code/name/
-  anchorText/cell; `cells`/`names` dẫn xuất).
+- `flows/<SCREEN-FLOW-ID>/cells.json` — id ↔ nhãn của mọi node/cạnh (bản đồ để
+  gọi tên cell trong `patch.json` / `ux-review.json`).
+- `flows/<SCREEN-FLOW-ID>/as-is.drawio` — XML thuần, mở khi cần xem style/bố cục.
+- `flows/<SCREEN-FLOW-ID>/screens.json` — danh sách màn (`screens[]` key/code/
+  name/anchorText/cell/platform; `cells`/`names` dẫn xuất).
 - Tài liệu: `docs-feature/**.md` (nguồn sự thật; `docs-app/` chỉ đối chiếu;
   dự án legacy dùng `docs/`). Bỏ qua `_index.md`, `attachments/`, `*.changes.json`,
   `*.notes.json`, `review/`, `*.slice.md`.
@@ -64,11 +71,14 @@ của bạn).
 hoặc chính cell sơ đồ. Không có căn cứ = không phải finding. Không suy diễn
 "thường thì phải có OTP/xác nhận".
 
-## Output 1 — `flows/SCREEN-FLOW/ux-review.json` (luôn ghi)
+## Output 1 — `flows/<SCREEN-FLOW-ID>/ux-review.json` (luôn ghi, MỖI flow một file)
+
+`flowId` = ĐÚNG tên thư mục (`SCREEN-FLOW`, `SCREEN-FLOW--app` hoặc
+`SCREEN-FLOW--web`). Hai flow → hai file, id finding đánh riêng từng file.
 
 ```json
 {
-  "flowId": "SCREEN-FLOW",
+  "flowId": "SCREEN-FLOW--app",
   "verdict": "needs-improvement",
   "summary": "Happy path 5 màn hợp lý; thiếu màn xác nhận đơn trước thanh toán như 6.4.2 mô tả.",
   "findings": [
@@ -90,14 +100,15 @@ hoặc chính cell sơ đồ. Không có căn cứ = không phải finding. Khô
 cải thiện — viewer highlight theo đó. `change`: `added` | `modified` | `removed`
 | `none`. Luồng tốt → `verdict: "good"`, `findings: []`.
 
-## Output 2 — `flows/SCREEN-FLOW/patch.json` (chỉ khi có đề xuất)
+## Output 2 — `flows/<SCREEN-FLOW-ID>/patch.json` (chỉ khi có đề xuất, MỖI flow một file)
 
 Bạn **không viết XML**. Ghi danh sách thao tác; daemon áp lên sơ đồ, tính toạ
-độ, tô màu, gắn `od-change`/`od-finding` lên cell.
+độ, tô màu, gắn `od-change`/`od-finding` lên cell. `flowId` = tên thư mục;
+mọi `cell`/`near`/`from`/`to` phải là id trong `cells.json` CỦA CHÍNH flow đó.
 
 ```json
 {
-  "flowId": "SCREEN-FLOW",
+  "flowId": "SCREEN-FLOW--app",
   "ops": [
     { "op": "addNode", "id": "od-n1", "shape": "action", "label": "6.4.2 · Xác nhận đơn", "near": "od-6-4-1", "dir": "below", "finding": "UX-01",
       "screen": { "key": "prd__6.4.2", "name": "Xác nhận đơn", "anchorText": "#### 6.4.2 Xác nhận đơn" } },
@@ -121,7 +132,9 @@ Bạn **không viết XML**. Ghi danh sách thao tác; daemon áp lên sơ đồ
 có `screen: { key, name, anchorText? }`; node hệ thống / kết cục thì KHÔNG.
 `key` = `<file-stem>__<mã màn>` (stem = tên file `.md` bỏ đuôi; mã như trong
 heading). Tài liệu chưa có mã cho màn này → `key` = `<file-stem>__NEW-<slug>`
-(slug không dấu, `[a-z0-9-]`) và KHÔNG có `anchorText`. `anchorText` chỉ khi
+(slug không dấu, `[a-z0-9-]`) và KHÔNG có `anchorText`. Trong flow tách theo
+nền tảng, thêm hậu tố `--app`/`--web` khớp flow vào cuối key
+(`<file-stem>__NEW-<slug>--app`). `anchorText` chỉ khi
 tài liệu thật sự có MỘT dòng nguyên văn duy nhất khai màn đó. Daemon đưa màn
 này vào `screens.improved.json` (`provenance: "proposed"`) cho dr-comp.
 
@@ -139,7 +152,7 @@ Luật:
 
 ## Hard rules
 
-- Chỉ ghi ĐÚNG 2 file trên. **Cấm ghi**: `screen-flow.cells.xml`, `as-is.*`,
+- Chỉ ghi ĐÚNG 2 file trên **cho mỗi flow** (2 flow → 4 file). **Cấm ghi**: `screen-flow.cells.xml`, `as-is.*`,
   `cells.json`, `screens.json`, `proposed.*`, `screens.improved.json`,
   `selection.json`, `_inputs.json`, `index.json`, `*.flowchart.json`, `docs*/`,
   `comp/`, `review/`.

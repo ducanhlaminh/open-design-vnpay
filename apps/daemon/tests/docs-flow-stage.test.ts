@@ -50,17 +50,11 @@ test('docs-review có đúng 5 stage, đúng thứ tự: dr-docs → dr-flow →
 
 // WP dr-flow-improve (2026-08-27): bước "Cải thiện luồng" đứng giữa dr-flow và
 // dr-comp; dr-comp KHÔNG phụ thuộc nó (tuỳ chọn khi chạy lẻ, run-all có).
-test('dr-flow-improve: skill docs-screen-flow-improve, chỉ phụ thuộc dr-flow, outputs là 5 file dưới flows/SCREEN-FLOW/ — KHÔNG có selection.json; dr-comp dependsOn không đổi', () => {
+test('dr-flow-improve: skill docs-screen-flow-improve, chỉ phụ thuộc dr-flow, outputs là 5 file × 3 flow-id (SCREEN-FLOW, --app, --web) dưới flows/ — KHÔNG có selection.json; dr-comp dependsOn không đổi', () => {
   const d = def('dr-flow-improve');
   assert.equal(d.skillId, 'docs-screen-flow-improve');
   assert.deepEqual(d.dependsOn, ['dr-flow']);
-  assert.deepEqual(d.outputs, [
-    'flows/SCREEN-FLOW/patch.json',
-    'flows/SCREEN-FLOW/ux-review.json',
-    'flows/SCREEN-FLOW/proposed.drawio',
-    'flows/SCREEN-FLOW/proposed.edited.json',
-    'flows/SCREEN-FLOW/screens.improved.json',
-  ]);
+  assert.deepEqual(d.outputs, ['SCREEN-FLOW', 'SCREEN-FLOW--app', 'SCREEN-FLOW--web'].flatMap((id) => ['patch.json', 'ux-review.json', 'proposed.drawio', 'proposed.edited.json', 'screens.improved.json'].map((f) => `flows/${id}/${f}`)));
   assert.equal(d.skippedInLeanRun, undefined, 'docs-review không có cơ chế lean');
   assert.equal(workflowDirForPipeline('dr-flow-improve'), 'docs-review');
   assert.deepEqual([...upstreamStages('dr-flow-improve')].sort(), ['dr-docs', 'dr-flow']);

@@ -43,9 +43,14 @@ có `data-nav` để chuyển màn.
   - `screens[].archetype: { id, confidence: "high"|"low" }` — loại màn daemon
     đoán. `high` → dùng luôn; `low`/vắng → tự suy từ tên + mục tài liệu.
   - `screens[].layoutRefs: { topics[], templates[{ id, bands[], sketch }],
-    images[] }` — khuôn bố cục + ảnh wireframe tham khảo (Enrico) cho archetype
-    đó. Xem sketch/ảnh trước khi chọn pattern; chỉ là GỢI Ý cấu trúc.
-  - `layoutKb` — thông tin kho; `null` = không có KB → dùng catalogue trong skill.
+    images[] }` — khuôn bố cục + ảnh wireframe tham khảo cho archetype đó
+    (mobile: Enrico; web: topic `web-*` — sketch khung sidenav + nội dung, band
+    `topbar, sidenav, filterbar, table, pagination, kpi-cards, chart…`). Đọc
+    như nhau: xem sketch/ảnh trước khi chọn pattern; chỉ là GỢI Ý cấu trúc.
+    Màn web mà `layoutRefs` rỗng (KB chưa có topic web — daemon ghi note) →
+    dùng thẳng catalogue mục `## web` trong skill.
+  - `layoutKb` — thông tin kho (`webTopics` = số topic web); `null` = không có
+    KB → dùng catalogue trong skill.
 - `references/layout-patterns.md` (trong thư mục skill) — **catalogue pattern**:
   archetype → pattern id → khối + sketch ASCII + class. Đọc trước khi viết HTML.
 - Mục tài liệu của từng màn (`source` + `section` heading/dòng) và `blocks[]`
@@ -68,12 +73,16 @@ Với mỗi màn, chốt 4 việc và ghi vào `index.json` (`pattern`, `notes`)
 
 1. **Archetype**: ưu tiên `_inputs.json.screens[].archetype` (nếu daemon có và
    `confidence: "high"`); vắng/`low` → tự suy từ tên màn + heading + steps:
-   `list | picker | detail | form | checkout | result | status | overlay | home | settings`
-   (web dùng archetype gốc + khung `.mk-web`).
+   `list | picker | detail | form | checkout | result | status | overlay | home | settings`;
+   màn `platform: "web"` có thêm `table` (danh sách / quản lý / tra cứu / bảng)
+   và `dashboard` (tổng quan / thống kê / báo cáo) — daemon gán khi web, không
+   dùng cho mobile.
 2. **Pattern**: chọn 1 id trong `references/layout-patterns.md` theo bảng tra
-   archetype → pattern. Nếu `layoutRefs` có, xem `templates[].sketch` /
-   `images[]` trước — khuôn KB gợi ý thứ tự khối (appbar › search › list › fab…),
-   pattern catalogue quyết class.
+   archetype → pattern: màn mobile lấy cột Ưu tiên 1/2, màn web CHỈ lấy cột
+   **Web** (không lấy pattern mobile, và ngược lại). Nếu `layoutRefs` có, xem
+   `templates[].sketch` / `images[]` trước — khuôn KB gợi ý thứ tự khối (appbar ›
+   search › list › fab…; web: topbar › filterbar › table › pagination…), pattern
+   catalogue quyết class.
 3. **Ảnh BA thắng mọi thứ**: nếu `mockups[]` có ảnh → mở ảnh; ảnh có 2 cột /
    hàng ngang / tab / thanh dính đáy / grid thì PHẢI tái hiện đúng cấu trúc đó
    (chọn pattern gần nhất, thêm/bớt khối cho khớp ảnh). Không ảnh → pattern +
@@ -86,8 +95,9 @@ Với mỗi màn, chốt 4 việc và ghi vào `index.json` (`pattern`, `notes`)
 - Hai màn liền kề theo `navOut` có archetype KHÁC nhau → KHÔNG dùng cùng pattern.
 - Mỗi màn có ≥ 1 khối không phải stack dọc (`.mk-grid-2/3/4`, `.mk-row`,
   `.mk-hscroll`, `.mk-split`, `.mk-kv`, `.mk-sticky`, `.mk-tabs`, `.mk-seg`,
-  `.mk-tabbar`, `.mk-accordion`) khi nội dung cho phép. Daemon cảnh báo màn
-  "1 cột thuần".
+  `.mk-tabbar`, `.mk-accordion`; web thêm `.mk-table`, `.mk-filterbar`,
+  `.mk-kpi`, `.mk-chart`, `.mk-sidenav`) khi nội dung cho phép. Daemon cảnh báo
+  màn "1 cột thuần".
 - CTA chính luôn nằm trong `.mk-sticky` (dính đáy khung), trừ result/empty state
   giữa màn.
 - Form **vẽ từng trường** bằng `.mk-field` (nhãn + hộp trống + placeholder,
@@ -140,14 +150,24 @@ Với mỗi màn, chốt 4 việc và ghi vào `index.json` (`pattern`, `notes`)
   KHÔNG `<link>`, KHÔNG `<script>`, KHÔNG `<img src="http…">`, KHÔNG `@import`,
   KHÔNG `url(http…)`, KHÔNG font ngoài. File ≤ 200 KB.
 - `<body data-screen="<KEY>" data-layout="mobile|web" data-pattern="<id>">` —
-  `data-layout` theo `platform` (thiếu thì `platformHint`). Khung: `.mk-mobile`
-  (390px) / `.mk-web` (1200px). Màn `provenance: "proposed"` → thêm
-  `data-proposed="1"` trên `<body>` và một `<p class="mk-proposed-tag">(đề
-  xuất)</p>` trong app bar.
+  `data-layout` theo `platform` (thiếu thì `platformHint`). Khung mobile:
+  `.mk-mobile` (390px). Khung web có **2 loại, agent chọn theo nội dung tài
+  liệu** (ảnh BA thắng): (a) **web quản trị BO/CMS** — người vận hành quản lý /
+  tra cứu / duyệt / cấu hình, menu trái nhiều mục, bảng dữ liệu → `.mk-web-shell`
+  (= `.mk-sidenav` 240px + `.mk-topbar` breadcrumb/tài khoản + `.mk-main`);
+  (b) **web khách hàng IB/portal** — khách tự phục vụ, ít mục, có footer →
+  `.mk-web` (= `.mk-navbar` ngang + nội dung 1200px + `.mk-footer`). Cùng một
+  workflow thường chỉ 1 loại — giữ nhất quán giữa các màn web. Màn
+  `provenance: "proposed"` → thêm `data-proposed="1"` trên `<body>` và một
+  `<p class="mk-proposed-tag">(đề xuất)</p>` trong app bar / topbar.
 - Overlay (dialog / bottom sheet): `<body … data-overlay="dialog|sheet"
   data-overlay-of="<KEY màn cơ sở>">`, thân bọc trong `.mk-overlay`.
-- Web: `.mk-row[data-cols="1fr 2fr"|"2fr 1fr"]` cho 2 panel (xem
-  `web-master-detail`, `web-two-col-form`).
+- Web: pattern id `web-*` (mục `## web` trong catalogue, cột Web bảng tra).
+  `.mk-row[data-cols="1fr 2fr"|"2fr 1fr"]` cho 2 panel, `"1fr auto"` cho
+  tiêu đề + nút hành động phải, `[data-sticky=top]` cho panel tóm tắt dính
+  (portal). BO: bảng = `.mk-table` (`.mk-tr[data-head]` + hàng), thanh lọc =
+  `.mk-filterbar`, `.mk-pagination`; dashboard = `.mk-grid-4 > .mk-kpi` +
+  `.mk-chart`. CTA dính đáy `.mk-main` bằng `.mk-sticky` như mobile.
 
 ## Kit class (xám, dashed — xem `_mockup.css`)
 
@@ -167,6 +187,14 @@ Với mỗi màn, chốt 4 việc và ghi vào `index.json` (`pattern`, `notes`)
 | `.mk-status[data-kind=ok\|fail\|wait\|info]` + `.mk-progress` | vòng trạng thái 64px / thanh tiến trình |
 | `.mk-accordion` (`.mk-acc-h` + nội dung, `[data-on]` = mở) | nhóm mở/đóng |
 | `.mk-fab` · `.mk-btn` | nút tròn góc / nút phụ |
+| `.mk-web-shell` > `.mk-sidenav` (`.mk-brand`, mục, `.mk-meta` nhóm, `[data-on]`) + `.mk-topbar` (`.mk-breadcrumb` + `.mk-meta` tài khoản) + `.mk-main` | khung web quản trị BO/CMS (web) |
+| `.mk-navbar` (`.mk-brand`, link, `[data-on]`, `.mk-meta`) · `.mk-footer` | header ngang + footer khung portal `.mk-web` (web) |
+| `.mk-breadcrumb` (con cách nhau ›, cuối đậm) | đường dẫn trang (web) |
+| `.mk-filterbar` (`.mk-field` search/select/date + `.mk-btn`) | thanh lọc trên bảng / danh mục (web) |
+| `.mk-table[data-cols=2..7]` > `.mk-tr[data-head]` + `.mk-tr` > ô (`[data-align=right]`) | bảng dữ liệu header + 3–4 hàng mẫu (web) |
+| `.mk-pagination` (`.mk-meta` "1–20 / 245" + ô trang, `[data-on]`) | phân trang (web) |
+| `.mk-kpi` (`.mk-kpi-l` + `.mk-kpi-v` + `.mk-meta`) trong `.mk-grid-3/4` | card số dashboard (web) |
+| `.mk-chart[data-label][data-kind=bar\|line\|pie]` | khối biểu đồ xám có nhãn (web) |
 
 ## Luật vùng
 
@@ -178,7 +206,7 @@ Với mỗi màn, chốt 4 việc và ghi vào `index.json` (`pattern`, `notes`)
 | `list` | danh sách; con là `.mk-split` hoặc `content` (tối đa 3–4 mẫu) |
 | `form` | nhóm trường — mỗi trường 1 `.mk-field` (chỉ trường tài liệu nêu) |
 | `cta` | nút hành động chính (1 màn tối đa 2), thường trong `.mk-sticky` |
-| `nav` | tab bar / breadcrumb / stepper |
+| `nav` | tab bar / breadcrumb / stepper / nav dọc phụ (web settings) |
 | `overlay` | phần thân của dialog / sheet |
 | `status` | trạng thái kết quả, cảnh báo, empty state (`.mk-status`) |
 
@@ -217,6 +245,9 @@ Với mỗi màn, chốt 4 việc và ghi vào `index.json` (`pattern`, `notes`)
 - `.mk-field` chỉ cho trường tài liệu nêu; không bịa trường.
 - Không có `<script`, `<link`, `<img src="http`, `@import`, `url(http`.
 - Mọi `data-nav` trỏ key có trong danh sách; màn `proposed` có `data-proposed`.
+- Màn `data-layout="web"` dùng pattern `web-*` + khung `.mk-web-shell` /
+  `.mk-web` (không `.mk-mobile`, không `.mk-tabbar`); màn mobile không dùng
+  pattern `web-*`.
 - Không khối nào rỗng; không nhãn nào là dữ liệu bịa.
 
 ## Hard rules

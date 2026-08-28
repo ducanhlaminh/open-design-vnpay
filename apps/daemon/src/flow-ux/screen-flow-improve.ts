@@ -28,6 +28,7 @@ import {
   PROPOSED_EDITED_FILE,
   SCREEN_FLOW_ID,
   SCREENS_IMPROVED_FILE,
+  listScreenFlowIds,
   readScreenFlowSelection,
   screenFlowDir,
   writeScreenFlowSelection,
@@ -42,9 +43,12 @@ export {
   SCREENS_IMPROVED_FILE,
   SELECTION_FILE,
   hasProposedEditedMarker,
+  isScreenFlowId,
+  listScreenFlowIds,
   readScreenFlowSelection,
   readScreensImproved,
   screenFlowDir,
+  screenFlowPlatformOf,
   writeScreenFlowSelection,
   type ImprovedScreen,
   type ScreenFlowSelection,
@@ -181,6 +185,8 @@ export function buildImprovedScreens(opts: {
 /* ── finalize của stage ──────────────────────────────────────────────────── */
 
 export interface ScreenFlowImproveResult {
+  /** WP screen-flow-platform-split: flow vừa finalize (`SCREEN-FLOW`, `--app`, `--web`). */
+  flowId: string;
   /** Có bản cải thiện (proposed.drawio 2 trang) sau lượt này. */
   hasProposal: boolean;
   /** Số finding trong ux-review.json (0 = luồng tốt). */
@@ -205,16 +211,19 @@ export interface ScreenFlowImproveResult {
  *  listDocPages + persistScreenDiscovery. */
 export async function finalizeScreenFlowImprove(
   cwd: string,
-  opts: { viaRunAll?: boolean; generatedAt?: string } = {},
+  opts: { flowId?: string; viaRunAll?: boolean; generatedAt?: string } = {},
 ): Promise<ScreenFlowImproveResult> {
-  const dir = screenFlowDir(cwd);
+  // WP screen-flow-platform-split: finalize CHO MỘT flow (`flowId`, mặc định
+  // `SCREEN-FLOW`); nhiều flow → `finalizeScreenFlowImproveAll`.
+  const flowId = opts.flowId ?? SCREEN_FLOW_ID;
+  const dir = screenFlowDir(cwd, flowId);
   const warnings: string[] = [];
   const generatedAt = opts.generatedAt ?? new Date().toISOString();
   const asIsOk = await fs
     .stat(path.join(dir, 'as-is.drawio'))
     .then((s) => s.isFile())
     .catch(() => false);
-  if (!asIsOk) throw new Error(`chưa có flows/${SCREEN_FLOW_ID}/as-is.drawio — chạy bước "Luồng màn hình" trước`);
+  if (!asIsOk) throw new Error(`chưa có flows/${flowId}/as-is.drawio — chạy bước "Luồng màn hình" trước`);
 
   const patchRaw = await fs.readFile(path.join(dir, 'patch.json'), 'utf8').catch(() => null);
   const patchDoc = patchRaw != null ? parsePatchDoc(patchRaw) : null;
@@ -229,8 +238,8 @@ export async function finalizeScreenFlowImprove(
     await fs.rm(path.join(dir, PROPOSED_EDITED_FILE), { force: true }).catch(() => {});
     await fs.rm(path.join(dir, SCREENS_IMPROVED_FILE), { force: true }).catch(() => {});
     const fin = await finalizeFlowUx(cwd);
-    const entry = fin.index.find((e) => e.id === SCREEN_FLOW_ID) ?? null;
-    return { hasProposal: false, findings: findingsCount, selection: await readScreenFlowSelection(cwd), entry, warnings: [...warnings, ...fin.warnings], fin };
+    const entry = fin.index.find((e) => e.id === flowId) ?? null;
+    return { flowId, hasProposal: false, findings: findingsCount, selection: await readScreenFlowSelection(cwd, flowId), entry, warnings: [...warnings, ...fin.warnings], fin };
   }
 
   // (2) Có patch — validate `screen`, ghi lại patch.json đã làm sạch (chỉ
@@ -244,12 +253,12 @@ export async function finalizeScreenFlowImprove(
   await fs.rm(path.join(dir, PROPOSED_EDITED_FILE), { force: true }).catch(() => {});
 
   let fin = await finalizeFlowUx(cwd);
-  let entry = fin.index.find((e) => e.id === SCREEN_FLOW_ID) ?? null;
+  let entry = fin.index.find((e) => e.id === flowId) ?? null;
   warnings.push(...fin.warnings);
   if (!entry?.hasProposal) {
     warnings.push('không áp được thao tác nào của patch.json — không có bản cải thiện');
     await fs.rm(path.join(dir, SCREENS_IMPROVED_FILE), { force: true }).catch(() => {});
-    return { hasProposal: false, findings: findingsCount, selection: await readScreenFlowSelection(cwd), entry, warnings, fin };
+    return { flowId, hasProposal: false, findings: findingsCount, selection: await readScreenFlowSelection(cwd, flowId), entry, warnings, fin };
   }
   const skippedIds = new Set(
     (entry.patchSkipped ?? []).filter((s) => s.op.op === 'addNode').map((s) => (s.op as AddNodeOp).id),
@@ -261,16 +270,52 @@ export async function finalizeScreenFlowImprove(
   const improved = buildImprovedScreens({ screensFile, patch: validated.patch, review, generatedAt, appliedAddNodeIds: applied });
   await writeJson(path.join(dir, SCREENS_IMPROVED_FILE), improved);
 
-  // (3) Lựa chọn mặc định.
-  let selection = await readScreenFlowSelection(cwd);
+  // (3) Lựa chọn mặc định (của TỪNG flow).
+  let selection = await readScreenFlowSelection(cwd, flowId);
   if (opts.viaRunAll && selection?.source !== 'user') {
-    selection = await writeScreenFlowSelection(cwd, { variant: 'improved', source: 'run-all', at: generatedAt });
+    selection = await writeScreenFlowSelection(cwd, { variant: 'improved', source: 'run-all', at: generatedAt }, flowId);
   }
 
   // (4) Bản cải thiện đang được chọn → index/flowchart theo trang 1.
   if (selection?.variant === 'improved') {
     fin = await finalizeFlowUx(cwd);
-    entry = fin.index.find((e) => e.id === SCREEN_FLOW_ID) ?? null;
+    entry = fin.index.find((e) => e.id === flowId) ?? null;
   }
-  return { hasProposal: true, findings: findingsCount, selection, entry, warnings, fin };
+  return { flowId, hasProposal: true, findings: findingsCount, selection, entry, warnings, fin };
+}
+
+export interface ScreenFlowImproveAllResult {
+  /** Kết quả từng flow (thứ tự `listScreenFlowIds`: `SCREEN-FLOW` | `--app`, `--web`). */
+  results: ScreenFlowImproveResult[];
+  /** Warnings gộp, MỖI dòng có tiền tố `<flowId>: ` (trừ khi đã có sẵn). */
+  warnings: string[];
+  /** finalizeFlowUx cuối cùng (index đủ mọi flow theo selection từng flow). */
+  fin: FinalizeResult;
+}
+
+/** WP screen-flow-platform-split: finalize "Cải thiện luồng" cho MỌI flow
+ *  Luồng màn hình hiện có (flow đơn hoặc cặp app/web) — mỗi flow có
+ *  patch.json/ux-review.json/selection.json riêng. Không flow nào có
+ *  as-is.drawio → throw như hành vi cũ. */
+export async function finalizeScreenFlowImproveAll(
+  cwd: string,
+  opts: { viaRunAll?: boolean; generatedAt?: string } = {},
+): Promise<ScreenFlowImproveAllResult> {
+  const ids: string[] = [];
+  for (const id of await listScreenFlowIds(cwd)) {
+    const ok = await fs
+      .stat(path.join(screenFlowDir(cwd, id), 'as-is.drawio'))
+      .then((s) => s.isFile())
+      .catch(() => false);
+    if (ok) ids.push(id);
+  }
+  if (ids.length === 0) throw new Error(`chưa có flows/${SCREEN_FLOW_ID}/as-is.drawio — chạy bước "Luồng màn hình" trước`);
+  const results: ScreenFlowImproveResult[] = [];
+  const warnings: string[] = [];
+  for (const flowId of ids) {
+    const r = await finalizeScreenFlowImprove(cwd, { ...opts, flowId });
+    results.push(r);
+    for (const w of r.warnings) warnings.push(w.startsWith(`${flowId}: `) ? w : `${flowId}: ${w}`);
+  }
+  return { results, warnings, fin: results[results.length - 1]!.fin };
 }

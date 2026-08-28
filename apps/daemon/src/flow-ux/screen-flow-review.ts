@@ -25,21 +25,44 @@ import { mapScreensToSections } from '../docs-review-enrich.js';
 import type { FlowchartDoc } from './to-flowchart.js';
 import type { UxFinding, UxReview } from './index.js';
 import { decodeMxfile, listCells, styleGet } from './mxfile.js';
-import { parseScreenFlowScreensV2 } from './screen-flow-screens.js';
+import { parseScreenFlowScreensV2, type ScreenPlatform } from './screen-flow-screens.js';
 import {
   SCREEN_FLOW_ID,
+  listScreenFlowIds,
   readScreenFlowSelection,
   readScreensImproved,
   screenFlowDir,
+  screenFlowPlatformLabel,
+  screenFlowPlatformOf,
   type ScreenFlowSelectionSource,
   type ScreenFlowVariant,
 } from './screen-flow-xml.js';
 
-export const SCREEN_FLOW_SCREENS_REF = `flows/${SCREEN_FLOW_ID}/screens.json`;
-export const SCREEN_FLOW_FLOWCHART_REF = `flows/${SCREEN_FLOW_ID}.flowchart.json`;
-export const SCREEN_FLOW_UX_REVIEW_REF = `flows/${SCREEN_FLOW_ID}/ux-review.json`;
-export const SCREEN_FLOW_AS_IS_REF = `flows/${SCREEN_FLOW_ID}/as-is.drawio`;
-export const SCREEN_FLOW_PROPOSED_REF = `flows/${SCREEN_FLOW_ID}/proposed.drawio`;
+/** WP screen-flow-platform-split (2026-08-28): rule_id/ref THEO FLOW ID —
+ *  `flows/<SCREEN-FLOW-ID>/screens.json#KEY`, `flows/<SCREEN-FLOW-ID>.flowchart.json#a→b`,
+ *  `flows/<SCREEN-FLOW-ID>/ux-review.json#UX-xx`. */
+export interface ScreenFlowRefs {
+  screens: string;
+  flowchart: string;
+  uxReview: string;
+  asIs: string;
+  proposed: string;
+}
+export function screenFlowRefs(flowId: string = SCREEN_FLOW_ID): ScreenFlowRefs {
+  return {
+    screens: `flows/${flowId}/screens.json`,
+    flowchart: `flows/${flowId}.flowchart.json`,
+    uxReview: `flows/${flowId}/ux-review.json`,
+    asIs: `flows/${flowId}/as-is.drawio`,
+    proposed: `flows/${flowId}/proposed.drawio`,
+  };
+}
+// Hằng cũ = refs của flow đơn (giữ cho code/test cũ; server dùng screenFlowRefs(id)).
+export const SCREEN_FLOW_SCREENS_REF = screenFlowRefs().screens;
+export const SCREEN_FLOW_FLOWCHART_REF = screenFlowRefs().flowchart;
+export const SCREEN_FLOW_UX_REVIEW_REF = screenFlowRefs().uxReview;
+export const SCREEN_FLOW_AS_IS_REF = screenFlowRefs().asIs;
+export const SCREEN_FLOW_PROPOSED_REF = screenFlowRefs().proposed;
 /** Đường dẫn (tương đối cwd) file ngữ cảnh ghi ra cho web/bằng chứng. */
 export const SCREEN_FLOW_CONTEXT_REL = 'review/_screen-flow-context.json';
 
@@ -79,10 +102,14 @@ export interface ScreenFlowReviewOutcome {
 }
 
 export interface ScreenFlowReviewContext {
+  /** WP screen-flow-platform-split: id flow (`SCREEN-FLOW` | `SCREEN-FLOW--app` | `--web`). */
+  id: string;
+  /** `app`|`web` cho flow tách; vắng với flow đơn. */
+  platform?: ScreenPlatform;
   variant: ScreenFlowVariant;
   selectionSource: ScreenFlowSelectionSource | 'default';
-  /** original → as-is trang 0; improved → proposed trang 1. */
-  diagram: { file: typeof SCREEN_FLOW_AS_IS_REF | typeof SCREEN_FLOW_PROPOSED_REF; page: number };
+  /** original → as-is trang 0; improved → proposed trang 1 (path theo flow id). */
+  diagram: { file: string; page: number };
   /** Trang tài liệu của luồng (source cấp file của screens.json). */
   source: string;
   screens: ScreenFlowReviewScreen[];
@@ -141,17 +168,35 @@ export function classifyOutcomes(graphXml: string): ScreenFlowReviewOutcome[] {
   return out;
 }
 
-/** Nạp ngữ cảnh Luồng màn hình bản đã chọn. `null` khi dự án chưa có
- *  `flows/SCREEN-FLOW/as-is.drawio` (chưa chạy dr-flow) — caller coi như
- *  không có thước đo luồng, hành vi y hệt trước WP. Chọn `improved` CHỈ khi
- *  selection.json nói vậy VÀ proposed.drawio có trang 1 (cùng luật với
- *  finalizeFlowUx); ngược lại lùi về original. */
-export async function loadScreenFlowReviewContext(cwd: string): Promise<ScreenFlowReviewContext | null> {
-  const dir = screenFlowDir(cwd);
+/** WP screen-flow-platform-split: ngữ cảnh review = MẢNG flow (flow đơn →
+ *  1 phần tử; tách app/web → 2). Đây là shape ghi ra
+ *  `review/_screen-flow-context.json` (web đọc cả dạng cũ object đơn lẫn dạng này). */
+export interface ScreenFlowReviewContexts {
+  flows: ScreenFlowReviewContext[];
+}
+
+/** Nạp ngữ cảnh Luồng màn hình bản đã chọn của MỌI flow hiện có. `null` khi
+ *  không flow nào có `as-is.drawio` (chưa chạy dr-flow) — caller coi như
+ *  không có thước đo luồng, hành vi y hệt trước WP. */
+export async function loadScreenFlowReviewContext(cwd: string): Promise<ScreenFlowReviewContexts | null> {
+  const flows: ScreenFlowReviewContext[] = [];
+  for (const id of await listScreenFlowIds(cwd)) {
+    const ctx = await loadScreenFlowReviewContextFor(cwd, id);
+    if (ctx) flows.push(ctx);
+  }
+  return flows.length ? { flows } : null;
+}
+
+/** Nạp ngữ cảnh MỘT flow. `null` khi flow đó chưa có `as-is.drawio`. Chọn
+ *  `improved` CHỈ khi selection.json (của flow) nói vậy VÀ proposed.drawio có
+ *  trang 1 (cùng luật với finalizeFlowUx); ngược lại lùi về original. */
+export async function loadScreenFlowReviewContextFor(cwd: string, flowId: string = SCREEN_FLOW_ID): Promise<ScreenFlowReviewContext | null> {
+  const dir = screenFlowDir(cwd, flowId);
+  const refs = screenFlowRefs(flowId);
   const asIsXml = await readText(path.join(dir, 'as-is.drawio'));
   if (asIsXml == null) return null;
 
-  const selection = await readScreenFlowSelection(cwd);
+  const selection = await readScreenFlowSelection(cwd, flowId);
   let proposedGraphXml: string | null = null;
   if (selection?.variant === 'improved') {
     const proposedRaw = await readText(path.join(dir, 'proposed.drawio'));
@@ -194,7 +239,7 @@ export async function loadScreenFlowReviewContext(cwd: string): Promise<ScreenFl
   // Bản cải thiện: màn đề xuất mới + cờ removedByProposal cho màn có sẵn.
   let findings: UxFinding[] = [];
   if (variant === 'improved') {
-    const improved = await readScreensImproved(cwd);
+    const improved = await readScreensImproved(cwd, flowId);
     const byKey = new Map(screens.map((s) => [s.key, s] as const));
     for (const s of improved?.screens ?? []) {
       const existing = byKey.get(s.key);
@@ -222,7 +267,7 @@ export async function loadScreenFlowReviewContext(cwd: string): Promise<ScreenFl
 
   // Cạnh từ flowchart.json (đã theo selection). Tên đầu/cuối = tên màn nếu
   // node mang screen, không thì nhãn node.
-  const flowchart = await readJson<FlowchartDoc>(path.join(cwd, 'flows', `${SCREEN_FLOW_ID}.flowchart.json`));
+  const flowchart = await readJson<FlowchartDoc>(path.join(cwd, 'flows', `${flowId}.flowchart.json`));
   const nameByKey = new Map(screens.map((s) => [s.key, s.name] as const));
   const nodeName = new Map<string, string>();
   for (const n of flowchart?.nodes ?? []) nodeName.set(n.id, (n.screen && nameByKey.get(n.screen)) || n.label);
@@ -245,10 +290,13 @@ export async function loadScreenFlowReviewContext(cwd: string): Promise<ScreenFl
   }
   const outcomes = graphForOutcomes ? classifyOutcomes(graphForOutcomes) : [];
 
+  const platform = screenFlowPlatformOf(flowId);
   return {
+    id: flowId,
+    ...(platform ? { platform } : {}),
     variant,
     selectionSource: selection?.source ?? 'default',
-    diagram: variant === 'improved' ? { file: SCREEN_FLOW_PROPOSED_REF, page: 1 } : { file: SCREEN_FLOW_AS_IS_REF, page: 0 },
+    diagram: variant === 'improved' ? { file: refs.proposed, page: 1 } : { file: refs.asIs, page: 0 },
     source: fileSource,
     screens,
     edges,
@@ -257,12 +305,13 @@ export async function loadScreenFlowReviewContext(cwd: string): Promise<ScreenFl
   };
 }
 
-/** Ghi `review/_screen-flow-context.json` (bằng chứng + web đọc). Fail-soft. */
-export async function writeScreenFlowReviewContext(cwd: string, ctx: ScreenFlowReviewContext): Promise<void> {
+/** Ghi `review/_screen-flow-context.json` (bằng chứng + web đọc) — dạng
+ *  `{ generatedAt, flows: [...] }`. Fail-soft. */
+export async function writeScreenFlowReviewContext(cwd: string, ctx: ScreenFlowReviewContexts): Promise<void> {
   const abs = path.join(cwd, SCREEN_FLOW_CONTEXT_REL);
   try {
     await fs.promises.mkdir(path.dirname(abs), { recursive: true });
-    await fs.promises.writeFile(abs, `${JSON.stringify({ generatedAt: new Date().toISOString(), ...ctx }, null, 2)}\n`, 'utf8');
+    await fs.promises.writeFile(abs, `${JSON.stringify({ generatedAt: new Date().toISOString(), flows: ctx.flows }, null, 2)}\n`, 'utf8');
   } catch (error) {
     console.warn('[docs-review] không ghi được _screen-flow-context.json:', error);
   }
@@ -270,6 +319,12 @@ export async function writeScreenFlowReviewContext(cwd: string, ctx: ScreenFlowR
 
 export function variantLabel(variant: ScreenFlowVariant): string {
   return variant === 'improved' ? 'Cải thiện' : 'Nguyên bản';
+}
+
+/** "Luồng màn hình" / "Luồng màn hình (App)" — nhãn nêu flow trong note/kickoff. */
+export function screenFlowLabel(platform: ScreenPlatform | null | undefined): string {
+  const label = screenFlowPlatformLabel(platform);
+  return label ? `Luồng màn hình (${label})` : 'Luồng màn hình';
 }
 
 const normSrc = (p: string | null | undefined): string => (p ?? '').replace(/\\/g, '/').replace(/^\.\//, '');
@@ -343,18 +398,20 @@ export function mapScreenFlowToPage(
   }
 
   const label = variantLabel(ctx.variant).toLowerCase();
+  const flowName = screenFlowLabel(ctx.platform);
+  const screensRef = screenFlowRefs(ctx.id).screens;
   const gapNotes: DocNote[] = unplacedScreens.map((s) => {
     const anchor = s.anchorText && input.original.includes(s.anchorText) ? s.anchorText : '';
     const uxIds = s.provenance === 'proposed' ? ctx.findings.filter((f) => f.cells?.proposed?.includes(s.cell ?? '')).map((f) => f.id) : [];
     const finding =
       s.provenance === 'proposed'
-        ? `Luồng màn hình (bản ${label}) có màn «${s.name}» do bản cải thiện đề xuất${uxIds.length ? ` (${uxIds.join(', ')})` : ''} nhưng tài liệu chưa có mục mô tả.`
-        : `Luồng màn hình (bản ${label}) có màn «${s.name}» nhưng tài liệu chưa có mục mô tả.`;
+        ? `${flowName} (bản ${label}) có màn «${s.name}» do bản cải thiện đề xuất${uxIds.length ? ` (${uxIds.join(', ')})` : ''} nhưng tài liệu chưa có mục mô tả.`
+        : `${flowName} (bản ${label}) có màn «${s.name}» nhưng tài liệu chưa có mục mô tả.`;
     return {
       id: `sys-screen-flow-${s.key}`,
       kind: 'gap' as const,
       severity: 'major' as const,
-      rule_id: `${SCREEN_FLOW_SCREENS_REF}#${s.key}`,
+      rule_id: `${screensRef}#${s.key}`,
       anchor,
       finding,
       suggestion: `Bổ sung mục mô tả tường minh cho màn “${s.name}”: mục đích, trạng thái, nội dung, hành vi và điều hướng.`,

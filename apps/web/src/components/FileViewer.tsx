@@ -8969,6 +8969,15 @@ function MarkdownViewer({
     const renderPartial = MarkdownRenderer.renderPartial ?? renderMarkdownToSafeHtml;
     return decorateMarkdownCodeBlocks(renderPartial(withImages));
   }, [text, projectId, file.name]);
+  // ONE stable object per html string. Next's bundled react-dom (React 19
+  // `setProp`) re-assigns `innerHTML` whenever the `dangerouslySetInnerHTML`
+  // prop OBJECT changes identity — even with the same `__html` string — so an
+  // inline `{{ __html: html }}` wiped every DOM post-processing (mermaid hosts,
+  // copy buttons, diagram pagers) on each parent re-render (Quick result page
+  // re-renders on every SSE/poll tick), while the `[html]` effects that
+  // rebuild them never re-ran. Bug 2026-08-28: fence ```mermaid showed as raw
+  // code in Quick result although the jsdom test (react-dom 18) passed.
+  const articleHtml = useMemo(() => (html === null ? null : { __html: html }), [html]);
 
   useEffect(() => {
     const article = markdownArticleRef.current;
@@ -9062,7 +9071,7 @@ function MarkdownViewer({
               ref={markdownArticleRef}
               className="markdown-rendered"
               onClick={(event) => void handleMarkdownBodyClick(event)}
-              dangerouslySetInnerHTML={{ __html: html }}
+              dangerouslySetInnerHTML={articleHtml ?? { __html: html }}
             />
             {mermaidMounts.map((m, i) => createPortal(<MermaidDiagram code={m.code} initialFit="width" />, m.host, `mermaid-${i}`))}
           </>

@@ -27,7 +27,7 @@ import path from 'node:path';
 import type { FlowchartDoc } from './flow-ux/to-flowchart.js';
 import type { FlowIndexEntry, UxReview } from './flow-ux/index.js';
 import { resolveScreenPlatform } from './screen-platform.js';
-import { guessArchetype, layoutRefsFor, loadLayoutKb, resolveLayoutKbDir, type ArchetypeGuess, type LayoutRefs } from './layout-kb.js';
+import { countLayoutKbTopics, guessArchetype, layoutRefsFor, loadLayoutKb, resolveLayoutKbDir, type ArchetypeGuess, type LayoutRefs } from './layout-kb.js';
 
 export const SCREEN_COMPONENTS_SCHEMA_VERSION = '2.1' as const;
 export const SCREEN_INPUTS_FILE = 'comp/_inputs.json';
@@ -149,8 +149,9 @@ export interface ScreenComponentsInputs {
   selection?: { variant: 'original' | 'improved'; source: 'user' | 'run-all' | 'default' };
   /** WP dr-mockup-layouts: kho bố cục Enrico đã dùng để điền `screens[].layoutRefs`
    *  (`opts.layoutKb`). `null` = bật nhưng KB vắng (kèm `note` nói cách dựng);
-   *  field VẮNG = không bật (dr-comp). */
-  layoutKb?: { dir: string; source: string; builtAt: string; topics: number } | null;
+   *  field VẮNG = không bật (dr-comp). WP layout-kb-web: `webTopics` = số topic
+   *  `platform: 'web'` (0 = KB v1/chưa có web → màn web không có layoutRefs, kèm note). */
+  layoutKb?: { dir: string; source: string; builtAt: string; topics: number; webTopics: number } | null;
 }
 
 // ── Outputs (agent → daemon) ───────────────────────────────────────────────
@@ -880,6 +881,17 @@ export interface DiscoveredScreenEntry {
   anchorText: string;
   why?: string;
   blocks?: { name: string; anchorText: string; why?: string }[];
+  /** WP screen-flow-platform-split A0 (2026-08-28): SCREEN-KEY có thẩm quyền
+   *  từ `flows/<SCREEN-FLOW-ID>/screens.json` (đã finalize). Có mặt → mọi lớp
+   *  persist/resolve PHẢI giữ nguyên, KHÔNG đánh lại `X<n>` theo thứ tự dòng
+   *  (sự cố: screens.json X1="Hỗ trợ trực tuyến" nhưng comp/_screens.json
+   *  X2 — mockup trộn hai bộ key). Vắng (dr-screens tay, file cũ) → daemon
+   *  tự đánh như trước. */
+  key?: string;
+  /** Nền tảng do AGENT quyết định (screens.json v2 `platform`). */
+  platform?: 'app' | 'web';
+  /** Suy từ hậu tố `--app`/`--web` khi cả hai cùng tồn tại (screen-groups.ts). */
+  groupKey?: string;
 }
 export interface DiscoveredPageEntry {
   source: string;
@@ -896,6 +908,19 @@ export interface DiscoveredDoc {
   generatedAt: string;
   pages: DiscoveredPageEntry[];
   excluded: DiscoveredExcludedEntry[];
+}
+
+/** `<stem>__<code>` → `<code>` (phần sau `__` CUỐI, hậu tố `--app`/`--web` giữ
+ *  nguyên trong code — cùng luật `codeOfKey` của screen-overrides.ts). */
+export function codeOfScreenKey(key: string): string {
+  const i = key.lastIndexOf('__');
+  return i >= 0 && i + 2 < key.length ? key.slice(i + 2) : key;
+}
+
+/** WP screen-flow-platform-split: `platform` của screens.json (`app`|`web`)
+ *  → union `ScreenInput.platform` / manifest 0.8.139 (`mobile`|`web`). */
+export function screenPlatformToInput(platform: 'app' | 'web'): 'mobile' | 'web' {
+  return platform === 'app' ? 'mobile' : 'web';
 }
 
 /** Parse `docs-review/screens-discovered.json` — KHOAN DUNG: JSON hỏng, shape
@@ -948,7 +973,19 @@ export function parseScreensDiscovered(raw: string): DiscoveredDoc | null {
         const blockWhy = typeof be.why === 'string' && be.why.trim() ? be.why.trim() : undefined;
         blocks.push({ name: blockName, anchorText: blockAnchorText, ...(blockWhy ? { why: blockWhy } : {}) });
       }
-      screens.push({ code, name, anchorText, ...(why ? { why } : {}), ...(blocks.length ? { blocks } : {}) });
+      const key = typeof e.key === 'string' && e.key.trim() ? e.key.trim() : undefined;
+      const platform = e.platform === 'app' || e.platform === 'web' ? e.platform : undefined;
+      const groupKey = typeof e.groupKey === 'string' && e.groupKey.trim() ? e.groupKey.trim() : undefined;
+      screens.push({
+        code,
+        name,
+        anchorText,
+        ...(why ? { why } : {}),
+        ...(blocks.length ? { blocks } : {}),
+        ...(key ? { key } : {}),
+        ...(platform ? { platform } : {}),
+        ...(groupKey ? { groupKey } : {}),
+      });
     }
     pages.push({ source, screens });
   }
@@ -1031,6 +1068,10 @@ export function resolveDocScreens(input: ResolveDocScreensInput): ScreenInput[] 
         anchorText: string;
         line: number;
         rawBlocks?: DiscoveredScreenEntry['blocks'];
+        /** WP screen-flow-platform-split A0: key có thẩm quyền từ screens.json. */
+        key?: string;
+        platform?: 'app' | 'web';
+        groupKey?: string;
       };
       const candidates: Candidate[] = [];
       for (const s of dp.screens) {
@@ -1040,15 +1081,29 @@ export function resolveDocScreens(input: ResolveDocScreensInput): ScreenInput[] 
         // (khoan dung: dr-comp không phải nơi validate lỗi khai báo của
         // dr-screens, xem docblock trên).
         if (hits.length !== 1) continue;
-        candidates.push({ rawCode: s.code, name: s.name, anchorText: s.anchorText, line: hits[0]!, rawBlocks: s.blocks });
+        candidates.push({
+          rawCode: s.code,
+          name: s.name,
+          anchorText: s.anchorText,
+          line: hits[0]!,
+          rawBlocks: s.blocks,
+          ...(s.key ? { key: s.key } : {}),
+          ...(s.platform ? { platform: s.platform } : {}),
+          ...(s.groupKey ? { groupKey: s.groupKey } : {}),
+        });
       }
 
-      // code null → X1, X2… theo thứ tự DÒNG anchor trong trang (contract).
-      const nullOrderedByLine = candidates.filter((c) => c.rawCode == null).sort((a, b) => a.line - b.line);
+      // code null → X1, X2… theo thứ tự DÒNG anchor trong trang (contract) —
+      // CHỈ cho entry KHÔNG mang `key`. WP screen-flow-platform-split A0: entry
+      // có `key` (từ screens.json đã finalize) giữ nguyên key/code của nó.
+      const nullOrderedByLine = candidates.filter((c) => c.rawCode == null && !c.key).sort((a, b) => a.line - b.line);
       const autoCode = new Map<Candidate, string>();
       nullOrderedByLine.forEach((c, i) => autoCode.set(c, `X${i + 1}`));
 
-      const withFinalCode = candidates.map((c) => ({ ...c, finalCode: c.rawCode ?? autoCode.get(c)! }));
+      const withFinalCode = candidates.map((c) => ({
+        ...c,
+        finalCode: c.key ? codeOfScreenKey(c.key) : (c.rawCode ?? autoCode.get(c)!),
+      }));
       const usedCodes = new Set<string>();
       const accepted: Array<Candidate & { finalCode: string }> = [];
       for (const c of withFinalCode) {
@@ -1086,7 +1141,7 @@ export function resolveDocScreens(input: ResolveDocScreensInput): ScreenInput[] 
       };
 
       for (const c of accepted) {
-        const key = `${stem}__${c.finalCode}`;
+        const key = c.key ?? `${stem}__${c.finalCode}`;
         if (seen.has(key)) continue; // màn có sẵn (flow-origin) thắng — không nhân đôi.
         seen.add(key);
 
@@ -1115,8 +1170,10 @@ export function resolveDocScreens(input: ResolveDocScreensInput): ScreenInput[] 
           : undefined;
 
         // screen-variants WP-V1: platform theo chuỗi heading cha của section
-        // — khi suy được thì thắng platformHint mức tài liệu.
-        const platform = resolveScreenPlatform(md, section.startLine);
+        // — khi suy được thì thắng platformHint mức tài liệu. WP
+        // screen-flow-platform-split: agent đã quyết `platform` trong
+        // screens.json → dùng thẳng, KHÔNG suy từ heading.
+        const platform = c.platform ? screenPlatformToInput(c.platform) : resolveScreenPlatform(md, section.startLine);
         out.push({
           key,
           name: c.name,
@@ -1132,6 +1189,7 @@ export function resolveDocScreens(input: ResolveDocScreensInput): ScreenInput[] 
           findings: [],
           platformHint: MOBILE_HINT_RE.test(md) ? 'mobile' : 'web',
           ...(platform ? { platform } : {}),
+          ...(c.groupKey ? { groupKey: c.groupKey } : {}),
           origin: 'agent',
           ...(blocks ? { blocks } : {}),
         });
@@ -1254,10 +1312,15 @@ export async function prepareScreenComponentInputs(
         origin: 'flow',
         ...originMetadata,
       };
+      // WP screen-flow-platform-split: flow đã tách theo nền tảng
+      // (`flows/SCREEN-FLOW--app|--web`, index entry mang `platform`) → màn
+      // mang đúng nền tảng agent quyết; KHÔNG suy lại từ heading.
+      const entryPlatform = entry.platform === 'app' || entry.platform === 'web' ? screenPlatformToInput(entry.platform) : null;
+      if (entryPlatform) input.platform = entryPlatform;
       if (section) {
         input.section = { heading: section.heading, startLine: section.startLine, endLine: section.endLine, excerpt: section.excerpt };
         // screen-variants WP-V1: platform theo heading cha của section.
-        if (md) {
+        if (md && !entryPlatform) {
           const platform = resolveScreenPlatform(md, section.startLine);
           if (platform) input.platform = platform;
         }
@@ -1350,20 +1413,31 @@ export async function prepareScreenComponentInputs(
   if (opts.layoutKb) {
     const kbDir = await resolveLayoutKbDir();
     const kb = kbDir ? await loadLayoutKb(kbDir) : null;
+    let hasWebScreen = false;
     for (const s of screens) {
-      s.archetype = guessArchetype(s);
+      // WP layout-kb-web: nền tảng của màn (screen-variants/screen-flow-platform-split
+      // thắng hint tài liệu) quyết archetype web (`table`/`dashboard`) + bảng topic.
+      const platform = s.platform ?? s.platformHint;
+      if (platform === 'web') hasWebScreen = true;
+      s.archetype = guessArchetype(s, platform);
       if (kb) {
-        const refs = layoutRefsFor(kb, s.archetype.id);
+        const refs = layoutRefsFor(kb, s.archetype.id, platform);
         if (refs.topics.length) s.layoutRefs = refs;
       }
     }
     if (kb) {
+      const { web: webTopics } = countLayoutKbTopics(kb.manifest);
       inputs.layoutKb = {
         dir: kb.dir,
         source: kb.manifest.source,
         builtAt: kb.manifest.builtAt,
         topics: Object.keys(kb.manifest.topics).length,
+        webTopics,
       };
+      if (webTopics === 0 && hasWebScreen) {
+        const webNote = 'KB chưa có topic web — màn web dùng catalogue trong skill.';
+        inputs.note = inputs.note ? `${inputs.note} ${webNote}` : webNote;
+      }
     } else {
       inputs.layoutKb = null;
       const kbNote = 'Chưa có layout-kb (chạy `node tools/layout-kb/build.mjs` → ~/layout-kb, hoặc đặt LAYOUT_KB_DIR) — màn không có layoutRefs, dùng catalogue trong skill.';

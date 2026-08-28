@@ -1418,8 +1418,15 @@ async function seedFakeLayoutKb(root: string): Promise<void> {
 /** Bỏ field phụ thuộc thời gian để so byte. */
 const stableJson = (raw: string) => raw.replace(/"generatedAt": "[^"]+"/, '"generatedAt": "T"');
 
-test('prepareScreenComponentInputs: layoutKb:true + KB giả → archetype + layoutRefs đúng, inputs.layoutKb có dir/topics', async () => {
+/** WP layout-kb-web: PAGE_MD không có từ khoá mobile → platformHint 'web'. Biến
+ *  thể có hint để test màn MOBILE (refs Enrico như trước). */
+async function seedFlowRunMobile(): Promise<void> {
   await seedFlowRun();
+  await writeFile(join(cwd, 'docs-feature', '2.1-PRD-Mua-SIM.md'), `${PAGE_MD}\n\nNền tảng: mobile (SDK).\n`, 'utf8');
+}
+
+test('prepareScreenComponentInputs: layoutKb:true + KB giả, màn MOBILE → archetype + layoutRefs Enrico đúng, inputs.layoutKb có dir/topics/webTopics', async () => {
+  await seedFlowRunMobile();
   const kbDir = await mkdtemp(join(tmpdir(), 'od-layout-kb-'));
   const saved = process.env.LAYOUT_KB_DIR;
   process.env.LAYOUT_KB_DIR = kbDir;
@@ -1427,9 +1434,10 @@ test('prepareScreenComponentInputs: layoutKb:true + KB giả → archetype + lay
     await seedFakeLayoutKb(kbDir);
     const pages = [{ mdPath: 'docs-feature/2.1-PRD-Mua-SIM.md', page: '2.1 PRD Mua SIM' }];
     const inputs = await prepareScreenComponentInputs(cwd, { pages, outFile: 'mockups/_inputs.json', excludeRemovedByProposal: true, layoutKb: true });
-    assert.deepEqual(inputs.layoutKb, { dir: kbDir, source: 'enrico', builtAt: '2026-08-27T00:00:00.000Z', topics: 2 });
+    assert.deepEqual(inputs.layoutKb, { dir: kbDir, source: 'enrico', builtAt: '2026-08-27T00:00:00.000Z', topics: 2, webTopics: 0 });
     const s1 = inputs.screens.find((s) => s.key === KEY1)!;
     const s2 = inputs.screens.find((s) => s.key === KEY2)!;
+    assert.equal(s1.platformHint, 'mobile');
     // "Chọn quốc gia" / "Chọn gói cước" → picker (topics list, search, menu → KB có list + search).
     assert.deepEqual(s1.archetype, { id: 'picker', confidence: 'high' });
     assert.deepEqual(s2.archetype, { id: 'picker', confidence: 'high' });
@@ -1442,6 +1450,85 @@ test('prepareScreenComponentInputs: layoutKb:true + KB giả → archetype + lay
     const onDisk = JSON.parse(await readFile(join(cwd, 'mockups', '_inputs.json'), 'utf8')) as ScreenComponentsInputs;
     assert.equal(onDisk.layoutKb?.topics, 2);
     assert.equal(onDisk.screens[0]!.layoutRefs?.images.length, 2);
+    // Màn mobile: không có note "topic web".
+    assert.doesNotMatch(inputs.note ?? '', /topic web/);
+  } finally {
+    if (saved === undefined) delete process.env.LAYOUT_KB_DIR;
+    else process.env.LAYOUT_KB_DIR = saved;
+    await rm(kbDir, { recursive: true, force: true });
+  }
+});
+
+// WP layout-kb-web: màn WEB + KB v1 (không topic web) → không layoutRefs (không
+// lấy sketch mobile), note nói dùng catalogue; archetype vẫn có.
+test('prepareScreenComponentInputs: layoutKb:true, màn WEB + KB chỉ có topic mobile → không layoutRefs + note "KB chưa có topic web"', async () => {
+  await seedFlowRun();
+  const kbDir = await mkdtemp(join(tmpdir(), 'od-layout-kb-'));
+  const saved = process.env.LAYOUT_KB_DIR;
+  process.env.LAYOUT_KB_DIR = kbDir;
+  try {
+    await seedFakeLayoutKb(kbDir);
+    const pages = [{ mdPath: 'docs-feature/2.1-PRD-Mua-SIM.md', page: '2.1 PRD Mua SIM' }];
+    const inputs = await prepareScreenComponentInputs(cwd, { pages, outFile: 'mockups/_inputs.json', excludeRemovedByProposal: true, layoutKb: true });
+    assert.deepEqual(inputs.layoutKb, { dir: kbDir, source: 'enrico', builtAt: '2026-08-27T00:00:00.000Z', topics: 2, webTopics: 0 });
+    assert.match(inputs.note ?? '', /KB chưa có topic web/);
+    for (const s of inputs.screens) {
+      assert.equal(s.platformHint, 'web', s.key);
+      assert.ok(s.archetype, s.key);
+      assert.equal(s.layoutRefs, undefined, `${s.key}: màn web không được nhận sketch mobile`);
+    }
+  } finally {
+    if (saved === undefined) delete process.env.LAYOUT_KB_DIR;
+    else process.env.LAYOUT_KB_DIR = saved;
+    await rm(kbDir, { recursive: true, force: true });
+  }
+});
+
+// WP layout-kb-web: màn WEB + KB v2 có topic web → layoutRefs CHỈ topic web-*,
+// archetype table khi tên màn là "Danh sách…", images rỗng (tầng 1 không ảnh).
+test('prepareScreenComponentInputs: layoutKb:true, màn WEB + KB v2 → layoutRefs chỉ topic web-*, archetype table, không note', async () => {
+  await seedFlowRun();
+  // Heading màn 2 thành màn bảng để kiểm archetype web `table` (tên màn từ flow
+  // vẫn là "Chọn gói cước" → picker 2 điểm; heading cần ≥3 từ khoá web để thắng).
+  const md = PAGE_MD.replace('### 4.2 SCR-002 Chọn gói cước', '### 4.2 SCR-002 Danh sách gói cước (quản lý, tra cứu)');
+  await writeFile(join(cwd, 'docs-feature', '2.1-PRD-Mua-SIM.md'), md, 'utf8');
+  const kbDir = await mkdtemp(join(tmpdir(), 'od-layout-kb-'));
+  const saved = process.env.LAYOUT_KB_DIR;
+  process.env.LAYOUT_KB_DIR = kbDir;
+  try {
+    await seedFakeLayoutKb(kbDir);
+    const v1 = JSON.parse(await readFile(join(kbDir, 'manifest.json'), 'utf8'));
+    const web = (topic: string, slugs: string[]) => ({
+      platform: 'web',
+      count: slugs.length,
+      templates: slugs.map((slug) => ({ id: `${topic}-${slug}`, bands: ['topbar', 'sidenav', slug], sketch: `W ${slug}`, samples: [] })),
+      samples: [],
+    });
+    v1.schema_version = 2;
+    v1.sources = [{ id: 'enrico', license: 'MIT' }, { id: 'web-templates', license: 'hand-authored' }];
+    v1.topics['web-form'] = web('web-form', ['form-2col', 'modal']);
+    v1.topics['web-table'] = web('web-table', ['filterbar-table']);
+    await writeFile(join(kbDir, 'manifest.json'), JSON.stringify(v1), 'utf8');
+    const pages = [{ mdPath: 'docs-feature/2.1-PRD-Mua-SIM.md', page: '2.1 PRD Mua SIM' }];
+    const inputs = await prepareScreenComponentInputs(cwd, { pages, outFile: 'mockups/_inputs.json', excludeRemovedByProposal: true, layoutKb: true });
+    assert.deepEqual(inputs.layoutKb, { dir: kbDir, source: 'enrico', builtAt: '2026-08-27T00:00:00.000Z', topics: 4, webTopics: 2 });
+    assert.doesNotMatch(inputs.note ?? '', /topic web/);
+    const s1 = inputs.screens.find((s) => s.key === KEY1)!;
+    const s2 = inputs.screens.find((s) => s.key === KEY2)!;
+    // "Chọn quốc gia" web → picker → [web-form].
+    assert.deepEqual(s1.archetype, { id: 'picker', confidence: 'high' });
+    assert.deepEqual(s1.layoutRefs, {
+      topics: ['web-form'],
+      templates: [
+        { id: 'web-form-form-2col', bands: ['topbar', 'sidenav', 'form-2col'], sketch: 'W form-2col' },
+        { id: 'web-form-modal', bands: ['topbar', 'sidenav', 'modal'], sketch: 'W modal' },
+      ],
+      images: [],
+    });
+    // Heading "Danh sách … quản lý, tra cứu" web → table (không phải list/picker) → [web-table]; không lẫn topic Enrico `list`.
+    assert.deepEqual(s2.archetype, { id: 'table', confidence: 'high' });
+    assert.deepEqual(s2.layoutRefs?.topics, ['web-table']);
+    assert.deepEqual(s2.layoutRefs?.templates.map((t) => t.id), ['web-table-filterbar-table']);
   } finally {
     if (saved === undefined) delete process.env.LAYOUT_KB_DIR;
     else process.env.LAYOUT_KB_DIR = saved;

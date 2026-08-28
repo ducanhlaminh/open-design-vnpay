@@ -23,11 +23,78 @@ import path from 'node:path';
 
 import type { DiscoveredDoc } from '../screen-components.js';
 import { decodeMxfile, encodeMxfile, listCells, styleGet, type MxCellInfo, type MxPage } from './mxfile.js';
-import { deriveCellsAndNames, parseScreenFlowScreensV2, toDiscoveredDoc, type ScreensV2 } from './screen-flow-screens.js';
+import { deriveCellsAndNames, parseScreenFlowScreensV2, toDiscoveredDocs, type ScreenPlatform, type ScreensV2 } from './screen-flow-screens.js';
+import { PLATFORM_KEY_SUFFIX_RE } from '../screen-groups.js';
 import { isLegendCellId } from './to-flowchart.js';
 
 export const SCREEN_FLOW_ID = 'SCREEN-FLOW';
 export const SCREEN_FLOW_CELLS_FILE = 'screen-flow.cells.xml';
+
+// ── WP screen-flow-platform-split (2026-08-28) ────────────────────────────
+// Tài liệu MỘT nền tảng → đúng một flow `SCREEN-FLOW` (output byte-identical
+// như trước). Tài liệu ≥2 nền tảng (MB + IB, app + BO web…) → agent viết HAI
+// flow tự đủ `flows/SCREEN-FLOW--app/` + `flows/SCREEN-FLOW--web/`, KHÔNG còn
+// `flows/SCREEN-FLOW/` (trộn lẫn = lỗi SCREEN_FLOW_MIXED). Nền tảng của từng
+// màn do AGENT quyết từ cách tài liệu viết — daemon chỉ validate giá trị và
+// sự khớp với thư mục, không suy từ heading, không ghi đè.
+export const SCREEN_FLOW_ID_RE = /^SCREEN-FLOW(--(app|web))?$/;
+
+export function isScreenFlowId(id: string): boolean {
+  return SCREEN_FLOW_ID_RE.test(id);
+}
+
+/** `SCREEN-FLOW--app` → `app`; `SCREEN-FLOW--web` → `web`; `SCREEN-FLOW`/khác → null. */
+export function screenFlowPlatformOf(id: string): ScreenPlatform | null {
+  const m = SCREEN_FLOW_ID_RE.exec(id);
+  return m?.[2] === 'app' || m?.[2] === 'web' ? m[2] : null;
+}
+
+/** `app` → `SCREEN-FLOW--app`, `web` → `SCREEN-FLOW--web`, null → `SCREEN-FLOW`. */
+export function screenFlowIdFor(platform: ScreenPlatform | null | undefined): string {
+  return platform ? `${SCREEN_FLOW_ID}--${platform}` : SCREEN_FLOW_ID;
+}
+
+export function screenFlowPlatformLabel(platform: ScreenPlatform | null | undefined): string | null {
+  return platform === 'app' ? 'App' : platform === 'web' ? 'Web' : null;
+}
+
+/** Tiêu đề entry index/manifest: flow tách → "Luồng màn hình (App) — <tên>"
+ *  (title agent đã có "(App)"/"(Web)" thì giữ); flow đơn → nguyên văn. */
+export function screenFlowTitleFor(title: string, platform: ScreenPlatform | null): string {
+  const label = screenFlowPlatformLabel(platform);
+  if (!label) return title;
+  if (/\((App|Web)\)/.test(title)) return title;
+  const m = /^Luồng màn hình\s*(.*)$/u.exec(title);
+  if (m) return `Luồng màn hình (${label})${m[1] ? ` ${m[1]}` : ''}`;
+  return `Luồng màn hình (${label}) — ${title}`;
+}
+
+export class ScreenFlowMixedError extends Error {
+  readonly code = 'SCREEN_FLOW_MIXED';
+  constructor(ids: string[]) {
+    super(
+      `SCREEN_FLOW_MIXED: trộn lẫn flows/${SCREEN_FLOW_ID}/ với flow tách theo nền tảng (${ids.join(', ')}) — tài liệu ≥2 nền tảng CHỈ dùng flows/${SCREEN_FLOW_ID}--app/ + flows/${SCREEN_FLOW_ID}--web/, một nền tảng CHỈ dùng flows/${SCREEN_FLOW_ID}/`,
+    );
+  }
+}
+
+/** Các id khớp `SCREEN_FLOW_ID_RE` dưới `flows/` có `screen-flow.cells.xml`
+ *  hoặc `as-is.drawio` — thứ tự ổn định (`SCREEN-FLOW`, `--app`, `--web`).
+ *  Trộn `SCREEN-FLOW` với `--app/--web` → throw `ScreenFlowMixedError`. */
+export async function listScreenFlowIds(cwd: string): Promise<string[]> {
+  const flowsDir = path.join(cwd, 'flows');
+  const dirents = await fs.readdir(flowsDir, { withFileTypes: true }).catch(() => []);
+  const ids: string[] = [];
+  for (const d of dirents) {
+    if (!d.isDirectory() || !isScreenFlowId(d.name)) continue;
+    const dir = path.join(flowsDir, d.name);
+    const has = async (f: string) => fs.stat(path.join(dir, f)).then((s) => s.isFile()).catch(() => false);
+    if ((await has(SCREEN_FLOW_CELLS_FILE)) || (await has('as-is.drawio'))) ids.push(d.name);
+  }
+  ids.sort((a, b) => a.localeCompare(b));
+  if (ids.includes(SCREEN_FLOW_ID) && ids.length > 1) throw new ScreenFlowMixedError(ids);
+  return ids;
+}
 
 // ── WP dr-flow-improve (2026-08-27): file trạng thái của bản "Cải thiện" ──
 // Đặt ở đây (không phải screen-flow-improve.ts) vì cả finalizeFlowUx
@@ -72,13 +139,14 @@ export interface ScreensImprovedDoc {
   screens: ImprovedScreen[];
 }
 
-export function screenFlowDir(cwd: string): string {
-  return path.join(cwd, 'flows', SCREEN_FLOW_ID);
+export function screenFlowDir(cwd: string, flowId: string = SCREEN_FLOW_ID): string {
+  return path.join(cwd, 'flows', flowId);
 }
 
-/** Đọc khoan dung: file thiếu/hỏng/variant lạ → null (= original). */
-export async function readScreenFlowSelection(cwd: string): Promise<ScreenFlowSelection | null> {
-  const raw = await readJson<Record<string, unknown>>(path.join(screenFlowDir(cwd), SELECTION_FILE));
+/** Đọc khoan dung: file thiếu/hỏng/variant lạ → null (= original).
+ *  WP screen-flow-platform-split: selection là CỦA TỪNG FLOW (`flowId`). */
+export async function readScreenFlowSelection(cwd: string, flowId: string = SCREEN_FLOW_ID): Promise<ScreenFlowSelection | null> {
+  const raw = await readJson<Record<string, unknown>>(path.join(screenFlowDir(cwd, flowId), SELECTION_FILE));
   if (!raw || typeof raw !== 'object') return null;
   const variant: ScreenFlowVariant | null = raw.variant === 'improved' ? 'improved' : raw.variant === 'original' ? 'original' : null;
   if (!variant) return null;
@@ -89,22 +157,23 @@ export async function readScreenFlowSelection(cwd: string): Promise<ScreenFlowSe
 export async function writeScreenFlowSelection(
   cwd: string,
   sel: { variant: ScreenFlowVariant; source: ScreenFlowSelectionSource; at?: string },
+  flowId: string = SCREEN_FLOW_ID,
 ): Promise<ScreenFlowSelection> {
   const doc: ScreenFlowSelection = { variant: sel.variant, source: sel.source, at: sel.at ?? new Date().toISOString() };
-  await fs.mkdir(screenFlowDir(cwd), { recursive: true });
-  await fs.writeFile(path.join(screenFlowDir(cwd), SELECTION_FILE), `${JSON.stringify(doc, null, 2)}\n`, 'utf8');
+  await fs.mkdir(screenFlowDir(cwd, flowId), { recursive: true });
+  await fs.writeFile(path.join(screenFlowDir(cwd, flowId), SELECTION_FILE), `${JSON.stringify(doc, null, 2)}\n`, 'utf8');
   return doc;
 }
 
-export async function hasProposedEditedMarker(cwd: string): Promise<boolean> {
+export async function hasProposedEditedMarker(cwd: string, flowId: string = SCREEN_FLOW_ID): Promise<boolean> {
   return fs
-    .stat(path.join(screenFlowDir(cwd), PROPOSED_EDITED_FILE))
+    .stat(path.join(screenFlowDir(cwd, flowId), PROPOSED_EDITED_FILE))
     .then((s) => s.isFile())
     .catch(() => false);
 }
 
-export async function readScreensImproved(cwd: string): Promise<ScreensImprovedDoc | null> {
-  const raw = await readJson<Record<string, unknown>>(path.join(screenFlowDir(cwd), SCREENS_IMPROVED_FILE));
+export async function readScreensImproved(cwd: string, flowId: string = SCREEN_FLOW_ID): Promise<ScreensImprovedDoc | null> {
+  const raw = await readJson<Record<string, unknown>>(path.join(screenFlowDir(cwd, flowId), SCREENS_IMPROVED_FILE));
   if (!raw || !Array.isArray(raw.screens)) return null;
   const screens: ImprovedScreen[] = [];
   for (const s of raw.screens as unknown[]) {
@@ -139,8 +208,12 @@ export interface ScreenFlowXmlResult {
   /** WP dr-screens-merge: CHỈ khi screens.json là v2 (`screens[]`) — danh
    *  sách màn có thẩm quyền đã dẫn xuất sang contract screens-discovered.json,
    *  caller persist (persistScreenDiscovery) sau khi finalizeFlowUx xong.
-   *  v1 → undefined (dr-comp lùi về lớp regex như trước dr-screens). */
+   *  v1 → undefined (dr-comp lùi về lớp regex như trước dr-screens).
+   *  WP screen-flow-platform-split: HỢP của mọi flow (mỗi màn `key` +
+   *  `platform` + `groupKey` suy từ hậu tố). */
   discovery?: DiscoveredDoc;
+  /** WP screen-flow-platform-split: id các flow đã finalize (thứ tự manifest). Chỉ khi found. */
+  flowIds?: string[];
 }
 
 /** Điểm uốn (waypoint) của cạnh trong draw.io là `<mxPoint x y/>` bên trong
@@ -289,110 +362,263 @@ async function readJson<T>(file: string): Promise<T | null> {
   }
 }
 
-/** Bước dịch chính — xem docblock đầu file. Idempotent: chạy lại ghi đè
- *  as-is.drawio và thay entry SCREEN-FLOW trong _inputs.json tại chỗ. */
-export async function finalizeScreenFlowXml(cwd: string): Promise<ScreenFlowXmlResult> {
-  const dir = path.join(cwd, 'flows', SCREEN_FLOW_ID);
-  const cellsPath = path.join(dir, SCREEN_FLOW_CELLS_FILE);
-  let fragment: string;
-  try {
-    fragment = await fs.readFile(cellsPath, 'utf8');
-  } catch {
-    return { found: false, errors: [], warnings: [] };
-  }
+const X_NUMBER_RE = /__X(\d+)(--(?:app|web))?$/;
 
-  const prefix = (msg: string) => `${SCREEN_FLOW_ID}: ${msg}`;
-  const wrapped = wrapScreenFlowCells(fragment);
-  if ('error' in wrapped) return { found: true, errors: [prefix(wrapped.error)], warnings: [] };
-  const validation = validateScreenFlowGraph(wrapped.graphXml);
-  if (validation.errors.length) {
-    return { found: true, errors: validation.errors.map(prefix), warnings: validation.warnings.map(prefix) };
-  }
-
-  const warnings: string[] = validation.warnings.map(prefix);
-  const screensPath = path.join(dir, 'screens.json');
-  const screensRaw = await readJson<unknown>(screensPath);
-  const screensFile = (screensRaw && typeof screensRaw === 'object' ? (screensRaw as { title?: unknown; source?: unknown }) : {});
-  const title = typeof screensFile.title === 'string' && screensFile.title.trim() ? screensFile.title.trim() : 'Luồng màn hình';
-  const source = typeof screensFile.source === 'string' ? screensFile.source : '';
-
-  const allCells = listCells(wrapped.graphXml);
-  // WP dr-screens-merge: screens.json v2 (`screens[]`) là nguồn duy nhất agent
-  // ghi — dẫn xuất `cells`/`names` (contract v1 finalizeFlowUx đọc) rồi ghi
-  // lại file đã chuẩn hoá; cell không có trong XML / trùng → null + warning.
-  // v1 (không `screens[]`) → không đụng file, không discovery.
-  let discovery: DiscoveredDoc | undefined;
-  if (screensRaw != null) {
-    const parsed = parseScreenFlowScreensV2(screensRaw);
-    if ('errors' in parsed) return { found: true, errors: parsed.errors.map(prefix), warnings };
-    if ('doc' in parsed) {
-      warnings.push(...parsed.warnings.map(prefix));
-      const vertexIds = new Set(allCells.filter((c) => c.kind === 'vertex').map((c) => c.id));
-      const derived = deriveCellsAndNames(parsed.doc, vertexIds);
-      warnings.push(...derived.warnings.map(prefix));
-      const normalized: ScreensV2 & { cells: Record<string, string>; names: Record<string, string> } = {
-        ...(parsed.doc.title ? { title: parsed.doc.title } : {}),
-        ...(parsed.doc.source ? { source: parsed.doc.source } : {}),
-        cells: derived.cells,
-        names: derived.names,
-        ...(parsed.doc.note ? { note: parsed.doc.note } : {}),
-        screens: derived.screens,
-        excluded: parsed.doc.excluded,
-        ...(parsed.doc.meta ? { meta: parsed.doc.meta } : {}),
-        ...(parsed.doc.groups ? { groups: parsed.doc.groups } : {}),
-      };
-      await fs.writeFile(screensPath, `${JSON.stringify(normalized, null, 2)}\n`, 'utf8');
-      discovery = toDiscoveredDoc({ ...parsed.doc, screens: derived.screens }, { generatedAt: new Date().toISOString() });
+/** A6 — key duy nhất xuyên flow (thứ tự flow `--app` → `--web`, thứ tự entry
+ *  trong file):
+ *   (1) màn `code: null` key `<stem>__X<n>` (daemon đánh theo luật cũ) TRÙNG
+ *       với flow trước → đánh lại `X<n>` LIÊN TỤC toàn cục (tiếp sau số X lớn
+ *       nhất đang dùng ở mọi flow, kể cả hậu tố) — ghi lại vào doc (screens,
+ *       meta/groups/partOf) để screens.json/cells/index/flowchart tự theo;
+ *   (2) key trùng mà có `code` thật (hoặc không theo khuôn X<n>) → LỖI nêu key
+ *       — biến thể cùng màn nghiệp vụ phải mang hậu tố `--app`/`--web`;
+ *   (3) cặp hậu tố hợp lệ (`X2--app` / `X2--web`) không trùng nhau → giữ nguyên.
+ *  Không đụng key không trùng — quyết định của agent được giữ. */
+export function reconcileKeysAcrossFlows(flows: Array<{ id: string; doc: ScreensV2 }>): { errors: string[]; warnings: string[] } {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  let nextN = 0;
+  for (const f of flows) {
+    for (const s of f.doc.screens) {
+      const m = X_NUMBER_RE.exec(s.key);
+      if (m) nextN = Math.max(nextN, Number(m[1]));
     }
   }
+  nextN += 1;
+  const owner = new Map<string, string>();
+  for (const f of flows) {
+    const renames = new Map<string, string>();
+    for (const s of f.doc.screens) {
+      const prev = owner.get(s.key);
+      if (prev && prev !== f.id) {
+        const m = /^(.*__)X\d+$/.exec(s.key);
+        if (s.code == null && m) {
+          const next = `${m[1]}X${nextN++}`;
+          renames.set(s.key, next);
+          owner.set(next, f.id);
+          continue;
+        }
+        errors.push(
+          `${f.id}: key "${s.key}" trùng với flow ${prev} — cùng màn nghiệp vụ ở hai nền tảng phải là hai entry hậu tố "${s.key}--app" / "${s.key}--web" (cùng code), màn khác nhau phải khác key`,
+        );
+        continue;
+      }
+      if (!prev) owner.set(s.key, f.id);
+    }
+    if (!renames.size) continue;
+    const rk = (k: string) => renames.get(k) ?? k;
+    f.doc.screens = f.doc.screens.map((s) => (renames.has(s.key) ? { ...s, key: rk(s.key) } : s));
+    f.doc.excluded = f.doc.excluded.map((e) => (e.partOf && renames.has(e.partOf) ? { ...e, partOf: rk(e.partOf) } : e));
+    if (f.doc.meta) f.doc.meta = Object.fromEntries(Object.entries(f.doc.meta).map(([k, v]) => [rk(k), v]));
+    if (f.doc.groups) {
+      f.doc.groups = Object.fromEntries(
+        Object.entries(f.doc.groups).map(([k, v]) => [rk(k), Array.isArray(v) ? v.map((x) => (typeof x === 'string' ? rk(x) : x)) : v]),
+      );
+    }
+    warnings.push(
+      `${f.id}: ${renames.size} màn code null trùng key với flow khác — đánh lại X<n> liên tục toàn cục: ${[...renames].map(([a, b]) => `${a.slice(a.lastIndexOf('__') + 2)}→${b.slice(b.lastIndexOf('__') + 2)}`).join(', ')}`,
+    );
+  }
+  return { errors, warnings };
+}
 
-  const drawio = encodeMxfile([{ id: SCREEN_FLOW_ID.toLowerCase(), name: title, graphXml: wrapped.graphXml }]);
-  await fs.writeFile(path.join(dir, 'as-is.drawio'), drawio, 'utf8');
-  // cells.json cùng format prepareFlowUxInputs ghi cho sơ đồ nguồn — nhánh
-  // auto-link của dr-comp đọc file này làm bằng chứng node id khi gắn thêm màn.
-  const cellDump = allCells.map(({ style: _style, ...rest }) => rest);
-  await fs.writeFile(path.join(dir, 'cells.json'), `${JSON.stringify(cellDump, null, 2)}\n`, 'utf8');
+/** Bước dịch chính — xem docblock đầu file. Idempotent: chạy lại ghi đè
+ *  as-is.drawio và thay các entry SCREEN-FLOW* trong _inputs.json tại chỗ.
+ *  WP screen-flow-platform-split: lặp MỌI id từ `listScreenFlowIds` (flow đơn
+ *  `SCREEN-FLOW` hoặc cặp `--app`/`--web`); validate từng cells.xml + kiểm
+ *  `platform` của screens.json theo thư mục; MỌI lỗi gom lại rồi mới trả (không
+ *  ghi nửa chừng); discovery = hợp các flow. */
+export async function finalizeScreenFlowXml(cwd: string): Promise<ScreenFlowXmlResult> {
+  let ids: string[];
+  try {
+    ids = await listScreenFlowIds(cwd);
+  } catch (error) {
+    if (error instanceof ScreenFlowMixedError) return { found: true, errors: [error.message], warnings: [] };
+    throw error;
+  }
+  // Chỉ thư mục có fragment mới là "agent vừa viết"; as-is.drawio còn sót từ
+  // lượt trước mà không có cells.xml → coi như không có (như trước WP).
+  const withCells: Array<{ id: string; fragment: string }> = [];
+  for (const id of ids) {
+    const fragment = await fs.readFile(path.join(screenFlowDir(cwd, id), SCREEN_FLOW_CELLS_FILE), 'utf8').catch(() => null);
+    if (fragment != null) withCells.push({ id, fragment });
+  }
+  if (withCells.length === 0) return { found: false, errors: [], warnings: [] };
+
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  interface Prepared {
+    id: string;
+    platform: ScreenPlatform | null;
+    title: string;
+    source: string;
+    graphXml: string;
+    allCells: MxCellInfo[];
+    validation: ScreenFlowValidation;
+    /** screens.json v2 đã chuẩn hoá (undefined = v1/không có file). */
+    normalized?: ScreensV2 & { cells: Record<string, string>; names: Record<string, string> };
+    doc?: ScreensV2;
+  }
+  const prepared: Prepared[] = [];
+
+  for (const { id, fragment } of withCells) {
+    const prefix = (msg: string) => `${id}: ${msg}`;
+    const platform = screenFlowPlatformOf(id);
+    const wrapped = wrapScreenFlowCells(fragment);
+    if ('error' in wrapped) {
+      errors.push(prefix(wrapped.error));
+      continue;
+    }
+    const validation = validateScreenFlowGraph(wrapped.graphXml);
+    if (validation.errors.length) {
+      errors.push(...validation.errors.map(prefix));
+      warnings.push(...validation.warnings.map(prefix));
+      continue;
+    }
+    warnings.push(...validation.warnings.map(prefix));
+
+    const dir = screenFlowDir(cwd, id);
+    const screensRaw = await readJson<unknown>(path.join(dir, 'screens.json'));
+    const screensFile = (screensRaw && typeof screensRaw === 'object' ? (screensRaw as { title?: unknown; source?: unknown }) : {});
+    const rawTitle = typeof screensFile.title === 'string' && screensFile.title.trim() ? screensFile.title.trim() : 'Luồng màn hình';
+    const title = screenFlowTitleFor(rawTitle, platform);
+    const source = typeof screensFile.source === 'string' ? screensFile.source : '';
+    const allCells = listCells(wrapped.graphXml);
+    const entry: Prepared = { id, platform, title, source, graphXml: wrapped.graphXml, allCells, validation };
+
+    // WP dr-screens-merge: screens.json v2 (`screens[]`) là nguồn duy nhất agent
+    // ghi — dẫn xuất `cells`/`names` (contract v1 finalizeFlowUx đọc) rồi ghi
+    // lại file đã chuẩn hoá; cell không có trong XML / trùng → null + warning.
+    // v1 (không `screens[]`) → không đụng file, không discovery.
+    if (screensRaw != null) {
+      const parsed = parseScreenFlowScreensV2(screensRaw);
+      if ('errors' in parsed) {
+        errors.push(...parsed.errors.map(prefix));
+        continue;
+      }
+      if ('doc' in parsed) {
+        warnings.push(...parsed.warnings.map(prefix));
+        // WP screen-flow-platform-split: kiểm `platform` theo thư mục.
+        //  - flow tách: MỌI màn phải có platform == nền tảng thư mục;
+        //  - flow đơn: vắng được, có thì đồng nhất MỘT giá trị (≥2 → phải tách);
+        //  - hậu tố key `--app`/`--web` phải khớp platform của màn.
+        const seenPlatforms = new Set<ScreenPlatform>();
+        for (const s of parsed.doc.screens) {
+          if (s.platform) seenPlatforms.add(s.platform);
+          if (platform) {
+            if (!s.platform) errors.push(prefix(`màn "${s.key}" thiếu \`platform\` — flow ${id} bắt buộc \`platform: "${platform}"\` cho mọi màn`));
+            else if (s.platform !== platform) errors.push(prefix(`màn "${s.key}" khai platform "${s.platform}" lệch với thư mục flow (${platform}) — chuyển sang flows/${screenFlowIdFor(s.platform)}/`));
+          }
+          const suffix = PLATFORM_KEY_SUFFIX_RE.exec(s.key)?.[1] as ScreenPlatform | undefined;
+          const expect = platform ?? s.platform;
+          if (suffix && expect && suffix !== expect) {
+            errors.push(prefix(`key "${s.key}" mang hậu tố --${suffix} nhưng màn thuộc nền tảng ${expect}`));
+          }
+        }
+        if (!platform && seenPlatforms.size > 1) {
+          errors.push(
+            prefix(
+              `flow đơn có màn thuộc ${[...seenPlatforms].map((p) => `"${p}"`).join(' và ')} — tài liệu ≥2 nền tảng phải tách thành flows/${screenFlowIdFor('app')}/ + flows/${screenFlowIdFor('web')}/ (không dùng flows/${SCREEN_FLOW_ID}/)`,
+            ),
+          );
+        }
+        entry.doc = parsed.doc;
+      }
+    }
+    prepared.push(entry);
+  }
+  if (errors.length) return { found: true, errors, warnings };
+
+  // A6 (2026-08-28): key phải DUY NHẤT xuyên mọi flow — agent hay đánh
+  // `X1..Xn` lại từ đầu ở flow thứ hai (dữ liệu thật: app X1..X18, web X1..X12
+  // → 12 màn web rơi khỏi discovery vì trùng key). Chỉ khi ≥2 flow.
+  if (prepared.length >= 2) {
+    const r = reconcileKeysAcrossFlows(prepared.filter((p): p is Prepared & { doc: ScreensV2 } => p.doc != null));
+    errors.push(...r.errors);
+    warnings.push(...r.warnings);
+    if (errors.length) return { found: true, errors, warnings };
+  }
+
+  // Dẫn xuất cells/names (contract v1) + bản chuẩn hoá để ghi lại — SAU khi
+  // key đã ổn định toàn cục.
+  for (const p of prepared) {
+    if (!p.doc) continue;
+    const prefix = (msg: string) => `${p.id}: ${msg}`;
+    const vertexIds = new Set(p.allCells.filter((c) => c.kind === 'vertex').map((c) => c.id));
+    const derived = deriveCellsAndNames(p.doc, vertexIds);
+    warnings.push(...derived.warnings.map(prefix));
+    p.normalized = {
+      ...(p.doc.title ? { title: p.doc.title } : {}),
+      ...(p.doc.source ? { source: p.doc.source } : {}),
+      cells: derived.cells,
+      names: derived.names,
+      ...(p.doc.note ? { note: p.doc.note } : {}),
+      screens: derived.screens,
+      excluded: p.doc.excluded,
+      ...(p.doc.meta ? { meta: p.doc.meta } : {}),
+      ...(p.doc.groups ? { groups: p.doc.groups } : {}),
+    };
+    p.doc = { ...p.doc, screens: derived.screens };
+  }
+
+  // ── Ghi (mọi flow đã qua validate) ──
+  const generatedAt = new Date().toISOString();
+  for (const p of prepared) {
+    const dir = screenFlowDir(cwd, p.id);
+    if (p.normalized) await fs.writeFile(path.join(dir, 'screens.json'), `${JSON.stringify(p.normalized, null, 2)}\n`, 'utf8');
+    const drawio = encodeMxfile([{ id: p.id.toLowerCase(), name: p.title, graphXml: p.graphXml }]);
+    await fs.writeFile(path.join(dir, 'as-is.drawio'), drawio, 'utf8');
+    // cells.json cùng format prepareFlowUxInputs ghi cho sơ đồ nguồn — nhánh
+    // auto-link của dr-comp đọc file này làm bằng chứng node id khi gắn thêm màn.
+    const cellDump = p.allCells.map(({ style: _style, ...rest }) => rest);
+    await fs.writeFile(path.join(dir, 'cells.json'), `${JSON.stringify(cellDump, null, 2)}\n`, 'utf8');
+  }
+  const flowDocs = prepared.filter((p): p is Prepared & { doc: ScreensV2 } => p.doc != null);
+  const discovery = flowDocs.length ? toDiscoveredDocs(flowDocs.map((p) => ({ id: p.id, doc: p.doc })), { generatedAt }) : undefined;
 
   // Sơ đồ seed (prepareFlowUxInputs giải nén cho agent đọc) phải RỜI flows/
   // trước khi finalizeFlowUx dựng index: để lại thì index có entry screens
   // rỗng → recovery loop của đường dr-flow cũ + assertDocsReviewCoverageComplete
   // chặn receipt, và nhánh auto-pickup text-only còn nhặt lại as-is.mmd mồ
   // côi. Chuyển vào flows/_seeds/ (tiền tố `_` = finalizeFlowUx bỏ qua) thay
-  // vì xoá — giữ dấu vết "agent đã nhìn thấy sơ đồ nguồn nào".
+  // vì xoá — giữ dấu vết "agent đã nhìn thấy sơ đồ nguồn nào". Mọi id khớp
+  // SCREEN_FLOW_ID_RE đều ở lại.
   const flowsDir = path.join(cwd, 'flows');
   const seedsDir = path.join(flowsDir, '_seeds');
   const dirents = await fs.readdir(flowsDir, { withFileTypes: true }).catch(() => []);
   for (const d of dirents) {
-    if (!d.isDirectory() || d.name.startsWith('_') || d.name === SCREEN_FLOW_ID) continue;
+    if (!d.isDirectory() || d.name.startsWith('_') || isScreenFlowId(d.name)) continue;
     await fs.mkdir(seedsDir, { recursive: true });
     await fs.rm(path.join(seedsDir, d.name), { recursive: true, force: true });
     await fs.rename(path.join(flowsDir, d.name), path.join(seedsDir, d.name));
   }
 
-  // Manifest thu về MỘT flow duy nhất — SCREEN-FLOW là toàn bộ deliverable
-  // của stage; finalizeFlowUx xử lý nó như một sơ đồ drawio bình thường
+  // Manifest thu về đúng các flow SCREEN-FLOW* — đó là toàn bộ deliverable
+  // của stage; finalizeFlowUx xử lý từng cái như một sơ đồ drawio bình thường
   // (nó CHỈ đọc manifest cho kind drawio; nhánh tự-quét chỉ nhặt as-is.mmd).
+  // Flow tách mang thêm `platform`; flow đơn KHÔNG có field (byte-identical).
   const inputsPath = path.join(flowsDir, '_inputs.json');
   const manifest = (await readJson<Record<string, unknown>>(inputsPath)) ?? {};
-  const entry = {
-    id: SCREEN_FLOW_ID,
-    title,
+  const entries = prepared.map((p) => ({
+    id: p.id,
+    title: p.title,
     kind: 'drawio',
-    source,
-    diagram: `flows/${SCREEN_FLOW_ID}/as-is.drawio`,
-    files: { asIs: `flows/${SCREEN_FLOW_ID}/as-is.drawio`, cells: `flows/${SCREEN_FLOW_ID}/cells.json` },
-    counts: { nodes: validation.vertexCount, edges: validation.edgeCount },
-  };
-  await fs.writeFile(inputsPath, `${JSON.stringify({ ...manifest, flows: [entry] }, null, 2)}\n`, 'utf8');
+    source: p.source,
+    diagram: `flows/${p.id}/as-is.drawio`,
+    files: { asIs: `flows/${p.id}/as-is.drawio`, cells: `flows/${p.id}/cells.json` },
+    counts: { nodes: p.validation.vertexCount, edges: p.validation.edgeCount },
+    ...(p.platform ? { platform: p.platform } : {}),
+  }));
+  await fs.writeFile(inputsPath, `${JSON.stringify({ ...manifest, flows: entries }, null, 2)}\n`, 'utf8');
 
   // WP dr-flow-result-split (2026-08-27): dr-flow KHÔNG ghi ux-review.json
   // tối thiểu nữa — file đó là output RIÊNG của dr-flow-improve (agent review
   // ghi). Ghi ở đây từng làm dr-flow-improve tự "Xong" ké qua attribution và
   // làm Quick result dr-flow mở nhầm khung so sánh. finalizeFlowUx bỏ qua
-  // warning "thiếu/hỏng ux-review.json" cho SCREEN-FLOW (entry không có
+  // warning "thiếu/hỏng ux-review.json" cho SCREEN-FLOW* (entry không có
   // verdict/findings — consumer đều đọc khoan dung).
 
-  return { found: true, errors: [], warnings, ...(discovery ? { discovery } : {}) };
+  return { found: true, errors: [], warnings, ...(discovery ? { discovery } : {}), flowIds: prepared.map((p) => p.id) };
 }
 
 export interface ScreenFlowSaveResult {
@@ -429,11 +655,11 @@ function pageFingerprint(graphXml: string): string {
  *  (finalizeFlowUx sẽ KHÔNG áp lại patch). Chỉ 1 trang nhưng proposed.drawio
  *  đang có → thay trang 0 của nó, giữ trang 1. Trang 0 đổi khi đang có
  *  proposed → warning "đề xuất có thể lệch". */
-export async function saveScreenFlowEdit(cwd: string, mxfileXml: string): Promise<ScreenFlowSaveResult> {
-  const dir = screenFlowDir(cwd);
+export async function saveScreenFlowEdit(cwd: string, mxfileXml: string, flowId: string = SCREEN_FLOW_ID): Promise<ScreenFlowSaveResult> {
+  const dir = screenFlowDir(cwd, flowId);
   const asIsPath = path.join(dir, 'as-is.drawio');
   const prevAsIs = await fs.readFile(asIsPath, 'utf8').catch(() => null);
-  if (prevAsIs == null) return { ok: false, errors: ['chưa có flows/SCREEN-FLOW/as-is.drawio — chạy stage Luồng màn hình trước'], warnings: [] };
+  if (prevAsIs == null) return { ok: false, errors: [`chưa có flows/${flowId}/as-is.drawio — chạy stage Luồng màn hình trước`], warnings: [] };
 
   let pages;
   try {

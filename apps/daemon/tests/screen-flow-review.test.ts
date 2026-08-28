@@ -12,6 +12,7 @@ import {
   SCREEN_FLOW_CONTEXT_REL,
   classifyOutcomes,
   loadScreenFlowReviewContext,
+  loadScreenFlowReviewContextFor,
   mapScreenFlowToPage,
   screenFlowEdgeKey,
   writeScreenFlowReviewContext,
@@ -148,11 +149,12 @@ test('classifyOutcomes: fill lỗi → error, fill OK không ellipse → success
 test('loadScreenFlowReviewContext: null khi thiếu as-is.drawio', async () => {
   const cwd = setup({ noAsIs: true });
   assert.equal(await loadScreenFlowReviewContext(cwd), null);
+  assert.equal(await loadScreenFlowReviewContextFor(cwd), null);
 });
 
 test('loadScreenFlowReviewContext: không selection → original, as-is trang 0, screens từ screens.json, edges từ flowchart, findings rỗng', async () => {
   const cwd = setup({ improved: true });
-  const ctx = await loadScreenFlowReviewContext(cwd);
+  const ctx = await loadScreenFlowReviewContextFor(cwd);
   assert.ok(ctx);
   assert.equal(ctx.variant, 'original');
   assert.equal(ctx.selectionSource, 'default');
@@ -174,7 +176,7 @@ test('loadScreenFlowReviewContext: không selection → original, as-is trang 0,
 
 test('loadScreenFlowReviewContext: selection improved + proposed trang 1 → improved, màn đề xuất provenance proposed, findings từ ux-review', async () => {
   const cwd = setup({ improved: true, selection: 'improved' });
-  const ctx = await loadScreenFlowReviewContext(cwd);
+  const ctx = await loadScreenFlowReviewContextFor(cwd);
   assert.ok(ctx);
   assert.equal(ctx.variant, 'improved');
   assert.equal(ctx.selectionSource, 'user');
@@ -191,20 +193,24 @@ test('loadScreenFlowReviewContext: selection improved + proposed trang 1 → imp
 
 test('loadScreenFlowReviewContext: selection improved nhưng KHÔNG có proposed.drawio → lùi về original', async () => {
   const cwd = setup({ selection: 'improved' });
-  const ctx = await loadScreenFlowReviewContext(cwd);
+  const ctx = await loadScreenFlowReviewContextFor(cwd);
   assert.ok(ctx);
   assert.equal(ctx.variant, 'original');
   assert.equal(ctx.selectionSource, 'user');
   assert.deepEqual(ctx.findings, []);
 });
 
-test('writeScreenFlowReviewContext: ghi review/_screen-flow-context.json', async () => {
+test('writeScreenFlowReviewContext: ghi review/_screen-flow-context.json dạng { generatedAt, flows[] } (flow đơn → 1 phần tử có id)', async () => {
   const cwd = setup();
-  const ctx = (await loadScreenFlowReviewContext(cwd))!;
-  await writeScreenFlowReviewContext(cwd, ctx);
+  const ctxs = (await loadScreenFlowReviewContext(cwd))!;
+  assert.equal(ctxs.flows.length, 1);
+  assert.equal(ctxs.flows[0]!.id, SCREEN_FLOW_ID);
+  assert.equal(ctxs.flows[0]!.platform, undefined);
+  await writeScreenFlowReviewContext(cwd, ctxs);
   const written = JSON.parse(fs.readFileSync(path.join(cwd, SCREEN_FLOW_CONTEXT_REL), 'utf8'));
-  assert.equal(written.variant, 'original');
-  assert.equal(written.screens.length, 2);
+  assert.equal(written.flows[0].variant, 'original');
+  assert.equal(written.flows[0].id, SCREEN_FLOW_ID);
+  assert.equal(written.flows[0].screens.length, 2);
   assert.ok(typeof written.generatedAt === 'string');
 });
 
@@ -212,7 +218,7 @@ const PAGE = ['# PRD', '', '## 6.1.1 Trang chủ', '', 'Người dùng bấm Mua
 
 test('mapScreenFlowToPage (phép 1): màn có mục → placed + cạnh/kết cục theo section; màn không có mục → note gap rule_id screens.json#<KEY>, anchor rỗng + anchor_unresolved', async () => {
   const cwd = setup();
-  const ctx = (await loadScreenFlowReviewContext(cwd))!;
+  const ctx = (await loadScreenFlowReviewContextFor(cwd))!;
   const sections = splitSections(PAGE);
   const m = mapScreenFlowToPage(ctx, { pageSrc: 'docs-feature/prd.md', sections, pageLines: PAGE.split('\n'), original: PAGE });
   assert.equal(m.pageScreens.length, 2);
@@ -240,7 +246,7 @@ test('mapScreenFlowToPage (phép 1): màn có mục → placed + cạnh/kết c�
 
 test('mapScreenFlowToPage: anchorText có trong trang → anchor giữ nguyên văn (không anchor_unresolved)', async () => {
   const cwd = setup();
-  const ctx = (await loadScreenFlowReviewContext(cwd))!;
+  const ctx = (await loadScreenFlowReviewContextFor(cwd))!;
   // Trang nhắc tới "## 6.4.1 Nhập thông tin" trong fence (không phải heading thật) → unplaced nhưng anchor tìm thấy.
   const page = `${PAGE}\n\`\`\`\n## 6.4.1 Nhập thông tin\n\`\`\`\n`;
   const sections = splitSections(page);
@@ -252,7 +258,7 @@ test('mapScreenFlowToPage: anchorText có trong trang → anchor giữ nguyên v
 
 test('mapScreenFlowToPage (improved): màn đề xuất LUÔN là gap kèm UX-id; kết cục nối với cạnh của section có mặt', async () => {
   const cwd = setup({ improved: true, selection: 'improved' });
-  const ctx = (await loadScreenFlowReviewContext(cwd))!;
+  const ctx = (await loadScreenFlowReviewContextFor(cwd))!;
   const page = ['# PRD', '', '## 6.4.1 Nhập thông tin', '', 'Nhập rồi thanh toán.', ''].join('\n');
   const sections = splitSections(page);
   const m = mapScreenFlowToPage(ctx, { pageSrc: 'docs-feature/prd.md', sections, pageLines: page.split('\n'), original: page });
@@ -267,7 +273,7 @@ test('mapScreenFlowToPage (improved): màn đề xuất LUÔN là gap kèm UX-id
 
 test('mapScreenFlowToPage: trang khác source → không màn, không note', async () => {
   const cwd = setup();
-  const ctx = (await loadScreenFlowReviewContext(cwd))!;
+  const ctx = (await loadScreenFlowReviewContextFor(cwd))!;
   const sections = splitSections(PAGE);
   const m = mapScreenFlowToPage(ctx, { pageSrc: 'docs-feature/other.md', sections, pageLines: PAGE.split('\n'), original: PAGE });
   assert.equal(m.pageScreens.length, 0);

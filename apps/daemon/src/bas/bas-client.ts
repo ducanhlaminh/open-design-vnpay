@@ -1453,6 +1453,108 @@ export async function expandMermaidMacrosInExportView(
   return out;
 }
 
+// ── Mermaid macro #2 ("wwmc" `mermaiddiagram`, inline source) ─────────────
+// A second Mermaid add-on stores the source INSIDE the macro body (storage
+// format: <ac:structured-macro ac:name="mermaiddiagram"> + CDATA) and renders
+// client-side: view/export_view carry a hidden mount <div id="wwmc-mermaid-…">,
+// a hidden error <div id="wwmc-error-…"> and the source in
+// <script class="wwmc-code" type="application/json">""<JSON-escaped source>""</script>
+// (view wraps it in `//<![CDATA[ … //]]>`). No <img>, no attachment at all —
+// htmlToMarkdown drops the script, so the "Sơ đồ" section came out empty
+// (NamABank-SME "[URD]Tạo hồ sơ", page 996741925). Decode the payload, save
+// it as `<pageId>-so-do-<n>.mmd` and splice a ```mermaid fence + source link
+// where the macro stood (same replacement shape as the Stratus pass; the
+// viewer renders the fence itself).
+
+export interface WwmcMermaidBlock {
+  start: number;
+  end: number;
+  uuid: string;
+  code: string;
+}
+
+const WWMC_SCRIPT_RE = /<script\b[^>]*\bclass="wwmc-code"[^>]*>([\s\S]*?)<\/script>/gi;
+
+/** `""…""` (export_view) or `//<![CDATA[ ""…"" //]]>` (view) → Mermaid source. */
+export function decodeWwmcMermaidPayload(raw: string): string | null {
+  let text = raw.replace(/^\s*\/\/\s*<!\[CDATA\[/, '').replace(/\/\/\s*\]\]>\s*$/, '').trim();
+  if (!text) return null;
+  // The add-on double-quotes the JSON string: `""abc\n""`. Peel the outer pair,
+  // then the inner one is a plain JSON string literal.
+  if (text.startsWith('""') && text.endsWith('""') && text.length >= 4) text = text.slice(1, -1);
+  try {
+    const parsed: unknown = JSON.parse(text);
+    if (typeof parsed === 'string') return parsed.trim() || null;
+    return null;
+  } catch {
+    // Not JSON (older add-on versions emit the bare source) — take it verbatim
+    // when it reads as Mermaid.
+    const bare = text.replace(/^"+|"+$/g, '').trim();
+    return looksLikeMermaidSource(bare) ? bare : null;
+  }
+}
+
+/** Every wwmc Mermaid block: from the hidden mount/error divs that precede
+ *  the <script class="wwmc-code"> (same uuid) to the end of that script. */
+export function findWwmcMermaidBlocks(html: string): WwmcMermaidBlock[] {
+  const out: WwmcMermaidBlock[] = [];
+  WWMC_SCRIPT_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = WWMC_SCRIPT_RE.exec(html))) {
+    const scriptStart = m.index;
+    const end = scriptStart + m[0].length;
+    const uuid = /\bdata-uuid="([^"]+)"/.exec(m[0])?.[1] ?? '';
+    const code = decodeWwmcMermaidPayload(m[1] ?? '');
+    if (!code) continue;
+    let start = scriptStart;
+    if (uuid) {
+      // Swallow the empty hidden divs the add-on emits before the script so
+      // no stray blank paragraphs survive in Markdown.
+      const prev = out.length ? out[out.length - 1]!.end : 0;
+      for (const id of [`wwmc-mermaid-${uuid}`, `wwmc-error-${uuid}`]) {
+        const idx = html.lastIndexOf(`id="${id}"`, scriptStart);
+        if (idx === -1 || idx < prev) continue;
+        const divStart = html.lastIndexOf('<div', idx);
+        if (divStart !== -1 && divStart >= prev && divStart < start) start = divStart;
+      }
+    }
+    out.push({ start, end, uuid, code });
+  }
+  return out;
+}
+
+/** Rewrite every wwmc Mermaid block: source → `<pageId>-so-do-<n>.mmd` in
+ *  `attachmentsDir`, fence + link in the HTML. Sync apart from the file
+ *  writes; a block whose file cannot be written still gets its fence. */
+export async function expandWwmcMermaidMacros(
+  html: string,
+  pageId: string,
+  attachmentsDir: string,
+  relPrefix: string,
+): Promise<string> {
+  const blocks = findWwmcMermaidBlocks(html);
+  if (!blocks.length) return html;
+  let out = '';
+  let cursor = 0;
+  for (const [i, b] of blocks.entries()) {
+    const title = `Sơ đồ ${i + 1}`;
+    const stem = `${pageId}-so-do-${i + 1}`;
+    const saved: { codeRel?: string; code: string } = { code: b.code };
+    try {
+      await fs.mkdir(attachmentsDir, { recursive: true });
+      await fs.writeFile(path.join(attachmentsDir, `${stem}.mmd`), `${b.code.trim()}\n`, 'utf8');
+      saved.codeRel = `${stem}.mmd`;
+    } catch (err) {
+      console.warn(`[bas] mermaid (wwmc) "${title}": could not save source file:`, err);
+    }
+    console.log(`[bas] mermaid (wwmc) "${title}" (page ${pageId}): nguồn ✓ (${b.code.length} ký tự)`);
+    out += html.slice(cursor, b.start) + mermaidMacroReplacementHtml(title, relPrefix, saved);
+    cursor = b.end;
+  }
+  out += html.slice(cursor);
+  return out;
+}
+
 /** Insert `extra` right after the <img> whose src carries `previewName`. */
 function appendAfterImage(html: string, previewName: string, extra: string): string {
   const re = new RegExp(
@@ -1954,6 +2056,15 @@ export async function fetchConfluencePages(
         ).catch((err) => {
           opts.signal?.throwIfAborted();
           console.warn(`[bas] mermaid macro pass failed for page ${p.pageId}:`, err);
+          return html;
+        });
+      }
+      // Mermaid (wwmc `mermaiddiagram` macro): source sits inline in a hidden
+      // <script class="wwmc-code"> — no attachment to fetch, just decode + splice.
+      if (opts.attachmentsDir) {
+        html = await expandWwmcMermaidMacros(html, p.pageId, opts.attachmentsDir, attachmentsPrefix).catch((err) => {
+          opts.signal?.throwIfAborted();
+          console.warn(`[bas] mermaid (wwmc) macro pass failed for page ${p.pageId}:`, err);
           return html;
         });
       }

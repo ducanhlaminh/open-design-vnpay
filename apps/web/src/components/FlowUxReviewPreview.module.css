@@ -621,6 +621,18 @@
 /* ── WP dr-flow-improve (2026-08-27) ──────────────────────────────────── */
 /* Badge "đang dùng" trên tab / tiêu đề khung của bản được chọn để chạy tiếp
  * (chỉ SCREEN-FLOW có bản Cải thiện). */
+/* Badge nền tảng "App"/"Web" cạnh tiêu đề (WP screen-flow-platform-split):
+ * flow `SCREEN-FLOW--app`/`--web`; flow đơn không có badge. */
+.platformBadge {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 1px 8px;
+  border-radius: 999px;
+  color: var(--accent, #0066b3);
+  background: var(--accent-tint, #e6f0f8);
+  border: 1px solid var(--accent, #0066b3);
+  white-space: nowrap;
+}
 .usingBadge {
   margin-left: 6px;
   font-size: 10px;

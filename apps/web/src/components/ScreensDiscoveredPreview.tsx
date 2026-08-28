@@ -35,6 +35,11 @@ export interface DiscoveredScreen {
   anchorText?: string;
   why?: string;
   blocks?: DiscoveredBlock[];
+  /** WP screen-flow-platform-split: nền tảng của màn (agent quyết trong
+   *  screens.json; discovery = hợp các flow). Vắng = tài liệu một nền tảng. */
+  platform?: 'app' | 'web';
+  /** Khoá nhóm biến thể cùng màn nghiệp vụ ở 2 nền tảng (suy từ hậu tố key). */
+  groupKey?: string;
 }
 export interface DiscoveredPage {
   source: string;
@@ -87,6 +92,9 @@ const M = {
 // `-APP`/`-WEB` vào code (code null thì vào cuối name) — badge suy từ đúng
 // quy ước đó, không đoán từ nội dung.
 function platformOf(screen: DiscoveredScreen): 'App' | 'Web' | null {
+  // Field `platform` (flow tách theo nền tảng) thắng quy ước hậu tố.
+  if (screen.platform === 'app') return 'App';
+  if (screen.platform === 'web') return 'Web';
   const marker = (screen.code ?? screen.name).trim();
   if (/-APP$/i.test(marker)) return 'App';
   if (/-WEB$/i.test(marker)) return 'Web';

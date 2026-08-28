@@ -27,6 +27,17 @@ import http from 'node:http';
 import https from 'node:https';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+// WP layout-kb-web (2026-08-28): manifest schema_version 2 — mỗi topic có
+// `platform: 'mobile' | 'web'`, file có `sources[]`. Topic web tầng 1 (viết tay)
+// đọc từ `web-templates.json` cạnh script và merge sau topic Enrico; tầng 2
+// (dữ liệu thật) do `build-web.mjs` bổ sung vào manifest hiện có.
+const WEB_TEMPLATES_FILE = path.join(path.dirname(fileURLToPath(import.meta.url)), 'web-templates.json');
+const SOURCES = [
+  { id: 'enrico', license: 'MIT', note: 'Leiva, Hota, Oulasvirta — Enrico (Aalto, MobileHCI 2020); topic mobile.' },
+  { id: 'web-templates', license: 'hand-authored', note: 'tools/layout-kb/web-templates.json — topic web tầng 1 (khuôn viết tay, không ảnh).' },
+];
 
 const BASE_URL = 'http://userinterfaces.aalto.fi/enrico/resources';
 const RESOURCES = ['hierarchies.zip', 'metadata.zip', 'wireframes.zip'];
@@ -537,7 +548,7 @@ async function main() {
   }
 
   // Chọn template + sample theo topic.
-  const manifest = { schema_version: 1, source: 'enrico', license: 'MIT', builtAt: new Date().toISOString(), topics: {} };
+  const manifest = { schema_version: 2, source: 'enrico', license: 'MIT', builtAt: new Date().toISOString(), sources: SOURCES, topics: {} };
   const pickIds = new Set();
   for (const topic of [...wanted].sort()) {
     const screens = perTopic.get(topic) ?? [];
@@ -582,7 +593,19 @@ async function main() {
         if (!added) break;
       }
     }
-    manifest.topics[topic] = { count: screens.length, templates, samples };
+    manifest.topics[topic] = { platform: 'mobile', count: screens.length, templates, samples };
+  }
+
+  // Topic web tầng 1: merge web-templates.json (platform web, count = số template, samples []).
+  const webTopics = await readWebTemplates();
+  for (const [name, t] of Object.entries(webTopics)) {
+    if (manifest.topics[name]) throw new Error(`web-templates.json: topic "${name}" trùng topic Enrico`);
+    manifest.topics[name] = {
+      platform: 'web',
+      count: t.templates.length,
+      templates: t.templates.map((tpl) => ({ id: tpl.id, bands: tpl.bands, sketch: tpl.sketch, samples: [] })),
+      samples: [],
+    };
   }
 
   // Wireframes: chỉ copy màn được chọn.
@@ -635,14 +658,39 @@ async function main() {
   }
 
   const topics = Object.keys(manifest.topics);
+  const nMobile = topics.filter((t) => manifest.topics[t].platform !== 'web').length;
+  const nWeb = topics.length - nMobile;
   if (parsed === 0) throw new Error(`không phân tích được màn nào (bỏ ${skipped}) — kiểm tra .cache/hierarchies + design_topics.csv`);
   const nTpl = topics.reduce((a, t) => a + manifest.topics[t].templates.length, 0);
   console.log('');
-  console.log(`Xong ${((Date.now() - t0) / 1000).toFixed(1)}s — ${topics.length} topic, ${nTpl} template, ${imgCount} wireframe (${(imgBytes / 1e6).toFixed(2)} MB); phân tích ${parsed} màn, bỏ ${skipped}.`);
+  console.log(`Xong ${((Date.now() - t0) / 1000).toFixed(1)}s — ${topics.length} topic (${nMobile} mobile, ${nWeb} web), ${nTpl} template, ${imgCount} wireframe (${(imgBytes / 1e6).toFixed(2)} MB); phân tích ${parsed} màn, bỏ ${skipped}.`);
   for (const t of topics) {
     const x = manifest.topics[t];
-    console.log(`  ${t.padEnd(9)} ${String(x.count).padStart(4)} màn  ${x.templates.length} tpl  ${x.samples.length} ảnh  | ${x.templates[0]?.bands.join(' › ') ?? ''}`);
+    console.log(`  ${t.padEnd(13)} ${x.platform.padEnd(6)} ${String(x.count).padStart(4)} màn  ${x.templates.length} tpl  ${x.samples.length} ảnh  | ${x.templates[0]?.bands.join(' › ') ?? ''}`);
   }
+}
+
+/** Đọc `web-templates.json` (tầng 1). Kiểm khuôn tối thiểu: topic tiền tố `web-`,
+ *  template `{ id, bands[], sketch }` với id tiền tố `<topic>-`. Thiếu file → {} (có cảnh báo). */
+async function readWebTemplates() {
+  const raw = await fs.readFile(WEB_TEMPLATES_FILE, 'utf8').catch(() => null);
+  if (raw == null) {
+    console.log(`  (không có ${path.basename(WEB_TEMPLATES_FILE)} — manifest không có topic web)`);
+    return {};
+  }
+  const json = JSON.parse(raw);
+  const out = {};
+  for (const [name, t] of Object.entries(json?.topics ?? {})) {
+    if (!name.startsWith('web-')) throw new Error(`web-templates.json: topic "${name}" phải có tiền tố web-`);
+    const templates = [];
+    for (const tpl of Array.isArray(t?.templates) ? t.templates : []) {
+      if (typeof tpl?.id !== 'string' || !tpl.id.startsWith(`${name}-`)) throw new Error(`web-templates.json: template id "${tpl?.id}" phải có tiền tố ${name}-`);
+      if (!Array.isArray(tpl.bands) || !tpl.bands.length) throw new Error(`web-templates.json: ${tpl.id} thiếu bands`);
+      templates.push({ id: tpl.id, bands: tpl.bands.map(String), sketch: typeof tpl.sketch === 'string' ? tpl.sketch : '' });
+    }
+    if (templates.length) out[name] = { templates };
+  }
+  return out;
 }
 
 function readmeText(args) {
@@ -653,8 +701,10 @@ dataset **Enrico** (Aalto University, giấy phép MIT — https://github.com/lu
 1.460 màn Android (subset Rico) gắn 20 topic thiết kế, mỗi màn có wireframe PNG
 + hierarchy JSON. Chỉ giữ topic liên quan: ${args.topics.join(', ')}.
 
-- \`manifest.json\` — schema_version 1: theo topic gồm \`templates[]\` (id, bands, sketch ASCII, samples)
-  và \`samples[]\` (id, wireframe, bands). Daemon đọc file này (\`apps/daemon/src/layout-kb.ts\`).
+- \`manifest.json\` — schema_version 2: theo topic gồm \`platform\` (mobile | web), \`templates[]\` (id, bands, sketch ASCII, samples)
+  và \`samples[]\` (id, wireframe, bands); \`sources[]\` cấp file. Daemon đọc file này (\`apps/daemon/src/layout-kb.ts\`).
+  Topic \`web-*\` tầng 1 lấy từ \`tools/layout-kb/web-templates.json\` (khuôn viết tay, samples rỗng);
+  \`build-web.mjs\` (tầng 2) bổ sung sample/template thật — chạy SAU build.mjs (build.mjs ghi lại topic web về tầng 1).
 - \`wireframes/<id>.png\` — wireframe Enrico của màn được chọn (chỉ màn trong manifest).
 - \`curate.json\` — \`{ "exclude": ["<id>", ...] }\`: màn xấu/lạc đề do người curate; được tôn trọng khi rebuild.
 - \`.cache/\` — zip gốc + hierarchy đã giải nén (có thể xoá; rebuild sẽ tải lại).

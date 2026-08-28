@@ -26,8 +26,8 @@ import { drawioPageToFlowchart, mermaidToFlowchart, resolveScreenCells, type Flo
 // screens.improved.json mang mapping màn cho node mới. Import MỘT CHIỀU
 // (screen-flow-xml.ts không import file này).
 import {
-  SCREEN_FLOW_ID,
   hasProposedEditedMarker,
+  isScreenFlowId,
   readScreenFlowSelection,
   readScreensImproved,
   type ScreenFlowSelectionSource,
@@ -59,6 +59,9 @@ export interface FlowInput {
   files: { asIs: string; cells?: string; svg?: string };
   /** Cell / node counts, for the agent to size its effort. */
   counts: { nodes: number; edges: number };
+  /** WP screen-flow-platform-split (2026-08-28): flow Luồng màn hình đã tách
+   *  theo nền tảng (`SCREEN-FLOW--app`/`--web`). Flow đơn / sơ đồ nguồn: vắng. */
+  platform?: 'app' | 'web';
 }
 
 export interface UxFinding {
@@ -92,7 +95,9 @@ export interface FlowIndexEntry {
   page?: { index: number; name: string; count: number };
   screens: Array<{ key: string; name: string } & Partial<ScreenMetadata> & { removedByProposal?: true }>;
   note?: string;
-  /** WP dr-flow-improve (chỉ SCREEN-FLOW): bản đang dựng flowchart/screens —
+  /** WP screen-flow-platform-split: `app`|`web` cho flow tách; vắng với flow đơn (byte-identical). */
+  platform?: 'app' | 'web';
+  /** WP dr-flow-improve (chỉ SCREEN-FLOW*): bản đang dựng flowchart/screens —
    *  `improved` = từ TRANG 1 của proposed.drawio; `original` = as-is như cũ. */
   variant?: ScreenFlowVariant;
   /** …và lựa chọn ghi ở selection.json (`default` = chưa có file). Web/dr-comp đọc. */
@@ -788,6 +793,7 @@ export async function finalizeFlowUx(cwd: string): Promise<FinalizeResult> {
       files: {},
       ...(input.diagram ? { diagram: input.diagram } : {}),
       ...(input.page ? { page: input.page } : {}),
+      ...(input.platform === 'app' || input.platform === 'web' ? { platform: input.platform } : {}),
     };
     const screensFile = (await readJson<ScreensFile>(path.join(dir, 'screens.json'))) ?? {};
     // Bản sao (không sửa object đọc từ file): nhánh improved bên dưới bổ sung
@@ -823,11 +829,13 @@ export async function finalizeFlowUx(cwd: string): Promise<FinalizeResult> {
         index.push(entry);
         continue;
       }
-      // WP dr-flow-improve: chỉ SCREEN-FLOW có bản "Cải thiện" chọn được;
+      // WP dr-flow-improve: chỉ SCREEN-FLOW* có bản "Cải thiện" chọn được;
       // sơ đồ nguồn khác (docs-flow-ux cũ) giữ nguyên hành vi byte-identical.
-      const isScreenFlow = input.id === SCREEN_FLOW_ID;
-      const selection = isScreenFlow ? await readScreenFlowSelection(cwd) : null;
-      const editedByHand = isScreenFlow && (await hasProposedEditedMarker(cwd));
+      // WP screen-flow-platform-split: selection/marker/improved đọc THEO
+      // flow id (mỗi thư mục `SCREEN-FLOW--app|--web` tự đủ).
+      const isScreenFlow = isScreenFlowId(input.id);
+      const selection = isScreenFlow ? await readScreenFlowSelection(cwd, input.id) : null;
+      const editedByHand = isScreenFlow && (await hasProposedEditedMarker(cwd, input.id));
       let proposedGraphXml: string | null = null;
 
       const patchRaw = await readText(path.join(dir, 'patch.json'));
@@ -887,7 +895,7 @@ export async function finalizeFlowUx(cwd: string): Promise<FinalizeResult> {
       let graphForChart = page.graphXml;
       if (useImproved && proposedGraphXml) {
         graphForChart = proposedGraphXml;
-        const improved = await readScreensImproved(cwd);
+        const improved = await readScreensImproved(cwd, input.id);
         for (const s of improved?.screens ?? []) {
           if (s.provenance !== 'proposed') continue;
           if (s.cell && !cellScreens[s.cell]) cellScreens[s.cell] = s.key;
@@ -987,7 +995,7 @@ export async function finalizeFlowUx(cwd: string): Promise<FinalizeResult> {
       entry.files!.review = `flows/${input.id}/ux-review.json`;
       entry.verdict = review.verdict;
       entry.findings = review.findings.length;
-    } else if (input.id !== SCREEN_FLOW_ID || (await readText(path.join(dir, 'ux-review.json'))) != null) {
+    } else if (!isScreenFlowId(input.id) || (await readText(path.join(dir, 'ux-review.json'))) != null) {
       // WP dr-flow-result-split (2026-08-27): SCREEN-FLOW KHÔNG có review cho
       // tới khi dr-flow-improve chạy (dr-flow không còn ghi file tối thiểu) —
       // vắng file là trạng thái bình thường, không cảnh báo; file CÓ mà hỏng

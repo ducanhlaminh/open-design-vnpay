@@ -1,16 +1,21 @@
 // ScreenFlowPanelViewer — sơ đồ "Luồng màn hình" BẢN ĐÃ CHỌN
-// (`flows/SCREEN-FLOW/selection.json`; vắng = Nguyên bản) hiện trong right
-// panel của DocRedlinePreview khi một change/note `kind: 'flow'` (hoặc
-// gap/edge-case có `rule_id` trỏ `flows/SCREEN-FLOW…`) được mở — WP
+// (`flows/<SCREEN-FLOW-ID>/selection.json`; vắng = Nguyên bản) hiện trong
+// right panel của DocRedlinePreview khi một change/note `kind: 'flow'` (hoặc
+// gap/edge-case có `rule_id` trỏ `flows/<SCREEN-FLOW-ID>…`) được mở — WP
 // dr-review-screen-flow (2026-08-27), quyết định sản phẩm 2 + 4: bản đã chọn
 // là THƯỚC ĐO đối chiếu tài liệu, panel phải cho thấy đúng bản đó và tô cell
 // liên quan tới chỗ sửa đang xem.
 //
+// WP screen-flow-platform-split (2026-08-28): tài liệu ≥2 nền tảng có HAI
+// flow `SCREEN-FLOW--app` / `SCREEN-FLOW--web`, mỗi flow selection riêng —
+// mọi hàm nhận `flowId` (mặc định `SCREEN-FLOW` = flow đơn, hành vi/URL fetch
+// y hệt trước), cache theo flowId.
+//
 // Nguồn: `original` → `as-is.drawio` (1 trang, page 0); `improved` →
 // `proposed.drawio` (2 trang Hiện trạng/Đề xuất, page 1). Fetch qua
 // `fetchProjectFileText` như FlowUxReviewPreview, cache MỘT LẦN theo
-// project + gốc workflow (`loadScreenFlowDoc`) — panel mở/đóng nhiều lần,
-// và bản in (DocRedlinePreview B3) dùng lại cùng bản, không fetch lại.
+// project + gốc workflow + flowId (`loadScreenFlowDoc`) — panel mở/đóng
+// nhiều lần, và bản in (DocRedlinePreview B3) dùng lại cùng bản, không fetch lại.
 //
 // "Phóng to": overlay `position: fixed` qua `createPortal(document.body)`
 // (cùng lý do containing-block như FlowUxReviewPreview wp18: overlay nằm
@@ -23,6 +28,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { fetchProjectFileText } from '../providers/registry';
 import { DrawioViewer, type HighlightKind, type HighlightSpec } from './DrawioViewer';
+import { SCREEN_FLOW_ID, screenFlowPlatformLabel } from './screen-flow-ids';
 import styles from './ScreenFlowPanelViewer.module.css';
 
 export type ScreenFlowVariant = 'original' | 'improved';
@@ -46,18 +52,18 @@ export interface ScreenFlowHighlight {
   kind?: HighlightKind;
 }
 
-/** Cache theo `${projectId}\0${workflowPrefix}` — giữ Promise (không phải kết
- *  quả) để hai caller mở cùng lúc (panel + viewer in) chỉ tốn một lượt fetch.
- *  Lỗi mạng → xoá khỏi cache để lần sau thử lại. */
+/** Cache theo `${projectId}\0${workflowPrefix}\0${flowId}` — giữ Promise (không
+ *  phải kết quả) để hai caller mở cùng lúc (panel + viewer in) chỉ tốn một
+ *  lượt fetch. Lỗi mạng → xoá khỏi cache để lần sau thử lại. */
 const docCache = new Map<string, Promise<ScreenFlowDoc | null>>();
 
-function cacheKey(projectId: string, workflowPrefix: string): string {
-  return `${projectId}\u0000${workflowPrefix}`;
+function cacheKey(projectId: string, workflowPrefix: string, flowId: string): string {
+  return `${projectId}\u0000${workflowPrefix}\u0000${flowId}`;
 }
 
 /** Quên bản đã cache (chạy lại bước / đổi bản đang dùng). */
-export function invalidateScreenFlowDoc(projectId: string, workflowPrefix: string): void {
-  docCache.delete(cacheKey(projectId, workflowPrefix));
+export function invalidateScreenFlowDoc(projectId: string, workflowPrefix: string, flowId: string = SCREEN_FLOW_ID): void {
+  docCache.delete(cacheKey(projectId, workflowPrefix, flowId));
 }
 
 /** Nhận diện một file draw.io thật — mock/fetch trả nhầm nội dung khác (ví dụ
@@ -79,15 +85,16 @@ export function parseScreenFlowSelection(raw: string | null): ScreenFlowVariant 
   return 'original';
 }
 
-/** Nạp sơ đồ Luồng màn hình bản đã chọn — MỘT LẦN theo project + gốc workflow.
- *  `null` khi không có SCREEN-FLOW (thiếu `as-is.drawio`, hoặc improved mà
- *  thiếu `proposed.drawio` — không rơi về original: bản đã chọn là thước đo,
+/** Nạp sơ đồ Luồng màn hình bản đã chọn — MỘT LẦN theo project + gốc workflow
+ *  + flowId (`SCREEN-FLOW` | `SCREEN-FLOW--app` | `SCREEN-FLOW--web`).
+ *  `null` khi không có flow (thiếu `as-is.drawio`, hoặc improved mà thiếu
+ *  `proposed.drawio` — không rơi về original: bản đã chọn là thước đo,
  *  hiện nhầm bản còn tệ hơn không hiện). */
-export function loadScreenFlowDoc(projectId: string, workflowPrefix: string): Promise<ScreenFlowDoc | null> {
-  const key = cacheKey(projectId, workflowPrefix);
+export function loadScreenFlowDoc(projectId: string, workflowPrefix: string, flowId: string = SCREEN_FLOW_ID): Promise<ScreenFlowDoc | null> {
+  const key = cacheKey(projectId, workflowPrefix, flowId);
   const hit = docCache.get(key);
   if (hit) return hit;
-  const base = `${workflowPrefix}/flows/SCREEN-FLOW`;
+  const base = `${workflowPrefix}/flows/${flowId}`;
   const p = (async (): Promise<ScreenFlowDoc | null> => {
     let selectionRaw: string | null = null;
     try {
@@ -138,25 +145,28 @@ export function findEdgeCellId(xml: string, page: number, from: string, to: stri
 type LoadState = { status: 'loading' } | { status: 'ready'; doc: ScreenFlowDoc } | { status: 'missing' };
 
 /** Hook dùng chung: panel viewer + viewer in offscreen của DocRedlinePreview. */
-export function useScreenFlowDoc(projectId: string, workflowPrefix: string): LoadState {
+export function useScreenFlowDoc(projectId: string, workflowPrefix: string, flowId: string = SCREEN_FLOW_ID): LoadState {
   const [state, setState] = useState<LoadState>({ status: 'loading' });
   useEffect(() => {
     let cancelled = false;
     setState({ status: 'loading' });
-    void loadScreenFlowDoc(projectId, workflowPrefix).then((doc) => {
+    void loadScreenFlowDoc(projectId, workflowPrefix, flowId).then((doc) => {
       if (cancelled) return;
       setState(doc ? { status: 'ready', doc } : { status: 'missing' });
     });
     return () => {
       cancelled = true;
     };
-  }, [projectId, workflowPrefix]);
+  }, [projectId, workflowPrefix, flowId]);
   return state;
 }
 
 export interface ScreenFlowPanelViewerProps {
   projectId: string;
   workflowPrefix: string;
+  /** Id thư mục flow (`SCREEN-FLOW` mặc định; `SCREEN-FLOW--app`/`--web` khi
+   *  tài liệu tách nền tảng — ref `rule_id` cho biết flow nào). */
+  flowId?: string;
   highlight?: ScreenFlowHighlight;
   title?: string;
   /** `true` = chỉ khung viewer (không badge/nút Phóng to) — dùng cho viewer
@@ -170,12 +180,15 @@ const NO_CELLS: readonly string[] = [];
 export function ScreenFlowPanelViewer({
   projectId,
   workflowPrefix,
+  flowId = SCREEN_FLOW_ID,
   highlight,
   title = 'Luồng màn hình',
   bare = false,
   className,
 }: ScreenFlowPanelViewerProps) {
-  const load = useScreenFlowDoc(projectId, workflowPrefix);
+  const load = useScreenFlowDoc(projectId, workflowPrefix, flowId);
+  // Badge nền tảng "App"/"Web" theo id thư mục — flow đơn không có badge.
+  const platformLabel = screenFlowPlatformLabel(flowId);
   const cells = highlight?.cells ?? NO_CELLS;
   const kind = highlight?.kind;
   // Memo theo NỘI DUNG (id nối chuỗi) — DrawioViewer chạy lại effect highlight
@@ -250,18 +263,25 @@ export function ScreenFlowPanelViewer({
     <DrawioViewer key={key} xml={doc.xml} page={doc.page} highlightCells={highlightCells} className={styles.viewer ?? ''} />
   );
 
+  const platformBadge = platformLabel ? (
+    <span className={styles.badge ?? ''} data-testid="screen-flow-platform">
+      {platformLabel}
+    </span>
+  ) : null;
+
   if (bare) {
     return (
-      <div className={`${styles.frame ?? ''} ${className ?? ''}`.trim()} data-testid="screen-flow-viewer" data-variant={doc.variant}>
+      <div className={`${styles.frame ?? ''} ${className ?? ''}`.trim()} data-testid="screen-flow-viewer" data-variant={doc.variant} data-flow-id={flowId}>
         {viewer('bare')}
       </div>
     );
   }
 
   return (
-    <div className={`${styles.root ?? ''} ${className ?? ''}`.trim()} data-testid="screen-flow-viewer" data-variant={doc.variant}>
+    <div className={`${styles.root ?? ''} ${className ?? ''}`.trim()} data-testid="screen-flow-viewer" data-variant={doc.variant} data-flow-id={flowId}>
       <div className={styles.head ?? ''}>
         <span className={styles.title ?? ''}>{title}</span>
+        {platformBadge}
         <span className={styles.badge ?? ''} data-testid="screen-flow-variant">
           Bản: {variantLabel}
         </span>
@@ -289,6 +309,7 @@ export function ScreenFlowPanelViewer({
             >
               <div className={styles.fsHead ?? ''}>
                 <span className={styles.title ?? ''}>{title}</span>
+                {platformBadge}
                 <span className={styles.badge ?? ''}>Bản: {variantLabel}</span>
                 <span className={styles.fsSpacer ?? ''} />
                 <button type="button" className={styles.zoomBtn ?? ''} onClick={() => setFullscreen(false)}>

@@ -1273,6 +1273,10 @@ export function inferredScreenReviewFinding(screen: ReviewScreenReference): {
  *  nó tạo ra nội dung cho một section không dính gì tới flows/comp (hàm vẫn
  *  trả `''` khi mọi trường input đều `undefined`/rỗng). */
 export interface ScreenFlowKickoffInput {
+  /** WP screen-flow-platform-split: id flow (`SCREEN-FLOW` | `SCREEN-FLOW--app` | `--web`); vắng = `SCREEN-FLOW`. */
+  flowId?: string;
+  /** `app`|`web` cho flow tách — nhãn "Luồng màn hình (App)"; vắng = flow đơn. */
+  platform?: 'app' | 'web';
   variant: 'original' | 'improved';
   /** Số finding UX của bản cải thiện (original luôn 0). */
   findingsCount: number;
@@ -1287,8 +1291,12 @@ export interface ScreenFlowKickoffInput {
  *  phát minh màn/cạnh. Tách hàm để test đọc thẳng. */
 export function buildScreenFlowKickoff(sf: ScreenFlowKickoffInput): string {
   const label = sf.variant === 'improved' ? 'Cải thiện' : 'Nguyên bản';
-  const head = `Thước đo luồng: Luồng màn hình bản ${label} (\`review/_screen-flow-context.json\`${
-    sf.variant === 'improved' ? `, ${sf.findingsCount} finding UX ở flows/SCREEN-FLOW/ux-review.json` : ''
+  // WP screen-flow-platform-split: rule_id/đường dẫn theo ĐÚNG flow id; flow
+  // tách mang nhãn nền tảng để agent không trộn màn/cạnh giữa App và Web.
+  const flowId = sf.flowId ?? 'SCREEN-FLOW';
+  const flowName = sf.platform ? `Luồng màn hình (${sf.platform === 'app' ? 'App' : 'Web'})` : 'Luồng màn hình';
+  const head = `Thước đo luồng: ${flowName} bản ${label} (\`review/_screen-flow-context.json\`${sf.platform ? ` flows[].id = ${flowId}` : ''}${
+    sf.variant === 'improved' ? `, ${sf.findingsCount} finding UX ở flows/${flowId}/ux-review.json` : ''
   }).`;
   if (sf.screensInSection.length === 0 && sf.edgesInSection.length === 0) {
     return `${head} Section này không có màn của luồng — KHÔNG review sơ đồ gốc trong tài liệu, KHÔNG phát minh màn/cạnh ngoài context.`;
@@ -1311,10 +1319,10 @@ export function buildScreenFlowKickoff(sf: ScreenFlowKickoffInput): string {
     lines.push(`Kết cục/nhánh lỗi nối với section: ${sf.outcomes.map((o) => `«${o.label}» (${kindLabel[o.kind]}, cell ${o.cell})`).join('; ')}.`);
   }
   lines.push(
-    'Đối chiếu: (2) câu điều hướng/điều kiện trong chữ lệch với cạnh → change kind flow, rule_id `flows/SCREEN-FLOW.flowchart.json#<edgeKey>`; ' +
-      '(3) kết cục/nhánh lỗi có trong luồng mà chữ không mô tả hành vi → note kind edge-case, rule_id `flows/SCREEN-FLOW/screens.json#<KEY>` (màn liên quan)' +
+    `Đối chiếu: (2) câu điều hướng/điều kiện trong chữ lệch với cạnh → change kind flow, rule_id \`flows/${flowId}.flowchart.json#<edgeKey>\`; ` +
+      `(3) kết cục/nhánh lỗi có trong luồng mà chữ không mô tả hành vi → note kind edge-case, rule_id \`flows/${flowId}/screens.json#<KEY>\` (màn liên quan)` +
       (sf.variant === 'improved'
-        ? '; (4) finding UX-xx của bản cải thiện chạm tới section → change kind flow, rule_id `flows/SCREEN-FLOW/ux-review.json#<UX-id>`.'
+        ? `; (4) finding UX-xx của bản cải thiện chạm tới section → change kind flow, rule_id \`flows/${flowId}/ux-review.json#<UX-id>\`.`
         : '.') +
       ' Màn thiếu mục mô tả (phép 1) daemon ĐÃ ghi note gap — KHÔNG lặp lại. KHÔNG review sơ đồ gốc trong tài liệu; KHÔNG phát minh màn/cạnh ngoài context.',
   );
@@ -1328,10 +1336,13 @@ export function buildEnrichKickoff(input: {
   unplacedScreens?: Array<string | ReviewScreenReference>;
   /** WP dr-review-screen-flow: thước đo Luồng màn hình bản đã chọn. */
   screenFlow?: ScreenFlowKickoffInput;
+  /** WP screen-flow-platform-split: nhiều flow (app/web) — mỗi flow một đoạn thước đo. */
+  screenFlows?: ScreenFlowKickoffInput[];
 }): string {
   const parts: string[] = [];
 
-  if (input.screenFlow) parts.push(buildScreenFlowKickoff(input.screenFlow));
+  const screenFlows = input.screenFlows ?? (input.screenFlow ? [input.screenFlow] : []);
+  for (const sf of screenFlows) parts.push(buildScreenFlowKickoff(sf));
 
   if (input.diagramInThisSlice) {
     const { flowId } = input.diagramInThisSlice;

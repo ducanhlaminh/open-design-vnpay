@@ -46,6 +46,8 @@ export interface ScreenFlowEdge {
 export interface ScreenFlowModel {
   schema_version: 1;
   flowId: string;
+  /** Xem `ScreenFlowIndexEntry.platform`. */
+  platform?: 'app' | 'web';
   /** Deprecated alias kept optional for readers of the first draft. */
   id?: string;
   title: string;
@@ -61,6 +63,9 @@ export interface ScreenFlowModel {
 export interface ScreenFlowIndexEntry {
   id: string;
   title: string;
+  /** WP screen-flow-platform-split (2026-08-28): flow đã tách theo nền tảng
+   *  (`SCREEN-FLOW--app` / `SCREEN-FLOW--web`). Flow đơn `SCREEN-FLOW`: vắng. */
+  platform?: 'app' | 'web';
   sourceMode: ScreenFlowSourceMode;
   files: { model: string; drawio: string };
   source?: ScreenFlowSource;

@@ -374,7 +374,10 @@ const PIPELINE_DEFS_BASE: readonly PipelineDef[] = [
   // Bước này XOÁ `ux-review.json` tối thiểu do dr-flow ghi khi re-run — chấp
   // nhận (finalizeFlowUx chịu được review vắng: chỉ warning "thiếu/hỏng").
   // docs-review không có cơ chế lean (docs-to-ui-only) nên không gắn cờ.
-  { id: 'dr-flow-improve',  name: 'Cải thiện luồng',           skillId: 'docs-screen-flow-improve', dependsOn: ['dr-flow'], outputs: ['flows/SCREEN-FLOW/patch.json', 'flows/SCREEN-FLOW/ux-review.json', 'flows/SCREEN-FLOW/proposed.drawio', 'flows/SCREEN-FLOW/proposed.edited.json', 'flows/SCREEN-FLOW/screens.improved.json'] },
+  // WP screen-flow-platform-split (2026-08-28): tài liệu ≥2 nền tảng → 2 flow
+  // `SCREEN-FLOW--app` / `SCREEN-FLOW--web` (mỗi thư mục tự đủ); path cũ giữ
+  // cho tài liệu một nền tảng.
+  { id: 'dr-flow-improve',  name: 'Cải thiện luồng',           skillId: 'docs-screen-flow-improve', dependsOn: ['dr-flow'], outputs: ['SCREEN-FLOW', 'SCREEN-FLOW--app', 'SCREEN-FLOW--web'].flatMap((id) => ['patch.json', 'ux-review.json', 'proposed.drawio', 'proposed.edited.json', 'screens.improved.json'].map((f) => `flows/${id}/${f}`)) },
   // Bước GIỮA: đối chiếu component + wireframe. Đọc `docs/` (bản GỐC, chưa
   // review) và với MỖI màn hình trong tài liệu, liệt kê phần tử nào dùng
   // component nào rồi đối chiếu với danh mục hợp lệ `criteria/components.md`,

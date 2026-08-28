@@ -180,24 +180,32 @@ import { fetchClaudeUsage } from './claude-usage.js';
 import { renderHtmlToPdf } from './bas/drawio-render.js';
 import { finalizeFlowUx, prepareFlowUxInputs, type FlowIndexEntry } from './flow-ux/index.js';
 import { validateMockups, MOCKUP_INPUTS_FILE, MOCKUP_CSS_FILE } from './screen-mockups.js';
-import { SCREEN_FLOW_CELLS_FILE, SCREEN_FLOW_ID, finalizeScreenFlowXml, saveScreenFlowEdit } from './flow-ux/screen-flow-xml.js';
+import {
+  SCREEN_FLOW_CELLS_FILE,
+  SCREEN_FLOW_ID,
+  finalizeScreenFlowXml,
+  isScreenFlowId,
+  listScreenFlowIds,
+  saveScreenFlowEdit,
+  screenFlowPlatformLabel,
+  screenFlowPlatformOf,
+} from './flow-ux/screen-flow-xml.js';
 // WP dr-review-screen-flow: Luồng màn hình bản ĐÃ CHỌN làm thước đo đối chiếu
 // của dr-review (thay nguồn màn comp/ và nhánh thay sơ đồ SCREEN-FLOW).
 import {
-  SCREEN_FLOW_FLOWCHART_REF,
-  SCREEN_FLOW_SCREENS_REF,
   loadScreenFlowReviewContext,
   mapScreenFlowToPage,
+  screenFlowRefs,
   writeScreenFlowReviewContext,
 } from './flow-ux/screen-flow-review.js';
 import {
-  finalizeScreenFlowImprove,
+  finalizeScreenFlowImproveAll,
   hasProposedEditedMarker,
   readScreenFlowSelection,
   readScreensImproved,
   writeScreenFlowSelection,
 } from './flow-ux/screen-flow-improve.js';
-import { parseScreenFlowScreensV2, renderDiscoveredMd, toDiscoveredDoc } from './flow-ux/screen-flow-screens.js';
+import { parseScreenFlowScreensV2, renderDiscoveredMd, toDiscoveredDocs } from './flow-ux/screen-flow-screens.js';
 import { persistScreenDiscovery } from './screen-discovery.js';
 import {
   canonicalizeRecoveredScreens,
@@ -9858,35 +9866,60 @@ export async function startServer({
   // stage improve, route PUT selection, route lưu editor. screens.json v1
   // (không `screens[]`) → không có discovery (dr-comp lùi về lớp regex như
   // trước). FAIL-SOFT: discovery hỏng chỉ là warning — luồng đã có.
+  // WP screen-flow-platform-split (2026-08-28): discovery = HỢP mọi flow
+  // Luồng màn hình (`SCREEN-FLOW` | `--app` + `--web`) theo selection CỦA TỪNG
+  // flow; `flowId` (tuỳ chọn) chỉ chọn entry trả về cho caller.
   const refreshScreenFlowDerived = async (
     cwd: string,
     fallbackTitle: string,
-  ): Promise<{ entry: FlowIndexEntry | null; warnings: string[]; screens: Array<{ key: string; name: string; provenance?: string }> }> => {
+    flowId?: string,
+  ): Promise<{
+    entry: FlowIndexEntry | null;
+    entries: FlowIndexEntry[];
+    warnings: string[];
+    screens: Array<{ key: string; name: string; provenance?: string; platform?: 'app' | 'web'; flowId: string }>;
+  }> => {
     const fin = await finalizeFlowUx(cwd);
-    const entry = fin.index.find((e) => e.id === SCREEN_FLOW_ID) ?? null;
+    const entries = fin.index.filter((e) => isScreenFlowId(e.id));
+    const entry = (flowId ? entries.find((e) => e.id === flowId) : entries[0]) ?? null;
     const warnings = [...fin.warnings];
-    const screens = (entry?.screens ?? []).map((sc) => ({ key: sc.key, name: sc.name, ...(sc.provenance ? { provenance: String(sc.provenance) } : {}) }));
-    if (!entry) return { entry, warnings, screens };
+    const screens = entries.flatMap((en) =>
+      (en.screens ?? []).map((sc) => ({
+        key: sc.key,
+        name: sc.name,
+        ...(sc.provenance ? { provenance: String(sc.provenance) } : {}),
+        ...(en.platform ? { platform: en.platform } : {}),
+        flowId: en.id,
+      })),
+    );
+    if (entries.length === 0) return { entry, entries, warnings, screens };
     try {
-      const raw = await fs.promises
-        .readFile(path.join(cwd, 'flows', SCREEN_FLOW_ID, 'screens.json'), 'utf8')
-        .then((t) => JSON.parse(t) as unknown)
-        .catch(() => null);
-      const parsed = raw != null ? parseScreenFlowScreensV2(raw) : null;
-      if (parsed && 'doc' in parsed) {
-        const discovery = toDiscoveredDoc(parsed.doc, { generatedAt: new Date().toISOString() });
-        const proposed =
-          entry.variant === 'improved'
-            ? ((await readScreensImproved(cwd))?.screens ?? [])
-                .filter((sc) => sc.provenance === 'proposed')
-                .map((sc) => ({ key: sc.key, name: sc.name, ...(sc.source ? { source: sc.source } : {}), ...(sc.why ? { why: sc.why } : {}) }))
-            : [];
-        const featureTitle = (entry.title || '').replace(/^Luồng màn hình\s*[—–-]\s*/u, '').trim() || fallbackTitle;
+      const flowDocs: Array<{ id: string; doc: import('./flow-ux/screen-flow-screens.js').ScreensV2 }> = [];
+      const proposed: Array<{ key: string; name: string; source?: string; why?: string }> = [];
+      for (const en of entries) {
+        const raw = await fs.promises
+          .readFile(path.join(cwd, 'flows', en.id, 'screens.json'), 'utf8')
+          .then((t) => JSON.parse(t) as unknown)
+          .catch(() => null);
+        const parsed = raw != null ? parseScreenFlowScreensV2(raw) : null;
+        if (!parsed || !('doc' in parsed)) continue;
+        flowDocs.push({ id: en.id, doc: parsed.doc });
+        if (en.variant === 'improved') {
+          proposed.push(
+            ...((await readScreensImproved(cwd, en.id))?.screens ?? [])
+              .filter((sc) => sc.provenance === 'proposed')
+              .map((sc) => ({ key: sc.key, name: sc.name, ...(sc.source ? { source: sc.source } : {}), ...(sc.why ? { why: sc.why } : {}) })),
+          );
+        }
+      }
+      if (flowDocs.length) {
+        const discovery = toDiscoveredDocs(flowDocs, { generatedAt: new Date().toISOString() });
+        const featureTitle = (entries[0]!.title || '').replace(/^Luồng màn hình\s*(?:\((?:App|Web)\))?\s*[—–-]\s*/u, '').trim() || fallbackTitle;
         const persisted = await persistScreenDiscovery({
           cwd,
           pages: await listDocPages(cwd),
           doc: discovery,
-          md: renderDiscoveredMd(discovery, featureTitle, { proposed }),
+          md: renderDiscoveredMd(discovery, featureTitle, { proposed, flowIds: flowDocs.map((f) => f.id) }),
           proposed,
         });
         if (!persisted.ok) warnings.push(`discovery: ${persisted.error}`);
@@ -9897,7 +9930,28 @@ export async function startServer({
       console.warn('[screen-flow] discovery refresh failed (fail-soft):', error);
       warnings.push(`discovery: ${msg}`);
     }
-    return { entry, warnings, screens };
+    return { entry, entries, warnings, screens };
+  };
+
+  // WP screen-flow-platform-split: `flowId` cho các route selection/editor —
+  // thiếu: 1 flow → dùng nó (không có flow nào → `SCREEN-FLOW` như cũ); ≥2 →
+  // 400 kèm danh sách id. Trộn thư mục → 400 SCREEN_FLOW_MIXED.
+  const resolveScreenFlowIdParam = async (cwd: string, raw: unknown): Promise<{ flowId: string } | { error: string; flowIds: string[] }> => {
+    const requested = typeof raw === 'string' && raw.trim() ? raw.trim() : '';
+    let ids: string[];
+    try {
+      ids = await listScreenFlowIds(cwd);
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : String(error), flowIds: [] };
+    }
+    if (requested) {
+      if (!isScreenFlowId(requested)) {
+        return { error: `flowId "${requested}" không hợp lệ — chỉ nhận ${SCREEN_FLOW_ID}, ${SCREEN_FLOW_ID}--app, ${SCREEN_FLOW_ID}--web`, flowIds: ids };
+      }
+      return { flowId: requested };
+    }
+    if (ids.length > 1) return { error: `có ${ids.length} luồng màn hình (${ids.join(', ')}) — phải truyền flowId`, flowIds: ids };
+    return { flowId: ids[0] ?? SCREEN_FLOW_ID };
   };
 
   // WP-screen-flow editor (2026-08-27): lưu bản chỉnh TAY của sơ đồ "Luồng màn
@@ -9915,11 +9969,14 @@ export async function startServer({
       if (!xml.trim()) return res.status(400).json({ error: 'body.xml (mxfile XML từ editor) là bắt buộc' });
       const projectRoot = await ensureProject(PROJECTS_DIR, req.params.projectId);
       const cwd = path.join(projectRoot, workflowDirForPipeline('dr-flow') ?? 'docs-review');
-      const saved = await saveScreenFlowEdit(cwd, xml);
+      const fid = await resolveScreenFlowIdParam(cwd, (req.body as { flowId?: unknown } | null)?.flowId ?? req.query.flowId);
+      if ('error' in fid) return res.status(400).json({ error: fid.error, flowIds: fid.flowIds });
+      const saved = await saveScreenFlowEdit(cwd, xml, fid.flowId);
       if (!saved.ok) return res.status(400).json({ error: saved.errors.join('; '), warnings: saved.warnings });
-      const derived = await refreshScreenFlowDerived(cwd, getProject(db, req.params.projectId)?.name ?? req.params.projectId);
+      const derived = await refreshScreenFlowDerived(cwd, getProject(db, req.params.projectId)?.name ?? req.params.projectId, fid.flowId);
       res.json({
         ok: true,
+        flowId: fid.flowId,
         warnings: [...saved.warnings, ...derived.warnings],
         screens: derived.entry?.screens ?? [],
         ...(saved.savedProposed ? { savedProposed: true, proposedEdited: saved.proposedEdited === true } : {}),
@@ -9940,17 +9997,20 @@ export async function startServer({
     try {
       const projectRoot = await ensureProject(PROJECTS_DIR, req.params.projectId);
       const cwd = path.join(projectRoot, workflowDirForPipeline('dr-flow') ?? 'docs-review');
-      const sel = await readScreenFlowSelection(cwd);
+      const fid = await resolveScreenFlowIdParam(cwd, req.query.flowId);
+      if ('error' in fid) return res.status(400).json({ error: fid.error, flowIds: fid.flowIds });
+      const sel = await readScreenFlowSelection(cwd, fid.flowId);
       const hasProposal = await fs.promises
-        .stat(path.join(cwd, 'flows', SCREEN_FLOW_ID, 'proposed.drawio'))
+        .stat(path.join(cwd, 'flows', fid.flowId, 'proposed.drawio'))
         .then((st) => st.isFile())
         .catch(() => false);
       res.json({
+        flowId: fid.flowId,
         variant: sel?.variant ?? 'original',
         source: sel?.source ?? 'default',
         ...(sel?.at ? { at: sel.at } : {}),
         hasProposal,
-        edited: await hasProposedEditedMarker(cwd),
+        edited: await hasProposedEditedMarker(cwd, fid.flowId),
       });
     } catch (err) {
       res.status(500).json({ error: String(err) });
@@ -9965,20 +10025,22 @@ export async function startServer({
       }
       const projectRoot = await ensureProject(PROJECTS_DIR, req.params.projectId);
       const cwd = path.join(projectRoot, workflowDirForPipeline('dr-flow') ?? 'docs-review');
+      const fid = await resolveScreenFlowIdParam(cwd, (req.body as { flowId?: unknown } | null)?.flowId ?? req.query.flowId);
+      if ('error' in fid) return res.status(400).json({ error: fid.error, flowIds: fid.flowIds });
       const hasFlow = await fs.promises
-        .stat(path.join(cwd, 'flows', SCREEN_FLOW_ID, 'as-is.drawio'))
+        .stat(path.join(cwd, 'flows', fid.flowId, 'as-is.drawio'))
         .then((st) => st.isFile())
         .catch(() => false);
-      if (!hasFlow) return res.status(400).json({ error: 'chưa có flows/SCREEN-FLOW/as-is.drawio — chạy bước "Luồng màn hình" trước' });
+      if (!hasFlow) return res.status(400).json({ error: `chưa có flows/${fid.flowId}/as-is.drawio — chạy bước "Luồng màn hình" trước` });
       if (variant === 'improved') {
         const hasProposal = await fs.promises
-          .stat(path.join(cwd, 'flows', SCREEN_FLOW_ID, 'proposed.drawio'))
+          .stat(path.join(cwd, 'flows', fid.flowId, 'proposed.drawio'))
           .then((st) => st.isFile())
           .catch(() => false);
         if (!hasProposal) return res.status(400).json({ error: 'chưa có bản cải thiện (proposed.drawio) — chạy bước "Cải thiện luồng" trước' });
       }
-      await writeScreenFlowSelection(cwd, { variant, source: 'user' });
-      const derived = await refreshScreenFlowDerived(cwd, getProject(db, req.params.projectId)?.name ?? req.params.projectId);
+      await writeScreenFlowSelection(cwd, { variant, source: 'user' }, fid.flowId);
+      const derived = await refreshScreenFlowDerived(cwd, getProject(db, req.params.projectId)?.name ?? req.params.projectId, fid.flowId);
       // WP dr-mockup: bước sau của workflow nay là dr-mockup (mockups/index.json);
       // comp/index.json vẫn tính (dr-comp chạy tay).
       const downstreamStale = (await Promise.all([
@@ -9987,8 +10049,9 @@ export async function startServer({
       ].map((p) => fs.promises.stat(p).then((st) => st.isFile()).catch(() => false)))).some(Boolean);
       res.json({
         ok: true,
+        flowId: fid.flowId,
         variant: derived.entry?.variant ?? variant,
-        screens: derived.screens,
+        screens: derived.screens.filter((s) => s.flowId === fid.flowId),
         downstreamStale,
         ...(derived.warnings.length ? { warnings: derived.warnings } : {}),
       });
@@ -19031,12 +19094,18 @@ export async function startServer({
           // WP dr-review-screen-flow: hai file của Luồng màn hình bản đã chọn
           // làm rule_id (kèm mảnh `#<KEY>` / `#<from→to>` — validator bỏ mảnh
           // khi kiểm tồn tại). ux-review.json đã vào set ở vòng lặp trên.
-          for (const rel of [SCREEN_FLOW_SCREENS_REF, SCREEN_FLOW_FLOWCHART_REF]) {
-            const exists = await fs.promises
-              .stat(path.join(cwd, rel))
-              .then(() => true)
-              .catch(() => false);
-            if (exists) set.add(rel);
+          // WP screen-flow-platform-split: theo TỪNG flow id (`SCREEN-FLOW`,
+          // `--app`, `--web`) — rule_id khớp RE và file phải tồn tại.
+          const screenFlowIds = await listScreenFlowIds(cwd).catch(() => [SCREEN_FLOW_ID]);
+          for (const id of screenFlowIds) {
+            const refs = screenFlowRefs(id);
+            for (const rel of [refs.screens, refs.flowchart]) {
+              const exists = await fs.promises
+                .stat(path.join(cwd, rel))
+                .then(() => true)
+                .catch(() => false);
+              if (exists) set.add(rel);
+            }
           }
           return set;
         })();
@@ -19091,6 +19160,8 @@ export async function startServer({
         // Ghi `review/_screen-flow-context.json` mỗi lần fan-out chạy (bằng
         // chứng + web đọc). `screenFlowDescribedKeys` gom màn đã định vị được
         // mục mô tả trên MỌI trang cho dòng tổng kết summary.md.
+        // WP screen-flow-platform-split: ngữ cảnh = MẢNG flow (`flows[]`) —
+        // flow đơn 1 phần tử; app/web 2 phần tử, đối chiếu từng flow riêng.
         const screenFlowCtx = await loadScreenFlowReviewContext(cwd).catch((error) => {
           console.debug('[docs-review] screen-flow context skipped:', error);
           return null;
@@ -19291,7 +19362,7 @@ export async function startServer({
           // note gap (gộp vào `notes` cấp trang ở khối C). `screenFlowBySection`
           // = màn/cạnh/kết cục thuộc từng section cho kickoff (phép 2–4 agent).
           let screenFlowNotes: DocNote[] = [];
-          const screenFlowBySection = new Map<number, ScreenFlowKickoffInput>();
+          const screenFlowBySection = new Map<number, ScreenFlowKickoffInput[]>();
 
           // Cắt trang thành lát TRƯỚC khi chạy: mỗi section có file riêng nên
           // chúng chạy song song được. Đọc từ bản CLONE (không phải bản gốc) vì
@@ -19454,23 +19525,31 @@ export async function startServer({
               // compIndex vắng — có comp/ thì `inferredGapNotes` cũ đã lo và
               // bảng cấu thành vẫn theo comp như trước.
               if (screenFlowCtx) {
-                const mapping = mapScreenFlowToPage(screenFlowCtx, { pageSrc: pg.mdPath, sections, pageLines, original: cloneText });
-                for (const list of mapping.placedBySection.values()) for (const s of list) screenFlowDescribedKeys.add(s.key);
-                if (!compIndex) screenFlowNotes = mapping.gapNotes;
-                for (const sec of sections) {
-                  screenFlowBySection.set(sec.index, {
-                    variant: screenFlowCtx.variant,
-                    findingsCount: screenFlowCtx.findings.length,
-                    screensInSection: (mapping.placedBySection.get(sec.index) ?? []).map((s) => ({ key: s.key, name: s.name, cell: s.cell })),
-                    edgesInSection: (mapping.edgesBySection.get(sec.index) ?? []).map((e) => ({
-                      key: e.key,
-                      ...(e.label ? { label: e.label } : {}),
-                      ...(e.fromName ? { fromName: e.fromName } : {}),
-                      ...(e.toName ? { toName: e.toName } : {}),
-                    })),
-                    outcomes: mapping.outcomesBySection.get(sec.index) ?? [],
-                  });
+                const gapNotes: DocNote[] = [];
+                for (const flowCtx of screenFlowCtx.flows) {
+                  const mapping = mapScreenFlowToPage(flowCtx, { pageSrc: pg.mdPath, sections, pageLines, original: cloneText });
+                  for (const list of mapping.placedBySection.values()) for (const s of list) screenFlowDescribedKeys.add(s.key);
+                  gapNotes.push(...mapping.gapNotes);
+                  for (const sec of sections) {
+                    const list = screenFlowBySection.get(sec.index) ?? [];
+                    list.push({
+                      flowId: flowCtx.id,
+                      ...(flowCtx.platform ? { platform: flowCtx.platform } : {}),
+                      variant: flowCtx.variant,
+                      findingsCount: flowCtx.findings.length,
+                      screensInSection: (mapping.placedBySection.get(sec.index) ?? []).map((s) => ({ key: s.key, name: s.name, cell: s.cell })),
+                      edgesInSection: (mapping.edgesBySection.get(sec.index) ?? []).map((e) => ({
+                        key: e.key,
+                        ...(e.label ? { label: e.label } : {}),
+                        ...(e.fromName ? { fromName: e.fromName } : {}),
+                        ...(e.toName ? { toName: e.toName } : {}),
+                      })),
+                      outcomes: mapping.outcomesBySection.get(sec.index) ?? [],
+                    });
+                    screenFlowBySection.set(sec.index, list);
+                  }
                 }
+                if (!compIndex) screenFlowNotes = gapNotes;
               }
 
               // Sơ đồ mermaid (flows) chạy SAU bảng — xem comment thứ tự ở
@@ -19488,7 +19567,7 @@ export async function startServer({
                   // review nữa — không thay thân sơ đồ SCREEN-FLOW trong lát,
                   // không change flow-diagram cho nó. Thước đo là bản đã chọn
                   // (kickoff ở trên). Flow khác (docs-flow-ux cũ) giữ nguyên.
-                  if (flow.id === SCREEN_FLOW_ID) continue;
+                  if (isScreenFlowId(flow.id)) continue;
                   const asIsRel = flow.files?.asIs;
                   const proposedRel = flow.files?.proposed;
                   const reviewRelPath = flow.files?.review;
@@ -19621,7 +19700,7 @@ export async function startServer({
                   pageDiagramChanged: otherChangedFlowIds.length > 0 ? otherChangedFlowIds.map((flowId) => ({ flowId })) : undefined,
                   screensInThisSlice: screensBySection.get(sec.index),
                   unplacedScreens: unplacedScreens.length > 0 ? unplacedScreens : undefined,
-                  screenFlow: screenFlowBySection.get(sec.index),
+                  screenFlows: screenFlowBySection.get(sec.index),
                 });
                 if (text) enrichKickoffBySection.set(sec.index, text);
               }
@@ -20217,10 +20296,11 @@ export async function startServer({
           screenFlowCtx
             ? {
                 screenFlow: {
-                  variant: screenFlowCtx.variant,
-                  findingsCount: screenFlowCtx.findings.length,
+                  // Nhiều flow: "improved" nếu BẤT KỲ flow nào đang chọn bản cải thiện; đếm gộp.
+                  variant: screenFlowCtx.flows.some((f) => f.variant === 'improved') ? 'improved' : 'original',
+                  findingsCount: screenFlowCtx.flows.reduce((n, f) => n + f.findings.length, 0),
                   screensDescribed: screenFlowDescribedKeys.size,
-                  screensTotal: screenFlowCtx.screens.filter((s) => !s.removedByProposal).length,
+                  screensTotal: screenFlowCtx.flows.reduce((n, f) => n + f.screens.filter((s) => !s.removedByProposal).length, 0),
                 },
               }
             : undefined,
@@ -23347,14 +23427,29 @@ export async function startServer({
     if (def.skillId === 'docs-screen-flow-improve') {
       const projectRoot = await ensureProject(PROJECTS_DIR, projectId);
       const runCwd = wfDir ? path.join(projectRoot, wfDir) : projectRoot;
-      const hasAsIs = await fs.promises
-        .stat(path.join(runCwd, 'flows', SCREEN_FLOW_ID, 'as-is.drawio'))
-        .then((st) => st.isFile())
-        .catch(() => false);
-      if (!hasAsIs) throw new Error('Chưa có flows/SCREEN-FLOW/as-is.drawio — chạy bước "Luồng màn hình" trước.');
+      // WP screen-flow-platform-split: precondition = ≥1 flow Luồng màn hình
+      // (`SCREEN-FLOW` hoặc cặp `--app`/`--web`); directive liệt kê TỪNG flow.
+      const flowIds: string[] = [];
+      for (const id of await listScreenFlowIds(runCwd)) {
+        const ok = await fs.promises
+          .stat(path.join(runCwd, 'flows', id, 'as-is.drawio'))
+          .then((st) => st.isFile())
+          .catch(() => false);
+        if (ok) flowIds.push(id);
+      }
+      if (flowIds.length === 0) throw new Error(`Chưa có flows/${SCREEN_FLOW_ID}/as-is.drawio — chạy bước "Luồng màn hình" trước.`);
+      const perFlow = flowIds.map((id) => {
+        const label = screenFlowPlatformLabel(screenFlowPlatformOf(id));
+        return (
+          `${label ? `Luồng (${label}) ` : ''}\`flows/${id}/\` — input (chỉ đọc): \`as-is.drawio\` (luồng hiện hành), \`cells.json\` (id ↔ nhãn cell), \`screens.json\` (danh sách màn); ` +
+          `output CHỈ 2 file: \`flows/${id}/patch.json\` + \`flows/${id}/ux-review.json\` (\`flowId: "${id}"\` trong cả hai)`
+        );
+      });
       stageDirective =
-        `Input (chỉ đọc): \`flows/${SCREEN_FLOW_ID}/as-is.drawio\` (luồng màn hình hiện hành), \`flows/${SCREEN_FLOW_ID}/cells.json\` (id ↔ nhãn cell), \`flows/${SCREEN_FLOW_ID}/screens.json\` (danh sách màn), cộng tài liệu tính năng. ` +
-        `Output CHỈ 2 file: \`flows/${SCREEN_FLOW_ID}/patch.json\` + \`flows/${SCREEN_FLOW_ID}/ux-review.json\` — luồng tốt thì \`findings: []\` và KHÔNG tạo patch.json. ` +
+        (flowIds.length > 1
+          ? `Có ${flowIds.length} luồng màn hình tách theo nền tảng — review TỪNG luồng RIÊNG, không trộn cell/màn/finding giữa các luồng; \`flowId\` trong ux-review.json/patch.json = id thư mục. `
+          : '') +
+        `${perFlow.join('. ')}. Cộng tài liệu tính năng. Luồng tốt thì \`findings: []\` và KHÔNG tạo patch.json. ` +
         'Node mới trong patch LÀ một màn người dùng thấy → BẮT BUỘC có `screen: { key, name, anchorText? }` (key `<file-stem>__<code>`, không mã → `<file-stem>__NEW-<slug>`); không đụng cell `od-legend-*`; không ghi cells.xml/as-is.*/screens.json/proposed.*/_inputs.json/index.json/selection.json.';
     }
     // WP dr-mockup (2026-08-27): "Mockup màn" dựng mockup HTML concept layout
@@ -23635,11 +23730,14 @@ export async function startServer({
             }
             if (sf.errors.length) throw new Error(sf.errors.join(' | '));
             const fin = await finalizeFlowUx(runCwd);
-            const entry = fin.index.find((e) => e.id === SCREEN_FLOW_ID);
-            if (!entry || entry.screens.length === 0) {
-              const dropped = entry?.screensDropped?.map((d) => `"${d.key}" → "${d.cell}" (${d.reason})`).join('; ');
+            // WP screen-flow-platform-split: MỌI flow SCREEN-FLOW* phải gắn được màn.
+            const entries = fin.index.filter((e) => isScreenFlowId(e.id));
+            const entry = entries[0];
+            const emptyEntry = entries.find((e) => e.screens.length === 0);
+            if (!entry || emptyEntry) {
+              const dropped = emptyEntry?.screensDropped?.map((d) => `"${d.key}" → "${d.cell}" (${d.reason})`).join('; ');
               throw new Error(
-                `screens.json không gắn được màn nào vào sơ đồ${dropped ? ` — mapping bị bỏ: ${dropped}` : ' — kiểm tra cells/names'}`,
+                `${emptyEntry ? `${emptyEntry.id}: ` : ''}screens.json không gắn được màn nào vào sơ đồ${dropped ? ` — mapping bị bỏ: ${dropped}` : ' — kiểm tra cells/names'}`,
               );
             }
             const allWarnings = [...sf.warnings, ...fin.warnings];
@@ -23652,12 +23750,12 @@ export async function startServer({
             // regex như trước khi có dr-screens.
             if (sf.discovery) {
               try {
-                const featureTitle = (entry.title || '').replace(/^Luồng màn hình\s*[—–-]\s*/u, '').trim() || project.name || projectId;
+                const featureTitle = (entry.title || '').replace(/^Luồng màn hình\s*(?:\((?:App|Web)\))?\s*[—–-]\s*/u, '').trim() || project.name || projectId;
                 const persisted = await persistScreenDiscovery({
                   cwd: runCwd,
                   pages: await listDocPages(runCwd),
                   doc: sf.discovery,
-                  md: renderDiscoveredMd(sf.discovery, featureTitle),
+                  md: renderDiscoveredMd(sf.discovery, featureTitle, { flowIds: sf.flowIds }),
                 });
                 if (persisted.ok) {
                   const declared = sf.discovery.pages.reduce((n, p) => n + p.screens.length, 0);
@@ -23678,7 +23776,7 @@ export async function startServer({
               }
             }
             console.log(
-              `[screen-flow] ${projectId}: ${entry.screens.length} màn, ${entry.id} finalized` +
+              `[screen-flow] ${projectId}: ${entries.map((e) => `${e.id} ${e.screens.length} màn`).join(', ')} finalized` +
                 (allWarnings.length ? ` — ${allWarnings.length} warning(s): ${allWarnings.join(' | ')}` : ''),
             );
           } catch (error) {
@@ -23698,24 +23796,23 @@ export async function startServer({
         if (next === 'succeeded' && def.skillId === 'docs-screen-flow-improve' && pipelineCwd) {
           const runCwd = wfDir ? path.join(pipelineCwd, wfDir) : pipelineCwd;
           try {
-            const r = await finalizeScreenFlowImprove(runCwd, { viaRunAll: opts.viaRunAll === true });
-            const allWarnings = [...r.warnings];
-            if (!r.hasProposal) {
+            // WP screen-flow-platform-split: finalize TỪNG flow (flow đơn hoặc
+            // cặp app/web), selection mặc định run-all theo từng flow; discovery
+            // dựng lại MỘT lần (hợp mọi flow) khi có flow nào đang chọn bản cải thiện.
+            const all = await finalizeScreenFlowImproveAll(runCwd, { viaRunAll: opts.viaRunAll === true });
+            const allWarnings = [...all.warnings];
+            if (all.results.some((r) => r.hasProposal && r.selection?.variant === 'improved')) {
+              const derived = await refreshScreenFlowDerived(runCwd, project.name || projectId);
+              allWarnings.push(...derived.warnings.filter((w) => !allWarnings.includes(w)));
+            }
+            for (const r of all.results) {
               console.log(
-                `[screen-flow-improve] ${projectId}: luồng tốt, không có đề xuất (${r.findings} finding)` +
-                  (allWarnings.length ? ` — ${allWarnings.length} warning(s): ${allWarnings.join(' | ')}` : ''),
-              );
-            } else {
-              if (r.selection?.variant === 'improved') {
-                const derived = await refreshScreenFlowDerived(runCwd, project.name || projectId);
-                allWarnings.push(...derived.warnings.filter((w) => !allWarnings.includes(w)));
-              }
-              console.log(
-                `[screen-flow-improve] ${projectId}: ${r.findings} finding, bản cải thiện đã dựng — đang dùng: ${r.selection?.variant ?? 'original'}` +
-                  `${r.selection ? ` (${r.selection.source})` : ' (mặc định)'}` +
-                  (allWarnings.length ? ` — ${allWarnings.length} warning(s): ${allWarnings.join(' | ')}` : ''),
+                r.hasProposal
+                  ? `[screen-flow-improve] ${projectId} ${r.flowId}: ${r.findings} finding, bản cải thiện đã dựng — đang dùng: ${r.selection?.variant ?? 'original'}${r.selection ? ` (${r.selection.source})` : ' (mặc định)'}`
+                  : `[screen-flow-improve] ${projectId} ${r.flowId}: luồng tốt, không có đề xuất (${r.findings} finding)`,
               );
             }
+            if (allWarnings.length) console.log(`[screen-flow-improve] ${projectId}: ${allWarnings.length} warning(s): ${allWarnings.join(' | ')}`);
           } catch (error) {
             finalizeError = `Hoàn tất cải thiện luồng thất bại: ${String((error as Error)?.message ?? error)}`;
             console.warn('[screen-flow-improve] finalize failed:', error);

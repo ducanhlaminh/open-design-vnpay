@@ -93,6 +93,36 @@
   letter-spacing: 0.04em;
   color: var(--text-muted, #57544e);
 }
+.tabs {
+  display: flex;
+  gap: 4px;
+  padding: 4px 8px 6px;
+  border-bottom: 1px solid var(--border, #e1e5eb);
+  margin-bottom: 4px;
+}
+.tab {
+  flex: 1 1 0;
+  padding: 5px 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted, #57544e);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.tab:hover {
+  background: var(--bg-subtle, #f6f7f9);
+}
+.tabActive {
+  color: var(--accent, #0066b3);
+  background: var(--accent-tint, #e6f0f8);
+  border-color: color-mix(in srgb, var(--accent, #0066b3) 30%, transparent);
+}
+.tabCount {
+  font-weight: 500;
+  opacity: 0.75;
+}
 .railItem {
   display: flex;
   align-items: center;

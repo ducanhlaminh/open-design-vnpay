@@ -86,7 +86,10 @@ describe('MockupsPreview', () => {
     const frame = (await renderPreview()) as HTMLIFrameElement;
     expect(screen.getByTestId('mockup-rail-SCR-001')).toBeTruthy();
     expect(screen.getByTestId('mockup-rail-SCR-002')).toBeTruthy();
-    expect(screen.getByTestId('mockup-rail-SCR-003')).toBeTruthy();
+    // Index có cả mobile lẫn web → rail chia tab; tab App mở trước (màn đầu là mobile), màn web nằm ở tab Web.
+    expect(screen.queryByTestId('mockup-rail-SCR-003')).toBeNull();
+    expect(screen.getByTestId('mockup-tab-App').getAttribute('aria-selected')).toBe('true');
+    expect(screen.getByTestId('mockup-tab-Web').textContent).toContain('1');
     expect(screen.getByTestId('mockup-title').textContent).toBe('Trang chủ');
     expect(frame.getAttribute('sandbox')).toBe('allow-scripts');
     expect(frame.getAttribute('srcdoc')).toContain('data-screen="SCR-001"');
@@ -123,10 +126,15 @@ describe('MockupsPreview', () => {
 
   it('chọn màn web trên rail → khung 100% (data-layout web); file ghi kèm tiền tố mockups/ vẫn tải đúng', async () => {
     await renderPreview();
+    fireEvent.click(screen.getByTestId('mockup-tab-Web'));
+    // Bấm tab → mở màn đầu của tab, rail chỉ còn màn web, Quay lại về màn cũ được.
+    expect(screen.getByTestId('mockup-tab-Web').getAttribute('aria-selected')).toBe('true');
+    expect(screen.queryByTestId('mockup-rail-SCR-001')).toBeNull();
     fireEvent.click(screen.getByTestId('mockup-rail-SCR-003'));
     const frame = await screen.findByTestId('mockup-frame');
     expect(frame.getAttribute('srcdoc')).toContain('data-screen="SCR-003"');
     expect(frame.getAttribute('data-layout')).toBe('web');
+    expect((screen.getByTestId('mockup-back') as HTMLButtonElement).disabled).toBe(false);
     expect((screen.getByTestId('mockup-open-html') as HTMLAnchorElement).getAttribute('href')).toBe('/api/projects/p/raw/docs-review/mockups/SCR-003.html');
   });
 
@@ -155,5 +163,28 @@ describe('MockupsPreview', () => {
     expect(document.body.style.overflow).toBe('hidden');
     fireEvent.keyDown(document, { key: 'Escape' });
     expect(screen.queryByTestId('fs-overlay')).toBeNull();
+  });
+});
+
+describe('MockupsPreview — tab App | Web', () => {
+  it('điều hướng (postMessage) sang màn nền tảng kia tự chuyển tab; index một nền tảng → không có tab', async () => {
+    const frame = (await renderPreview()) as HTMLIFrameElement;
+    expect(screen.getByTestId('mockup-tab-App').getAttribute('aria-selected')).toBe('true');
+    act(() => {
+      window.dispatchEvent(new MessageEvent('message', { data: { type: 'od-mockup-nav', key: 'SCR-003' }, source: frame.contentWindow }));
+    });
+    const next = await screen.findByTestId('mockup-frame');
+    expect(next.getAttribute('srcdoc')).toContain('data-screen="SCR-003"');
+    expect(screen.getByTestId('mockup-tab-Web').getAttribute('aria-selected')).toBe('true');
+    expect(screen.getByTestId('mockup-rail-SCR-003')).toBeTruthy();
+    expect(screen.queryByTestId('mockup-rail-SCR-001')).toBeNull();
+    cleanup();
+
+    FILES['docs-review/mockups/index.json'] = JSON.stringify({ ...INDEX, screens: INDEX.screens.filter((s) => s.platform === 'mobile') });
+    render(<MockupsPreview projectId="p" file={file('docs-review/mockups/index.json', 2)} />);
+    await screen.findByTestId('mockup-frame');
+    expect(screen.queryByTestId('mockup-tab-App')).toBeNull();
+    expect(screen.getByTestId('mockup-rail-SCR-001')).toBeTruthy();
+    expect(screen.getByTestId('mockup-rail-SCR-002')).toBeTruthy();
   });
 });

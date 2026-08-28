@@ -86,6 +86,8 @@ export function mockupLayoutOf(html: string | null, entry: Pick<MockupScreenEntr
   return /web|desktop/i.test(entry.platform ?? '') ? 'web' : 'mobile';
 }
 
+type PlatformTab = 'App' | 'Web';
+
 function platformLabel(platform: string | undefined): string | null {
   if (!platform) return null;
   if (/web|desktop|ib/i.test(platform)) return 'Web';
@@ -126,6 +128,7 @@ export function MockupsPreview({ projectId, file }: { projectId: string; file: P
     setActiveKey(null);
     setHistory([]);
     setHtmlByKey({});
+    setTabOverride(null);
     void (async () => {
       const raw = await fetchProjectFileText(projectId, file.name, { cache: 'no-store', cacheBustKey: file.mtime });
       if (cancelled) return;
@@ -156,6 +159,26 @@ export function MockupsPreview({ projectId, file }: { projectId: string; file: P
   const screens = doc?.screens ?? [];
   const byKey = useMemo(() => new Map(screens.map((s) => [s.key, s] as const)), [screens]);
   const active = activeKey ? byKey.get(activeKey) ?? null : null;
+  // Tab App | Web (WP screen-flow-platform-split, phase 3): tài liệu có cả hai
+  // nền tảng → rail chia tab theo `platform` của index; một nền tảng → không
+  // tab, rail như cũ. Tab đang xem đi theo màn đang chọn (điều hướng từ iframe
+  // sang màn nền tảng kia tự chuyển tab); bấm tab → mở màn đầu của tab đó.
+  const platformTabs = useMemo(() => {
+    const count: Record<PlatformTab, number> = { App: 0, Web: 0 };
+    for (const s of screens) {
+      const pl = platformLabel(s.platform);
+      if (pl === 'App' || pl === 'Web') count[pl] += 1;
+    }
+    return count.App > 0 && count.Web > 0 ? count : null;
+  }, [screens]);
+  const [tabOverride, setTabOverride] = useState<PlatformTab | null>(null);
+  const activeTab: PlatformTab | null = platformTabs
+    ? (tabOverride ?? (platformLabel(active?.platform) === 'Web' ? 'Web' : 'App'))
+    : null;
+  const visibleScreens = useMemo(
+    () => (activeTab ? screens.filter((s) => (platformLabel(s.platform) === 'Web' ? 'Web' : 'App') === activeTab) : screens),
+    [screens, activeTab],
+  );
   const activeCacheKey = active ? `${active.key}@${cacheTag}` : null;
   const activeHtml = activeCacheKey ? htmlByKey[activeCacheKey] : undefined;
 
@@ -177,6 +200,16 @@ export function MockupsPreview({ projectId, file }: { projectId: string; file: P
     if (!byKey.has(key) || key === activeKey) return;
     setHistory((prev) => (activeKey ? [...prev, activeKey] : prev));
     setActiveKey(key);
+    setTabOverride(null);
+  }
+  function selectTab(tab: PlatformTab) {
+    if (tab === activeTab) return;
+    const first = screens.find((s) => (platformLabel(s.platform) === 'Web' ? 'Web' : 'App') === tab);
+    setTabOverride(tab);
+    if (first && first.key !== activeKey) {
+      setHistory((prev) => (activeKey ? [...prev, activeKey] : prev));
+      setActiveKey(first.key);
+    }
   }
   function back() {
     setHistory((prev) => {
@@ -278,8 +311,26 @@ export function MockupsPreview({ projectId, file }: { projectId: string; file: P
       </div>
       <div className={styles.body}>
         <nav className={styles.rail} aria-label="Danh sách màn">
-          <div className={styles.railHead}>Màn ({screens.length})</div>
-          {screens.map((s) => {
+          {platformTabs && activeTab ? (
+            <div className={styles.tabs} role="tablist" aria-label="Nền tảng">
+              {(['App', 'Web'] as const).map((tab) => (
+                <button
+                  key={tab}
+                  type="button"
+                  role="tab"
+                  aria-selected={tab === activeTab}
+                  className={`${styles.tab}${tab === activeTab ? ` ${styles.tabActive}` : ''}`}
+                  onClick={() => selectTab(tab)}
+                  data-testid={`mockup-tab-${tab}`}
+                >
+                  {tab} <span className={styles.tabCount}>{platformTabs[tab]}</span>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <div className={styles.railHead}>Màn ({screens.length})</div>
+          )}
+          {visibleScreens.map((s) => {
             const pl = platformLabel(s.platform);
             return (
               <button

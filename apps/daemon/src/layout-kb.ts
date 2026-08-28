@@ -12,6 +12,14 @@
 // Nguyên tắc: agent vẫn quyết bố cục cuối; ảnh mockup BA (nếu có) THẮNG KB;
 // KB chỉ là gợi ý có cấu trúc. KB vắng → mọi hàm trả null/rỗng, stage chạy
 // như trước với catalogue trong skill. Pure (không DB, không agent).
+//
+// WP layout-kb-web (2026-08-28): manifest schema_version 2 — mỗi topic có
+// `platform: 'mobile' | 'web'` (vắng = mobile, manifest v1 đọc y hệt) + `sources[]`
+// cấp file. Topic web tiền tố `web-` (`tools/layout-kb/web-templates.json` tầng 1,
+// `build-web.mjs` tầng 2). `layoutRefsFor(kb, archetype, platform)`: màn web CHỈ
+// nhận topic web (bảng `WEB_ARCHETYPE_TOPICS`); KB không có topic web → refs rỗng
+// (màn web rơi về catalogue trong skill). Archetype thêm `table`/`dashboard`,
+// chỉ gán khi platform web. Màn mobile: byte-identical với trước.
 
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
@@ -30,7 +38,13 @@ export type Archetype =
   | 'overlay'
   | 'home'
   | 'settings'
-  | 'content';
+  | 'content'
+  /** WP layout-kb-web: chỉ gán khi platform web (bảng/danh sách quản trị). */
+  | 'table'
+  /** WP layout-kb-web: chỉ gán khi platform web (tổng quan/thống kê/báo cáo). */
+  | 'dashboard';
+
+export type LayoutKbPlatform = 'mobile' | 'web';
 
 export interface LayoutKbTemplate {
   /** `<topic>-<slug>` — ổn định giữa các lần rebuild cùng dữ liệu. */
@@ -54,6 +68,14 @@ export interface LayoutKbTopic {
   count: number;
   templates: LayoutKbTemplate[];
   samples: LayoutKbSample[];
+  /** Schema 2: nền tảng của topic; manifest v1 (vắng) → `mobile`. */
+  platform: LayoutKbPlatform;
+}
+
+export interface LayoutKbSource {
+  id: string;
+  license: string;
+  note?: string;
 }
 
 export interface LayoutKbManifest {
@@ -62,6 +84,8 @@ export interface LayoutKbManifest {
   license: string;
   builtAt: string;
   topics: Record<string, LayoutKbTopic>;
+  /** Schema 2: nguồn dữ liệu cấp file (enrico MIT + web-templates viết tay + …). */
+  sources?: LayoutKbSource[];
 }
 
 export interface LayoutKb {
@@ -76,7 +100,7 @@ export interface ArchetypeGuess {
 }
 
 export interface LayoutRefs {
-  /** Topic Enrico có trong KB được dùng cho archetype này. */
+  /** Topic có trong KB (Enrico cho mobile, `web-*` cho web) được dùng cho archetype này. */
   topics: string[];
   templates: Array<{ id: string; bands: string[]; sketch: string }>;
   /** Đường dẫn TUYỆT ĐỐI ảnh wireframe tham khảo (≤4). */
@@ -85,7 +109,9 @@ export interface LayoutRefs {
 
 export const LAYOUT_KB_MANIFEST = 'manifest.json';
 
-/** Topic Enrico ưu tiên cho từng archetype (thứ tự = mức ưu tiên). */
+/** Topic Enrico (mobile) ưu tiên cho từng archetype (thứ tự = mức ưu tiên).
+ *  `table`/`dashboard` không bao giờ được gán cho màn mobile — mapping chỉ để
+ *  Record đủ khoá (rơi về list/home). */
 export const ARCHETYPE_TOPICS: Record<Archetype, string[]> = {
   list: ['list', 'news', 'gallery'],
   picker: ['list', 'search', 'menu'],
@@ -98,6 +124,26 @@ export const ARCHETYPE_TOPICS: Record<Archetype, string[]> = {
   home: ['profile', 'news', 'gallery'],
   settings: ['settings'],
   content: ['news', 'list'],
+  table: ['list', 'news'],
+  dashboard: ['profile', 'news', 'gallery'],
+};
+
+/** WP layout-kb-web: topic web (`platform: 'web'`) ưu tiên cho từng archetype
+ *  khi màn là web. Màn web KHÔNG bao giờ nhận topic mobile. */
+export const WEB_ARCHETYPE_TOPICS: Record<Archetype, string[]> = {
+  list: ['web-table', 'web-list'],
+  table: ['web-table'],
+  detail: ['web-detail'],
+  form: ['web-form', 'web-wizard'],
+  checkout: ['web-form', 'web-wizard'],
+  result: ['web-detail', 'web-dashboard'],
+  status: ['web-detail', 'web-dashboard'],
+  overlay: ['web-form'],
+  picker: ['web-form'],
+  home: ['web-dashboard', 'web-list'],
+  dashboard: ['web-dashboard', 'web-list'],
+  settings: ['web-settings'],
+  content: ['web-detail', 'web-list'],
 };
 
 const MAX_TEMPLATES = 4;
@@ -150,7 +196,18 @@ export function parseLayoutKbManifest(raw: string): LayoutKbManifest | null {
       if (!isRecord(s) || typeof s.id !== 'string' || typeof s.wireframe !== 'string') continue;
       samples.push({ id: s.id, wireframe: s.wireframe, bands: strArr(s.bands) });
     }
-    topics[name] = { count: typeof t.count === 'number' ? t.count : samples.length, templates, samples };
+    // Schema 2: `platform` trên topic; vắng/lạ (manifest v1) → mobile.
+    const platform: LayoutKbPlatform = t.platform === 'web' ? 'web' : 'mobile';
+    topics[name] = { count: typeof t.count === 'number' ? t.count : samples.length, templates, samples, platform };
+  }
+  const sources: LayoutKbSource[] = [];
+  for (const s of Array.isArray(json.sources) ? json.sources : []) {
+    if (!isRecord(s) || typeof s.id !== 'string') continue;
+    sources.push({
+      id: s.id,
+      license: typeof s.license === 'string' ? s.license : '',
+      ...(typeof s.note === 'string' ? { note: s.note } : {}),
+    });
   }
   return {
     schema_version: typeof json.schema_version === 'number' ? json.schema_version : 1,
@@ -158,7 +215,19 @@ export function parseLayoutKbManifest(raw: string): LayoutKbManifest | null {
     license: typeof json.license === 'string' ? json.license : 'MIT',
     builtAt: typeof json.builtAt === 'string' ? json.builtAt : '',
     topics,
+    ...(sources.length ? { sources } : {}),
   };
+}
+
+/** Số topic theo nền tảng trong manifest (schema 1 → toàn bộ là mobile). */
+export function countLayoutKbTopics(manifest: LayoutKbManifest): { mobile: number; web: number } {
+  let mobile = 0;
+  let web = 0;
+  for (const t of Object.values(manifest.topics)) {
+    if (t.platform === 'web') web += 1;
+    else mobile += 1;
+  }
+  return { mobile, web };
 }
 
 /** Đọc manifest, cache theo mtime của `manifest.json`. `null` khi vắng/hỏng. */
@@ -206,19 +275,30 @@ const ARCHETYPE_KEYWORDS: Array<[Archetype, string[]]> = [
   ['settings', ['cai dat', 'thiet lap', 'settings', 'cau hinh']],
 ];
 
+/** WP layout-kb-web: từ khoá CHỈ dùng khi platform web, xét TRƯỚC bảng chung
+ *  (hoà điểm → mục đứng trước thắng: "Danh sách giao dịch" web → `table`,
+ *  "Trang chủ / dashboard" web → `dashboard`). */
+const WEB_ARCHETYPE_KEYWORDS: Array<[Archetype, string[]]> = [
+  ['table', ['danh sach', 'quan ly', 'tra cuu', 'bang', 'list', 'table']],
+  ['dashboard', ['tong quan', 'dashboard', 'thong ke', 'bao cao']],
+];
+
 const hasWord = (text: string, kw: string): boolean => new RegExp(`(^|\\s)${kw}(\\s|$)`).test(text);
 
 /** Đoán archetype từ tên + heading mục + nhãn bước (+ vị trí trong luồng làm
  *  tie-break: màn cuối luồng không nav ra → `result` nếu chưa có gì trúng).
- *  Chỉ cần các field dùng tới — nhận ScreenInput hoặc object rút gọn. */
+ *  Chỉ cần các field dùng tới — nhận ScreenInput hoặc object rút gọn.
+ *  `platform === 'web'` mở thêm `table`/`dashboard`; vắng/mobile → như cũ. */
 export function guessArchetype(
   screen: Pick<ScreenInput, 'name'> & Partial<Pick<ScreenInput, 'section' | 'steps' | 'navOut' | 'navIn'>>,
+  platform?: LayoutKbPlatform,
 ): ArchetypeGuess {
   const name = foldVi(screen.name ?? '');
   const rest = foldVi([screen.section?.heading ?? '', ...(screen.steps ?? []).map((s) => s.label)].join(' . '));
   const all = `${name} . ${rest}`;
+  const table = platform === 'web' ? [...WEB_ARCHETYPE_KEYWORDS, ...ARCHETYPE_KEYWORDS] : ARCHETYPE_KEYWORDS;
   let best: { id: Archetype; score: number } | null = null;
-  for (const [id, kws] of ARCHETYPE_KEYWORDS) {
+  for (const [id, kws] of table) {
     let score = 0;
     let inName = false;
     for (const kw of kws) {
@@ -239,9 +319,13 @@ export function guessArchetype(
 
 /** Chọn ≤4 khuôn + ≤4 ảnh cho archetype, luân phiên qua các topic ưu tiên
  *  (mỗi topic góp 1 rồi vòng lại) để refs đa dạng. Topic không có trong KB bị
- *  bỏ; KB không có topic nào → `{ topics: [], templates: [], images: [] }`. */
-export function layoutRefsFor(kb: LayoutKb, archetype: Archetype): LayoutRefs {
-  const topics = ARCHETYPE_TOPICS[archetype].filter((t) => kb.manifest.topics[t]);
+ *  bỏ; KB không có topic nào → `{ topics: [], templates: [], images: [] }`.
+ *  WP layout-kb-web: `platform` (mặc định mobile) chọn bảng topic VÀ lọc topic
+ *  đúng nền tảng — màn web chỉ nhận topic `platform: 'web'`, màn mobile chỉ
+ *  topic mobile (manifest v1 → toàn bộ mobile, kết quả y hệt trước). */
+export function layoutRefsFor(kb: LayoutKb, archetype: Archetype, platform: LayoutKbPlatform = 'mobile'): LayoutRefs {
+  const table = platform === 'web' ? WEB_ARCHETYPE_TOPICS : ARCHETYPE_TOPICS;
+  const topics = table[archetype].filter((t) => kb.manifest.topics[t]?.platform === platform);
   const templates: LayoutRefs['templates'] = [];
   const images: string[] = [];
   const seenTpl = new Set<string>();

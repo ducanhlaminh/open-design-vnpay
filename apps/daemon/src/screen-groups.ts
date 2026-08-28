@@ -86,6 +86,33 @@ function isSubset(shorter: Set<string>, longer: Set<string>): boolean {
 // ngữ riêng dự án bank (Mobile/Internet Banking), không phủ dự án thường.
 const PLATFORM_SUFFIX = { mobile: '--app', web: '--web' } as const;
 
+/** WP screen-flow-platform-split (2026-08-28): key đã mang hậu tố biến thể
+ *  nền tảng (`<stem>__<code>--app` / `--web`) — do AGENT đặt trong
+ *  `flows/SCREEN-FLOW--app|--web/screens.json`. */
+export const PLATFORM_KEY_SUFFIX_RE = /--(app|web)$/;
+
+/** Bỏ hậu tố `--app`/`--web` (nếu có). */
+export function stripPlatformSuffix(key: string): string {
+  return key.replace(PLATFORM_KEY_SUFFIX_RE, '');
+}
+
+/** WP screen-flow-platform-split: suy `groupKey` CHỈ từ hậu tố — cặp
+ *  `<k>--app` + `<k>--web` cùng tồn tại → cả hai nhận `groupKey = <k>`. Key
+ *  lẻ (chỉ một phía) không nhận gì. Không nhìn tên, không nhìn platform —
+ *  quyết định nhóm là của agent (đặt hậu tố), daemon chỉ suy ra. */
+export function deriveSuffixGroupKeys(keys: Iterable<string>): Map<string, string> {
+  const all = new Set(keys);
+  const out = new Map<string, string>();
+  for (const key of all) {
+    const m = PLATFORM_KEY_SUFFIX_RE.exec(key);
+    if (!m) continue;
+    const stem = key.slice(0, -m[0].length);
+    const other = `${stem}${m[1] === 'app' ? '--web' : '--app'}`;
+    if (all.has(other)) out.set(key, stem);
+  }
+  return out;
+}
+
 /** WP-V2: auto-nhóm CHỈ KHI tên chuẩn hóa trùng HỆT + platform khác nhau +
  *  cả hai đều non-null; không bao giờ nhóm 2 màn cùng platform (kể cả trùng
  *  tên hệt). Ca tên gần-giống (token con) đẩy vào `suggestions` cho agent

@@ -78,6 +78,7 @@ import { DrawioEditor } from './DrawioEditor';
 import { DrawioViewer, type HighlightSpec } from './DrawioViewer';
 import { MermaidDiagram } from './MermaidDiagram';
 import { ScreensDiscoveredPreview, isScreensDiscoveredDoc, type ScreensDiscoveredDoc } from './ScreensDiscoveredPreview';
+import { SCREEN_FLOW_ID, isScreenFlowId, screenFlowPlatformLabel, screenFlowPlatformOf, type ScreenFlowPlatform } from './screen-flow-ids';
 import styles from './FlowUxReviewPreview.module.css';
 
 export type UxSeverity = 'blocker' | 'major' | 'minor' | 'note';
@@ -120,6 +121,10 @@ interface IndexEntry {
   /** Daemon `finalizeFlowUx` ghi bản đang dùng vào entry (WP-B B3). */
   variant?: FlowVariant;
   selection?: { variant?: FlowVariant; source?: 'user' | 'run-all' };
+  /** WP screen-flow-platform-split: flow tách theo nền tảng (`SCREEN-FLOW--app`
+   *  / `--web`) mang `platform`; flow đơn không có field. Khai local — web
+   *  không kéo type contract cho field này. */
+  platform?: ScreenFlowPlatform;
 }
 
 /** Một phần tử (node/cạnh) của trang Cải thiện đã Thêm/Sửa/Bỏ — panel "Theo
@@ -405,6 +410,30 @@ function writeStoredPanelOpen(open: boolean): void {
 /** Trạng thái tải lười của tab "Danh sách màn" (SCREEN-FLOW). */
 type ScreensLoad = { status: 'idle' } | { status: 'loading' } | { status: 'missing' } | { status: 'ok'; doc: ScreensDiscoveredDoc };
 
+/** Tab "Danh sách màn" của flow tách nền tảng chỉ hiện màn của nền tảng đó
+ *  (`screens-discovered.json` = HỢP các flow, mỗi màn mang `platform`). Màn
+ *  KHÔNG có `platform` hiện ở cả hai; trang không còn màn nào bị bỏ. Flow đơn
+ *  (`platform` null) → trả nguyên doc (byte-identical). */
+export function filterScreensByPlatform(doc: ScreensDiscoveredDoc, platform: ScreenFlowPlatform | null): ScreensDiscoveredDoc {
+  if (!platform) return doc;
+  const pages = doc.pages
+    .map((page) => ({ ...page, screens: page.screens.filter((s) => !s.platform || s.platform === platform) }))
+    .filter((page) => page.screens.length > 0);
+  return { ...doc, pages };
+}
+
+/** URL route daemon `…/docs-review/screen-flow[/selection]` cho flow: flow đơn
+ *  `SCREEN-FLOW` giữ URL/body y hệt trước (daemon tự chọn flow duy nhất);
+ *  flow tách gửi `?flowId=` + `flowId` trong body (hợp đồng WP screen-flow-
+ *  platform-split — thiếu flowId khi có 2 flow daemon trả 400). */
+export function screenFlowApiUrl(projectId: string, flowId: string, sub: '' | '/selection'): string {
+  const base = `/api/projects/${encodeURIComponent(projectId)}/docs-review/screen-flow${sub}`;
+  return flowId === SCREEN_FLOW_ID ? base : `${base}?flowId=${encodeURIComponent(flowId)}`;
+}
+function screenFlowApiBody(flowId: string, body: Record<string, unknown>): string {
+  return JSON.stringify(flowId === SCREEN_FLOW_ID ? body : { ...body, flowId });
+}
+
 interface LoadedFlow {
   review: UxReview | null;
   index: IndexEntry | null;
@@ -520,7 +549,11 @@ export function FlowUxReviewPreview({
   // được tải LƯỜI (chỉ khi bấm tab, không chen vào Promise.all tải luồng) qua
   // cùng fetchProjectFileText, và tải lại khi file/mtime đổi (chạy lại bước).
   // screensKeyRef ghi key đã tải để bật/tắt tab không tải lại vô ích.
-  const isScreenFlow = loc?.flowId === 'SCREEN-FLOW';
+  // WP screen-flow-platform-split: `SCREEN-FLOW` | `SCREEN-FLOW--app` |
+  // `SCREEN-FLOW--web` đều là luồng màn hình; nền tảng đọc từ id thư mục.
+  const isScreenFlow = isScreenFlowId(loc?.flowId);
+  const screenFlowId = loc?.flowId ?? SCREEN_FLOW_ID;
+  const screenFlowPlatform = screenFlowPlatformOf(loc?.flowId);
   const [screensTab, setScreensTab] = useState(false);
   const screensOpen = isScreenFlow && screensTab;
   const [screensLoad, setScreensLoad] = useState<ScreensLoad>({ status: 'idle' });
@@ -743,6 +776,9 @@ export function FlowUxReviewPreview({
   if (!data) return <div className={styles.message}>Đang tải…</div>;
 
   const title = data.index?.title ?? loc.flowId;
+  // Badge nền tảng cạnh tiêu đề: theo id thư mục; index entry `platform` là
+  // dự phòng (daemon ghi cho flow tách).
+  const platformLabel = screenFlowPlatformLabel(loc.flowId) ?? (data.index?.platform === 'app' ? 'App' : data.index?.platform === 'web' ? 'Web' : null);
   const kind: IndexEntry['kind'] = data.index?.kind ?? (data.drawioXml ? 'drawio' : data.mermaidAsIs ? 'mermaid' : 'text');
   const hasProposal = kind === 'drawio' ? data.drawioHasProposal : kind === 'mermaid' ? !!data.mermaidProposed : false;
   // Không có bản đề xuất thì không có gì để đối chiếu — ép về 'single' bất kể
@@ -837,10 +873,10 @@ export function FlowUxReviewPreview({
     setSelSaving(true);
     setSelError(null);
     try {
-      const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}/docs-review/screen-flow/selection`, {
+      const res = await fetch(screenFlowApiUrl(projectId, screenFlowId, '/selection'), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ variant }),
+        body: screenFlowApiBody(screenFlowId, { variant }),
       });
       const body = (await res.json().catch(() => null)) as { ok?: boolean; error?: string; variant?: string; downstreamStale?: boolean } | null;
       if (!res.ok || body?.ok === false) throw new Error(body?.error ?? `HTTP ${res.status}`);
@@ -899,10 +935,10 @@ export function FlowUxReviewPreview({
     setScreensTab(true);
   };
   const saveScreenFlow = async (editedXml: string) => {
-    const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}/docs-review/screen-flow`, {
+    const res = await fetch(screenFlowApiUrl(projectId, screenFlowId, ''), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ xml: editedXml }),
+      body: screenFlowApiBody(screenFlowId, { xml: editedXml }),
     });
     const body = (await res.json().catch(() => null)) as { error?: string; warnings?: string[] } | null;
     if (!res.ok) throw new Error(body?.error ?? `HTTP ${res.status}`);
@@ -921,6 +957,11 @@ export function FlowUxReviewPreview({
       <header className={styles.head}>
         <div className={styles.headMain}>
           <h2 className={styles.title}>{title}</h2>
+          {platformLabel ? (
+            <span className={styles.platformBadge ?? ''} data-testid="platform-badge">
+              {platformLabel}
+            </span>
+          ) : null}
           {data.review ? (
             <span className={`${styles.verdict} ${styles[`verdict_${data.review.verdict.replace('-', '_')}`] ?? ''}`} data-testid="verdict">
               {VERDICT_LABEL[data.review.verdict]}
@@ -1037,7 +1078,7 @@ export function FlowUxReviewPreview({
               // khung sơ đồ (không cần viewer nên không đợi fsReady).
               <div className={styles.screensPane} data-testid="screens-pane">
                 {screensLoad.status === 'ok' ? (
-                  <ScreensDiscoveredPreview doc={screensLoad.doc} />
+                  <ScreensDiscoveredPreview doc={filterScreensByPlatform(screensLoad.doc, screenFlowPlatform)} />
                 ) : screensLoad.status === 'missing' ? (
                   <div className={styles.message}>Chưa có danh sách màn — chạy lại bước Luồng màn hình.</div>
                 ) : (

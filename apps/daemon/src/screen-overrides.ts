@@ -20,7 +20,7 @@ import type {
 } from '@open-design/contracts';
 
 import { findAnchorTextLines, type ScreenInput } from './screen-components.js';
-import { autoGroupScreens, type GroupSuggestion } from './screen-groups.js';
+import { autoGroupScreens, deriveSuffixGroupKeys, PLATFORM_KEY_SUFFIX_RE, type GroupSuggestion } from './screen-groups.js';
 
 /** `comp/<key>.screen.json` sibling — manifest của LẦN CHẠY HIỆN TẠI (sau khi
  *  áp overrides lên danh sách máy đoán). Nằm DƯỚI `comp/` nên bị "Run lại"
@@ -264,12 +264,23 @@ export interface ScreenGroupingResult {
  *  map key cũ→mới. Tài liệu một-nền-tảng: 0 nhóm, trả `changed: false`,
  *  danh sách nguyên trạng (spec G6). */
 export function applyScreenGrouping(screens: ScreenInput[]): ScreenGroupingResult {
+  // WP screen-flow-platform-split (2026-08-28): màn đã có `groupKey` hoặc key
+  // đã mang hậu tố `--app`/`--web` là quyết định của AGENT (flow tách theo
+  // nền tảng) — KHÔNG đưa vào auto-nhóm (tránh đổi tên thành `…--app--app`),
+  // chỉ suy groupKey từ hậu tố khi cặp cùng tồn tại.
+  const suffixGroups = deriveSuffixGroupKeys(screens.map((s) => s.key));
+  const preGrouped = new Set(screens.filter((s) => s.groupKey || PLATFORM_KEY_SUFFIX_RE.test(s.key)).map((s) => s.key));
+  const withSuffixGroup = screens.map((s) => (!s.groupKey && suffixGroups.has(s.key) ? { ...s, groupKey: suffixGroups.get(s.key)! } : s));
+  const suffixChanged = withSuffixGroup.some((s, i) => s !== screens[i]);
   const { groups, renamedKeys, suggestions } = autoGroupScreens(
-    screens.map((s) => ({ key: s.key, name: s.name, platform: s.platform ?? null })),
+    withSuffixGroup.filter((s) => !preGrouped.has(s.key)).map((s) => ({ key: s.key, name: s.name, platform: s.platform ?? null })),
   );
   if (Object.keys(groups).length === 0) {
-    return { screens, groupCount: 0, suggestions, changed: false };
+    return suffixChanged
+      ? { screens: withSuffixGroup, groupCount: suffixGroups.size, suggestions, changed: true }
+      : { screens, groupCount: 0, suggestions, changed: false };
   }
+  screens = withSuffixGroup;
   // autoGroupScreens trả `groups` theo key ĐÃ đổi tên — đảo renamedKeys để
   // biết key gốc của từng thành viên rồi mới quyết có đổi thật hay không.
   const originalOf = new Map<string, string>(Object.entries(renamedKeys).map(([oldKey, newKey]) => [newKey, oldKey]));

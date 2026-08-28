@@ -13,6 +13,16 @@
 // người-đọc `screens-discovered.md` cùng bố cục cũ. Caller (screen-flow-xml.ts
 // + server.ts) lo phần đọc/ghi và đưa `generatedAt` vào để test tất định.
 import type { DiscoveredDoc, DiscoveredExcludedEntry, DiscoveredPageEntry, DiscoveredScreenEntry } from '../screen-components.js';
+import { deriveSuffixGroupKeys } from '../screen-groups.js';
+
+/** WP screen-flow-platform-split (2026-08-28): nền tảng của màn — AGENT quyết
+ *  từ cách tài liệu viết (MB/IB/BO… chỉ là gợi ý ngữ cảnh); daemon CHỈ kiểm
+ *  giá trị, không suy từ heading, không ghi đè. */
+export type ScreenPlatform = 'app' | 'web';
+export const SCREEN_PLATFORMS: readonly ScreenPlatform[] = ['app', 'web'];
+export function isScreenPlatform(v: unknown): v is ScreenPlatform {
+  return v === 'app' || v === 'web';
+}
 
 export interface ScreenFlowBlock {
   name: string;
@@ -34,6 +44,10 @@ export interface ScreenFlowScreen {
   /** Trang nguồn riêng (tài liệu nhiều trang); mặc định = `source` cấp file. */
   source?: string;
   blocks?: ScreenFlowBlock[];
+  /** WP screen-flow-platform-split: bắt buộc trong flow đã tách
+   *  (`flows/SCREEN-FLOW--app|--web`, phải khớp thư mục); flow đơn có thể
+   *  vắng (byte-identical) hoặc đồng nhất một giá trị. */
+  platform?: ScreenPlatform;
 }
 
 export interface ScreenFlowExcluded {
@@ -88,6 +102,7 @@ export function parseScreenFlowScreensV2(raw: unknown): ParseScreensV2Result {
   if (!Array.isArray(raw.screens)) return { errors: ['screens.json: "screens" phải là một mảng'] };
 
   const warnings: string[] = [];
+  const platformErrors: string[] = [];
   const screens: ScreenFlowScreen[] = [];
   raw.screens.forEach((rs, i) => {
     if (!isRecord(rs)) {
@@ -121,6 +136,13 @@ export function parseScreenFlowScreensV2(raw: unknown): ParseScreensV2Result {
     }
     const why = optStr(rs.why);
     const source = optStr(rs.source);
+    // platform: chỉ nhận `app`|`web`; giá trị khác → LỖI chặn (agent phải sửa,
+    // daemon không đoán hộ). Vắng/null → không có field.
+    let platform: ScreenPlatform | undefined;
+    if (rs.platform != null && rs.platform !== '') {
+      if (isScreenPlatform(rs.platform)) platform = rs.platform;
+      else platformErrors.push(`screens[${i}] "${key}": platform "${String(rs.platform)}" không hợp lệ — chỉ nhận ${SCREEN_PLATFORMS.map((p) => `"${p}"`).join(' | ')}`);
+    }
     screens.push({
       key,
       code,
@@ -130,8 +152,10 @@ export function parseScreenFlowScreensV2(raw: unknown): ParseScreensV2Result {
       ...(why ? { why } : {}),
       ...(source ? { source } : {}),
       ...(blocks.length ? { blocks } : {}),
+      ...(platform ? { platform } : {}),
     });
   });
+  if (platformErrors.length) return { errors: platformErrors };
   if (screens.length === 0) return { errors: ['screens.json: "screens" không có entry hợp lệ nào (cần key + name + anchorText)', ...warnings] };
 
   const excluded: ScreenFlowExcluded[] = [];
@@ -211,40 +235,67 @@ export function deriveCellsAndNames(doc: ScreensV2, knownCells?: ReadonlySet<str
 /** Chuyển v2 → `DiscoveredDoc` (contract screens-discovered.json, xem
  *  screen-components.ts) — `pages[]` nhóm theo `source` (entry không có
  *  source riêng → source cấp file), thứ tự trang theo lần xuất hiện đầu;
- *  `code` null giữ null (persist tự đánh X1…); `blocks`/`why`/`excluded`
- *  pass-through, `excluded[].source` mặc định = source cấp file. */
+ *  `code` giữ nguyên (null vẫn null) NHƯNG `key` đi kèm (A0: key trong
+ *  screens.json đã finalize là thẩm quyền duy nhất — persist không đánh lại
+ *  `X<n>`); `platform` pass-through khi agent khai; `groupKey` suy từ cặp hậu
+ *  tố `--app`/`--web`; `blocks`/`why`/`excluded` pass-through,
+ *  `excluded[].source` mặc định = source cấp file. */
 export function toDiscoveredDoc(doc: ScreensV2, opts: { generatedAt: string }): DiscoveredDoc {
-  const fileSource = doc.source ?? '';
+  return toDiscoveredDocs([{ doc }], opts);
+}
+
+/** WP screen-flow-platform-split: HỢP nhiều flow (`SCREEN-FLOW--app` +
+ *  `SCREEN-FLOW--web`) thành MỘT DiscoveredDoc — trang nhóm theo `source`
+ *  xuyên flow (thứ tự lần xuất hiện đầu, flow theo thứ tự truyền vào), màn
+ *  giữ thứ tự agent trong từng flow; key trùng xuyên flow → giữ entry đầu.
+ *  `groupKey` suy trên TOÀN tập key (cặp `--app`/`--web` ở hai flow). Một
+ *  flow → kết quả y hệt `toDiscoveredDoc` trước WP (không field mới rỗng). */
+export function toDiscoveredDocs(flows: Array<{ id?: string; doc: ScreensV2 }>, opts: { generatedAt: string }): DiscoveredDoc {
   const pages: DiscoveredPageEntry[] = [];
   const bySource = new Map<string, DiscoveredPageEntry>();
-  for (const s of doc.screens) {
-    const source = s.source ?? fileSource;
-    let page = bySource.get(source);
-    if (!page) {
-      page = { source, screens: [] };
-      bySource.set(source, page);
-      pages.push(page);
+  const excluded: DiscoveredExcludedEntry[] = [];
+  const seenKeys = new Set<string>();
+  const seenExcluded = new Set<string>();
+  const groupKeys = deriveSuffixGroupKeys(flows.flatMap((f) => f.doc.screens.map((s) => s.key)));
+  for (const { doc } of flows) {
+    const fileSource = doc.source ?? '';
+    for (const s of doc.screens) {
+      if (seenKeys.has(s.key)) continue;
+      seenKeys.add(s.key);
+      const source = s.source ?? fileSource;
+      let page = bySource.get(source);
+      if (!page) {
+        page = { source, screens: [] };
+        bySource.set(source, page);
+        pages.push(page);
+      }
+      const groupKey = groupKeys.get(s.key);
+      const entry: DiscoveredScreenEntry = {
+        key: s.key,
+        code: s.code,
+        name: s.name,
+        anchorText: s.anchorText,
+        ...(s.why ? { why: s.why } : {}),
+        ...(s.blocks?.length ? { blocks: s.blocks.map((b) => ({ ...b })) } : {}),
+        ...(s.platform ? { platform: s.platform } : {}),
+        ...(groupKey ? { groupKey } : {}),
+      };
+      page.screens.push(entry);
     }
-    const entry: DiscoveredScreenEntry = {
-      code: s.code,
-      name: s.name,
-      anchorText: s.anchorText,
-      ...(s.why ? { why: s.why } : {}),
-      ...(s.blocks?.length ? { blocks: s.blocks.map((b) => ({ ...b })) } : {}),
-    };
-    page.screens.push(entry);
+    for (const e of doc.excluded) {
+      const source = e.source ?? fileSource;
+      const dedupe = `${source}::${e.name}`;
+      if (seenExcluded.has(dedupe)) continue;
+      seenExcluded.add(dedupe);
+      excluded.push({ name: e.name, source, reason: e.reason, ...(e.partOf ? { partOf: e.partOf } : {}) });
+    }
   }
-  const excluded: DiscoveredExcludedEntry[] = doc.excluded.map((e) => ({
-    name: e.name,
-    source: e.source ?? fileSource,
-    reason: e.reason,
-    ...(e.partOf ? { partOf: e.partOf } : {}),
-  }));
   return { schema_version: 1, generatedAt: opts.generatedAt, pages, excluded };
 }
 
-function codeLabel(code: string | null, name: string): string {
-  return code ? `\`${code}\` — ${name}` : name;
+function codeLabel(code: string | null, name: string, platform?: 'app' | 'web'): string {
+  const base = code ? `\`${code}\` — ${name}` : name;
+  return platform ? `${base} (${platform === 'app' ? 'App' : 'Web'})` : base;
 }
 
 /** Bản người-đọc `screens-discovered.md` — cùng ba mục như bản agent
@@ -253,10 +304,15 @@ function codeLabel(code: string | null, name: string): string {
 export function renderDiscoveredMd(
   doc: DiscoveredDoc,
   title: string,
-  opts: { proposed?: Array<{ key: string; name: string; why?: string }> } = {},
+  opts: {
+    proposed?: Array<{ key: string; name: string; why?: string }>;
+    /** WP screen-flow-platform-split: id các flow nguồn — vắng/1 flow `SCREEN-FLOW` → dòng nguồn như cũ. */
+    flowIds?: string[];
+  } = {},
 ): string {
   const lines: string[] = [`# Phát hiện màn hình — ${title}`, ''];
-  lines.push('_Sinh cùng bước Luồng màn hình (dr-flow) từ `flows/SCREEN-FLOW/screens.json`._', '');
+  const flowIds = opts.flowIds?.length ? opts.flowIds : ['SCREEN-FLOW'];
+  lines.push(`_Sinh cùng bước Luồng màn hình (dr-flow) từ ${flowIds.map((id) => `\`flows/${id}/screens.json\``).join(' + ')}._`, '');
   const multiPage = doc.pages.length > 1;
   if (!multiPage && doc.pages[0]?.source) lines.push(`Nguồn: \`${doc.pages[0].source}\``, '');
 
@@ -266,7 +322,7 @@ export function renderDiscoveredMd(
     if (multiPage) lines.push(`Nguồn: \`${page.source}\``, '');
     for (const s of page.screens) {
       n += 1;
-      lines.push(`${n}. ${codeLabel(s.code, s.name)}`);
+      lines.push(`${n}. ${codeLabel(s.code, s.name, s.platform)}`);
     }
     if (multiPage) lines.push('');
   }

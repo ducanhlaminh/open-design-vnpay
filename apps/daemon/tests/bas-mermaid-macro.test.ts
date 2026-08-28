@@ -6,9 +6,18 @@
 // lấy title + SVG từ createViewer, và HTML thay thế ra Markdown có ảnh + fence
 // ```mermaid + link nguồn.
 import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { test } from 'vitest';
 
-import { findMermaidMacroBlocks, mermaidMacroReplacementHtml } from '../src/bas/bas-client.js';
+import {
+  decodeWwmcMermaidPayload,
+  expandWwmcMermaidMacros,
+  findMermaidMacroBlocks,
+  findWwmcMermaidBlocks,
+  mermaidMacroReplacementHtml,
+} from '../src/bas/bas-client.js';
 import { htmlToMarkdown } from '../src/bas/html-to-markdown.js';
 
 const SVG_ESCAPED =
@@ -111,4 +120,49 @@ test('htmlToMarkdown: đầu ra luôn NFC (Confluence trộn NFC/NFD làm anchor
   const md = htmlToMarkdown(`<p>${nfd}</p>`);
   assert.equal(md, md.normalize('NFC'));
   assert.ok(md.includes('Điểm Đến & Phân Loại'.normalize('NFC')));
+});
+
+// ── wwmc `mermaiddiagram` (nguồn inline trong <script class="wwmc-code">) ──
+// Rút gọn từ body.export_view/view thật của trang 996741925 (NamABank-SME
+// "[URD]Tạo hồ sơ"): mount div + error div ẩn + script JSON bọc `""…""`.
+const WWMC_SRC = 'sequenceDiagram\n  participant KH as Khách hàng (Maker)\n  KH->>SME: 1. Chọn Tạo hồ sơ\n  SME-->>KH: 2. Hiển thị Form';
+const WWMC_PAYLOAD = `\n  ""${WWMC_SRC.replace(/\n/g, '\\n')}""\n`;
+const wwmcBlock = (uuid: string, payload = WWMC_PAYLOAD): string =>
+  `<div id="wwmc-mermaid-${uuid}" class="wwmc-mermaid" style="display: none">\n</div>\n\n` +
+  `<div class="aui-message aui-message-error" id="wwmc-error-${uuid}" style="display: none">\n  <p class="title">\n    <strong id="wwmc-errorTitle-${uuid}">\n</strong>\n  </p>\n  <p id="wwmc-errorText-${uuid}">\n</p>\n</div>\n\n` +
+  `<script class="wwmc-code" data-uuid="${uuid}" type="application/json">${payload}</script>`;
+
+test('decodeWwmcMermaidPayload: `""…""` (export_view) và `//<![CDATA[ … //]]>` (view) → nguồn Mermaid; rỗng/rác → null', () => {
+  assert.equal(decodeWwmcMermaidPayload(WWMC_PAYLOAD), WWMC_SRC);
+  assert.equal(decodeWwmcMermaidPayload(`//<![CDATA[${WWMC_PAYLOAD}\n//]]>\n`), WWMC_SRC);
+  // Bản add-on cũ: nguồn trần không JSON.
+  assert.equal(decodeWwmcMermaidPayload('flowchart TD\n  A-->B'), 'flowchart TD\n  A-->B');
+  assert.equal(decodeWwmcMermaidPayload('   '), null);
+  assert.equal(decodeWwmcMermaidPayload('không phải sơ đồ'), null);
+});
+
+test('findWwmcMermaidBlocks: block gồm cả 2 div ẩn + script, đúng biên; hai macro → hai block; không có → []', () => {
+  const b1 = wwmcBlock('bc73a097');
+  const b2 = wwmcBlock('aaaa1111');
+  const page = `<h2>Sơ đồ</h2><div class="innerCell">${b1}</div><h2>Danh sách APIs</h2><p>x</p>${b2}`;
+  const blocks = findWwmcMermaidBlocks(page);
+  assert.equal(blocks.length, 2);
+  assert.equal(page.slice(blocks[0]!.start, blocks[0]!.end), b1);
+  assert.equal(page.slice(blocks[1]!.start, blocks[1]!.end), b2);
+  assert.equal(blocks[0]!.code, WWMC_SRC);
+  assert.equal(blocks[1]!.uuid, 'aaaa1111');
+  assert.deepEqual(findWwmcMermaidBlocks('<p>không có sơ đồ</p>'), []);
+});
+
+test('expandWwmcMermaidMacros + htmlToMarkdown: mục "Sơ đồ" ra fence ```mermaid + link nguồn, file .mmd được ghi', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'wwmc-'));
+  const page = `<h2>Sơ đồ</h2><div class="innerCell">${wwmcBlock('bc73a097')}</div><h2>Danh sách APIs</h2>`;
+  const html = await expandWwmcMermaidMacros(page, '996741925', dir, '../attachments');
+  assert.ok(!html.includes('wwmc-'), 'không còn dấu vết macro');
+  const md = htmlToMarkdown(html);
+  assert.match(md, /## Sơ đồ[\s\S]*```mermaid\nsequenceDiagram\n {2}participant KH as Khách hàng \(Maker\)[\s\S]*```/);
+  assert.ok(md.includes('../attachments/996741925-so-do-1.mmd'));
+  assert.equal(await fs.readFile(path.join(dir, '996741925-so-do-1.mmd'), 'utf8'), `${WWMC_SRC}\n`);
+  // Không macro → nguyên bản.
+  assert.equal(await expandWwmcMermaidMacros('<p>x</p>', '1', dir, 'a'), '<p>x</p>');
 });

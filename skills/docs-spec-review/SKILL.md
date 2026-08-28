@@ -11,10 +11,12 @@ description: |
   heading-section) against an optional user-supplied set of criteria
   (`criteria/*.md` — rule text + a component list) across five lenses:
   ux-writing, flow, gap, edge-case, component. The measuring stick for the
-  `flow` lens is the SELECTED screen flow (`flows/SCREEN-FLOW/selection.json`,
-  absent = original) summarised by the daemon in
-  `review/_screen-flow-context.json` — the BA's original diagram inside the
-  document is NOT reviewed any more. The `component` lens only runs when the
+  `flow` lens is the SELECTED screen flow of EACH flow folder
+  (`flows/<SCREEN-FLOW-ID>/selection.json`, absent = original; `<SCREEN-FLOW-ID>`
+  = `SCREEN-FLOW`, or `SCREEN-FLOW--app` + `SCREEN-FLOW--web` when the document
+  covers two platforms) summarised by the daemon in
+  `review/_screen-flow-context.json` (`flows[]`) — the BA's original diagram
+  inside the document is NOT reviewed any more. The `component` lens only runs when the
   project has `comp/` (kickoff says so) or `criteria/components.md`.
   Embedded mockups/screenshots are illustrative
   only and must not be opened or used as evidence for flow, gap, edge-case, or
@@ -113,13 +115,19 @@ tài liệu.
   `criteria/` hoàn toàn KHÔNG phải lỗi** — dùng bộ mặc định ngay dưới đây thay
   vì dừng lại.
 - **Luồng màn hình bản ĐÃ CHỌN — ĐỌC ĐẦU TIÊN (file nhỏ):**
-  `review/_screen-flow-context.json` — daemon dựng từ `flows/SCREEN-FLOW/`
-  theo `selection.json` (vắng = `original`): `variant`
-  (`original`|`improved`), `diagram` (file + trang draw.io đang dùng),
-  `screens[]` (key/name/anchorText/cell, màn `provenance: "proposed"` chỉ có
-  ở bản cải thiện), `edges[]` (`key` = `<from>→<to>`, label, fromName/toName),
-  `outcomes[]` (kết cục thành công/lỗi/kết thúc) và `findings[]` (UX-xx của
-  bản cải thiện; original → rỗng). Đây là **thước đo duy nhất** cho nhóm
+  `review/_screen-flow-context.json` — daemon dựng từ từng thư mục
+  `flows/<SCREEN-FLOW-ID>/` theo `selection.json` (vắng = `original`). Shape:
+  `{ generatedAt, flows: [ { id, platform?, variant, selectionSource, diagram,
+  source, screens, edges, outcomes, findings } ] }` — **mảng `flows[]`**: tài
+  liệu một nền tảng → 1 phần tử (`id: "SCREEN-FLOW"`); hai nền tảng → 2 phần
+  tử (`SCREEN-FLOW--app` với `platform: "app"`, `SCREEN-FLOW--web` với
+  `platform: "web"`), đối chiếu từng flow riêng, KHÔNG trộn màn/cạnh giữa
+  App và Web. Mỗi phần tử: `variant` (`original`|`improved`), `diagram` (file
+  + trang draw.io đang dùng), `screens[]` (key/name/anchorText/cell, màn
+  `provenance: "proposed"` chỉ có ở bản cải thiện), `edges[]` (`key` =
+  `<from>→<to>`, label, fromName/toName), `outcomes[]` (kết cục thành
+  công/lỗi/kết thúc) và `findings[]` (UX-xx của bản cải thiện; original →
+  rỗng). Đây là **thước đo duy nhất** cho nhóm
   flow/edge-case (xem Bước 1). Kickoff đã trích sẵn màn/cạnh/kết cục THUỘC
   section của bạn — file này chỉ để tra thêm ngữ cảnh (tên node hai đầu cạnh,
   finding). **File không tồn tại** (dự án chưa chạy dr-flow) → không có thước
@@ -509,12 +517,14 @@ là mảng rỗng, không phải lỗi.
     trang y như một anchor bịa.
   - **`rule_id` nguồn nội bộ `flows/…` có mảnh `#`** — phần trước `#` là file
     CÓ THẬT trong workflow, phần sau là id trong file (web dùng để tô cell trên
-    sơ đồ). Đúng ba dạng:
-    `flows/SCREEN-FLOW/screens.json#<KEY>` (màn — kind `gap`/`edge-case`),
-    `flows/SCREEN-FLOW.flowchart.json#<from>→<to>` (cạnh, mũi tên unicode `→` —
-    kind `flow`),
-    `flows/SCREEN-FLOW/ux-review.json#<UX-id>` (finding bản cải thiện — kind
-    `flow`). `flows/…` chỉ hợp lệ cho kind `flow` / `flow-diagram` / `gap` /
+    sơ đồ). Đúng ba dạng, với `<SCREEN-FLOW-ID>` = id của flow trong
+    `_screen-flow-context.json.flows[]` (`SCREEN-FLOW`, `SCREEN-FLOW--app`
+    hoặc `SCREEN-FLOW--web` — lấy đúng flow chứa màn/cạnh, kickoff đã ghi):
+    `flows/<SCREEN-FLOW-ID>/screens.json#<KEY>` (màn — kind `gap`/`edge-case`),
+    `flows/<SCREEN-FLOW-ID>.flowchart.json#<from>→<to>` (cạnh, mũi tên unicode
+    `→` — kind `flow`),
+    `flows/<SCREEN-FLOW-ID>/ux-review.json#<UX-id>` (finding bản cải thiện —
+    kind `flow`). `flows/…` chỉ hợp lệ cho kind `flow` / `flow-diagram` / `gap` /
     `edge-case`; dùng cho `ux-writing`/`component` là lỗi cứng. `UX-id` không
     có trong ux-review chỉ bị cảnh báo, nhưng KEY/edgeKey phải lấy đúng từ
     kickoff/context — không bịa.

@@ -117,10 +117,14 @@ export async function persistScreenDiscovery(opts: PersistScreenDiscoveryOptions
     });
   }
   // screen-variants WP-V2: nhóm biến thể trước khi ghi manifest — đây là nơi
-  // kiểm kê nên nhóm phải hiện ngay từ đây.
-  const grouping = applyScreenGrouping(mergedScreens);
-  const suggestions = grouping.suggestions.map((g) => `${g.a.name} ↔ ${g.b.name}`);
-  const manifest = buildScreensManifest(grouping.changed ? grouping.screens : mergedScreens);
+  // kiểm kê nên nhóm phải hiện ngay từ đây. WP screen-flow-platform-split:
+  // khi AGENT đã quyết `platform` (screens.json v2 của flow tách) thì KHÔNG
+  // chạy autoGroupScreens đè lên — groupKey chỉ suy từ hậu tố `--app/--web`
+  // (đã gắn sẵn ở lớp discovery).
+  const agentDecided = accepted.some((a) => a.platform != null);
+  const grouping = agentDecided ? null : applyScreenGrouping(mergedScreens);
+  const suggestions = grouping ? grouping.suggestions.map((g) => `${g.a.name} ↔ ${g.b.name}`) : [];
+  const manifest = buildScreensManifest(grouping?.changed ? grouping.screens : mergedScreens);
   await fs.mkdir(path.join(cwd, 'comp'), { recursive: true });
   await fs.writeFile(path.join(cwd, SCREENS_MANIFEST_FILE), JSON.stringify(manifest, null, 2), 'utf8');
 

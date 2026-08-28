@@ -9,7 +9,12 @@ description: |
   transition, backend processing collapsed into dashed system nodes. Outputs a
   bare mxCell fragment (`flows/SCREEN-FLOW/screen-flow.cells.xml`) plus
   `screens.json` v2 — the AUTHORITATIVE list of the feature's real screens
-  (key/code/name/anchorText/cell, in-screen `blocks[]`, `excluded[]`), which
+  (key/code/name/anchorText/cell/platform, in-screen `blocks[]`, `excluded[]`).
+  Since 2026-08-28 a document that describes screens for TWO platforms
+  (mobile app + web, e.g. MB + IB/BO) yields TWO self-contained flows
+  `flows/SCREEN-FLOW--app/` + `flows/SCREEN-FLOW--web/` (no `flows/SCREEN-FLOW/`);
+  the agent decides each screen's `platform` (`app` | `web`) from how the
+  document is written. The screen list
   since 2026-08-27 ABSORBS the former "Phát hiện màn hình" (dr-screens)
   stage; the daemon wraps, validates and derives everything downstream
   (`as-is.drawio`, `flowchart.json`, `index.json`, `screens-discovered.json`,
@@ -64,7 +69,49 @@ KHÔNG đánh giá UX, KHÔNG sửa sơ đồ gốc, KHÔNG viết `patch.json`/
 - Không bịa màn/bước tài liệu không mô tả; điểm mơ hồ ghi vào `note` của
   `screens.json`.
 
-## Output 1 — `flows/SCREEN-FLOW/screen-flow.cells.xml`
+## Nền tảng (App / Web) — quyết định TRƯỚC khi viết output
+
+Nền tảng chỉ có **hai giá trị: `app` | `web`**. **Bạn quyết định** màn thuộc
+nền tảng nào **từ cách tài liệu viết**. Gợi ý (chỉ là hint, vẫn bạn quyết):
+- **MB / Mobile Banking / App / ứng dụng di động → `app`.**
+- **IB = Internet Banking = chạy trên TRÌNH DUYỆT → thông thường là `web`**
+  (KHÔNG xếp IB vào `app` chỉ vì cùng ngân hàng/cùng tên màn với MB).
+- **BO / back-office / CMS / portal / web admin → thường `web`.**
+MB/IB/BO/CMS/portal chỉ là GỢI Ý ngữ cảnh — không có tool/luật heading nào gán
+hộ; daemon CHỈ kiểm giá trị và sự khớp với thư mục. BO tính vào `web` hay `app`
+tuỳ tài liệu — bạn quyết.
+
+Ví dụ cụ thể: tài liệu có mục "2.2 Màn hình MB" và "2.3 Màn hình IB", cả hai
+đều mô tả màn "Quản lý yêu cầu của tôi" (ảnh khác nhau) → đó là HAI biến thể
+của một màn nghiệp vụ ở hai nền tảng:
+`flows/SCREEN-FLOW--app/screens.json` có entry `…__X2--app` (`platform: "app"`,
+anchor = dòng trong mục 2.2, `cell` = node trong flow app) và
+`flows/SCREEN-FLOW--web/screens.json` có entry `…__X2--web` (`platform: "web"`,
+anchor = dòng trong mục 2.3, `cell` = node trong flow web), **cùng `code`**
+(ở đây cùng `null` → cùng số `X2`). Màn chỉ có ở một nền tảng (vd BO) → key
+KHÔNG hậu tố.
+
+**Đánh số `X<n>` KHÔNG được trùng giữa hai flow**: `code: null` → bạn đánh
+`X<n>` LIÊN TỤC xuyên cả hai flow (app `X1..X18` thì web bắt đầu từ `X19`),
+trừ cặp biến thể dùng chung số kèm hậu tố `--app`/`--web`. Daemon sẽ tự đánh
+lại nếu phát hiện trùng số giữa hai flow, nhưng **biến thể cùng màn thì bạn
+PHẢI đặt hậu tố** — hai entry trùng key mà không hậu tố (hoặc có `code` thật
+trùng nhau) là lỗi chặn.
+
+- Tài liệu **một nền tảng** → đúng một thư mục `flows/SCREEN-FLOW/` như trước
+  (`platform` có thể bỏ trống; nếu ghi thì MỌI màn cùng một giá trị).
+- Tài liệu **≥ 2 nền tảng** → viết **hai bộ tự đủ**:
+  `flows/SCREEN-FLOW--app/` + `flows/SCREEN-FLOW--web/`, MỖI thư mục có
+  `screen-flow.cells.xml` + `screens.json` **chỉ chứa màn của nền tảng đó**,
+  MỌI màn có `platform` khớp thư mục (`--app` ↔ `"app"`, `--web` ↔ `"web"`).
+  **KHÔNG tạo `flows/SCREEN-FLOW/`** khi đã tách — daemon chặn `SCREEN_FLOW_MIXED`.
+  Mỗi flow có luồng riêng, node Bắt đầu/kết cục riêng, id cell không trùng
+  giữa hai file (tiền tố `od-app-…` / `od-web-…` cho dễ soát).
+
+Bên dưới, mọi chỗ ghi `flows/SCREEN-FLOW/` hiểu là `flows/<SCREEN-FLOW-ID>/`
+(`SCREEN-FLOW`, `SCREEN-FLOW--app` hoặc `SCREEN-FLOW--web`).
+
+## Output 1 — `flows/<SCREEN-FLOW-ID>/screen-flow.cells.xml`
 
 Fragment **mxCell TRẦN** (conventions theo next-ai-draw-io, Apache-2.0):
 KHÔNG tự bọc `<mxfile>`/`<mxGraphModel>`/`<root>` — daemon bọc, validate rồi
@@ -148,7 +195,7 @@ legend là chủ ý. Chỉ thay `X`/`Y` (cộng offset như ghi), KHÔNG đổi 
 <mxCell id="od-legend-t4" value="Thất bại / lỗi" style="text;html=1;align=left;verticalAlign=middle;fontSize=11;" vertex="1" parent="1"><mxGeometry x="X+84" y="Y+399" width="160" height="24" as="geometry"/></mxCell>
 ```
 
-## Output 2 — `flows/SCREEN-FLOW/screens.json` (v2: luồng + DANH SÁCH MÀN)
+## Output 2 — `flows/<SCREEN-FLOW-ID>/screens.json` (v2: luồng + DANH SÁCH MÀN)
 
 Bạn là lượt DUY NHẤT đọc tài liệu để trả lời "heading nào là màn" — bước
 "Phát hiện màn hình" (dr-screens) đã GỘP vào đây. `screens[]` là nguồn có
@@ -167,6 +214,7 @@ thẩm quyền; daemon tự dẫn xuất `cells`/`names` cho viewer và sinh
       "name": "Nhập thông tin",
       "anchorText": "#### 6.4.1 Nhập thông tin",
       "cell": "od-6-4-1",
+      "platform": "app",
       "why": "Màn checkout sau khi chọn gói, có nhánh eSIM/SIM vật lý.",
       "blocks": [
         { "name": "Mã voucher", "anchorText": "#### 6.4.4. Mã voucher",
@@ -206,6 +254,9 @@ Luật field:
   Node hệ thống/kết cục/bắt đầu → không có entry.
 - `screens[].source` tuỳ chọn (mặc định = `source` cấp file) — dùng khi tài
   liệu nhiều trang. `why` tuỳ chọn, một câu khi ranh giới không hiển nhiên.
+- `platform` = `"app"` | `"web"` — **BẮT BUỘC** với mọi màn khi tài liệu có
+  ≥ 2 nền tảng (và phải khớp thư mục flow); tài liệu một nền tảng có thể bỏ.
+  Giá trị khác (`"ib"`, `"mobile"`, `"bo"`…) → daemon chặn.
 
 ### Ba loại mục trong tài liệu
 
@@ -233,10 +284,16 @@ chắc chắn đang tách nhầm khối con thành màn.
 
 ### Nhóm biến thể nền tảng
 
-Cùng một màn nghiệp vụ khai lặp ở mục MB/IB/BO khác nhau → HAI entry, KHÔNG
-gộp: anchor riêng, `code` thêm hậu tố `-APP`/`-WEB` (`code` null → thêm vào
-cuối `name`); entry chính giữ `cell`, entry còn lại `cell: null`. Daemon tự
-gợi ý nhóm. Không bịa màn/nhóm tài liệu không khai.
+Cùng một màn nghiệp vụ khai ở CẢ hai nền tảng (vd mục MB và mục IB cùng tên
+"Quản lý yêu cầu", ảnh khác) → **HAI entry ở HAI flow**, KHÔNG gộp:
+- `key` cùng stem + **hậu tố `--app` / `--web`** (`<file-stem>__<code>--app`
+  trong `SCREEN-FLOW--app/screens.json`, `<file-stem>__<code>--web` trong
+  `SCREEN-FLOW--web/screens.json`), **cùng `code`** (null → cùng `X<n>`);
+- mỗi entry có `anchorText` riêng (dòng của mục MB / mục IB), `platform`
+  khớp flow, và **`cell` riêng trong flow của nó** (mỗi flow vẽ node của mình);
+- daemon suy `groupKey` từ cặp hậu tố — KHÔNG tự nhóm theo tên. Màn chỉ có ở
+  một nền tảng (BO không có bản app…) → key KHÔNG hậu tố.
+Không bịa màn/nhóm tài liệu không khai.
 
 ## Tự soát trước khi xong
 
@@ -247,6 +304,11 @@ gợi ý nhóm. Không bịa màn/nhóm tài liệu không khai.
 3. Không node đè nhau (soát toạ độ theo bảng 200×60 + khoảng cách ≥ 60).
 4. Mọi `cell` có thật trong XML; không hai màn cùng `cell`; `key` đúng luật
    prefix; mọi `anchorText` chép nguyên văn một dòng DUY NHẤT trong trang.
+4b. Nền tảng: đếm màn **theo từng flow** (số node màn của `SCREEN-FLOW--app`
+   = số entry có `cell` trong `SCREEN-FLOW--app/screens.json`, tương tự
+   `--web`); tài liệu ≥ 2 nền tảng → không màn nào thiếu `platform`, không
+   màn nào nằm sai thư mục, KHÔNG có `flows/SCREEN-FLOW/`; cặp biến thể có
+   đúng hậu tố `--app`/`--web` và cùng `code`.
 5. Có khối chú thích `od-legend-*` đúng template, đặt cột phải, không đè node
    thật.
 6. KHÔNG ghi: `cells`/`names`, `screens-discovered.*`, `comp/`, `patch.json`,

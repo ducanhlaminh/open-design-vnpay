@@ -1,0 +1,337 @@
+{
+  "$schema_note": "Tầng 1 (viết tay) — topic web cho ~/layout-kb (manifest schema_version 2). build.mjs merge vào manifest: platform \"web\", count = templates.length, samples []. Sketch 12 dòng × 40 cột (khung shell: sidenav 8 cột trái). Band vocab: topbar sidenav breadcrumb filterbar table pagination kpi-cards chart tabs kv form-2col form actions modal header-nav hero cards-3 footer stepper summary.",
+  "license": "hand-authored (open-design-vnpay)",
+  "topics": {
+    "web-table": {
+      "platform": "web",
+      "templates": [
+        {
+          "id": "web-table-shell-filterbar-table-pagination",
+          "bands": [
+            "topbar",
+            "sidenav",
+            "breadcrumb",
+            "actions",
+            "filterbar",
+            "table",
+            "pagination"
+          ],
+          "sketch": "┌────────┬─────────────────────────────┐\n│ ≡ BO   │ Topbar        ⌕   ◔  ▢ user │\n│────────│Home › Đơn hàng   [+ Tạo mới]│\n│ ▸ Tổng │ [Tìm…] [Trạng thái▾] [Ngày▾]│\n│ ▸ Đơn  │ ┌──┬───────┬──────┬───────┐ │\n│ ▸ Khách│ │▢ │ Mã    │ Tên  │ TT    │ │\n│ ▸ Báo  │ ├──┼───────┼──────┼───────┤ │\n│ ▸ Cài  │ │▢ │ ───── │ ──── │ ● ··· │ │\n│        │ │▢ │ ───── │ ──── │ ● ··· │ │\n│        │ └──┴───────┴──────┴───────┘ │\n│ ▢ Admin│                    ‹ 1 2 3 ›│\n└────────┴─────────────────────────────┘"
+        },
+        {
+          "id": "web-table-shell-tabs-table-pagination",
+          "bands": [
+            "topbar",
+            "sidenav",
+            "breadcrumb",
+            "tabs",
+            "table",
+            "pagination"
+          ],
+          "sketch": "┌────────┬─────────────────────────────┐\n│ ≡ BO   │ Topbar        ⌕   ◔  ▢ user │\n│────────│ Home › Giao dịch            │\n│ ▸ Tổng │ [Tất cả] Chờ duyệt  Đã duyệt│\n│ ▸ Đơn  │ ─────────────────────────── │\n│ ▸ Khách│ ┌────┬────────┬──────┬────┐ │\n│ ▸ Báo  │ │ Mã │ Ngày   │ Tiền │ TT │ │\n│ ▸ Cài  │ │ ── │ ────── │ ──── │ ●  │ │\n│        │ │ ── │ ────── │ ──── │ ●  │ │\n│        │ └────┴────────┴──────┴────┘ │\n│ ▢ Admin│                      ‹ 1 2 ›│\n└────────┴─────────────────────────────┘"
+        },
+        {
+          "id": "web-table-shell-kpi-filterbar-table",
+          "bands": [
+            "topbar",
+            "sidenav",
+            "kpi-cards",
+            "filterbar",
+            "table",
+            "pagination"
+          ],
+          "sketch": "┌────────┬─────────────────────────────┐\n│ ≡ BO   │ Topbar        ⌕   ◔  ▢ user │\n│────────│ ┌──────┐ ┌──────┐ ┌──────┐  │\n│ ▸ Tổng │ │ 1.2k │ │ 98%  │ │ 34   │  │\n│ ▸ Đơn  │ └──────┘ └──────┘ └──────┘  │\n│ ▸ Khách│ [Tìm…] [Loại▾] [Từ] [Đến]   │\n│ ▸ Báo  │ ┌────┬────────┬──────┬────┐ │\n│ ▸ Cài  │ │ Mã │ Tên    │ Tiền │ ⋮  │ │\n│        │ │ ── │ ────── │ ──── │ ⋮  │ │\n│        │ └────┴────────┴──────┴────┘ │\n│ ▢ Admin│                      ‹ 1 2 ›│\n└────────┴─────────────────────────────┘"
+        },
+        {
+          "id": "web-table-portal-filterbar-table-pagination",
+          "bands": [
+            "header-nav",
+            "breadcrumb",
+            "filterbar",
+            "table",
+            "pagination",
+            "footer"
+          ],
+          "sketch": "┌──────────────────────────────────────┐\n│◆ Logo Trang chủ  Dịch vụ  Hỗ trợ ▢ TK│\n│Trang chủ › Lịch sử giao dịch         │\n│[Tìm…] [Trạng thái▾] [Từ ngày] [Đến]  │\n│┌──────┬────────────┬─────────┬──────┐│\n││ Ngày │ Nội dung   │ Số tiền │ TT   ││\n│├──────┼────────────┼─────────┼──────┤│\n││ ──── │ ────────── │ ─────── │ ●    ││\n││ ──── │ ────────── │ ─────── │ ●    ││\n│└──────┴────────────┴─────────┴──────┘│\n│                 ‹ 1 2 3 ›     Footer │\n└──────────────────────────────────────┘"
+        }
+      ]
+    },
+    "web-detail": {
+      "platform": "web",
+      "templates": [
+        {
+          "id": "web-detail-shell-header-tabs-kv-actions",
+          "bands": [
+            "topbar",
+            "sidenav",
+            "breadcrumb",
+            "actions",
+            "tabs",
+            "kv"
+          ],
+          "sketch": "┌────────┬─────────────────────────────┐\n│ ≡ BO   │ Topbar        ⌕   ◔  ▢ user │\n│────────│ Home › Đơn hàng › #1023     │\n│ ▸ Tổng │ Đơn #1023 ● Xử lý [Sửa][Huỷ]│\n│ ▸ Đơn  │ [Thông tin] Lịch sử  Ghi chú│\n│ ▸ Khách│ ─────────────────────────── │\n│ ▸ Báo  │ Khách hàng   : ───────────  │\n│ ▸ Cài  │ Số điện thoại: ───────────  │\n│        │ Ngày tạo     : ───────────  │\n│        │ Tổng tiền    : ───────────  │\n│ ▢ Admin│                             │\n└────────┴─────────────────────────────┘"
+        },
+        {
+          "id": "web-detail-shell-kv-table",
+          "bands": [
+            "topbar",
+            "sidenav",
+            "breadcrumb",
+            "kv",
+            "table"
+          ],
+          "sketch": "┌────────┬─────────────────────────────┐\n│ ≡ BO   │ Topbar        ⌕   ◔  ▢ user │\n│────────│ Home › Khách hàng › Nguyễn A│\n│ ▸ Tổng │ Tên     : ───────  Mã: ──── │\n│ ▸ Đơn  │ Email   : ───────  TT: ●    │\n│ ▸ Khách│ Địa chỉ : ───────────────── │\n│ ▸ Báo  │ Giao dịch gần đây           │\n│ ▸ Cài  │ ┌────┬────────┬──────┬────┐ │\n│        │ │ Mã │ Ngày   │ Tiền │ TT │ │\n│        │ │ ── │ ────── │ ──── │ ●  │ │\n│ ▢ Admin│ └────┴────────┴──────┴────┘ │\n└────────┴─────────────────────────────┘"
+        },
+        {
+          "id": "web-detail-portal-two-col-summary",
+          "bands": [
+            "header-nav",
+            "breadcrumb",
+            "kv",
+            "summary",
+            "footer"
+          ],
+          "sketch": "┌──────────────────────────────────────┐\n│◆ Logo Trang chủ  Dịch vụ  Hỗ trợ ▢ TK│\n│Trang chủ › Gói cước › Gói 5G 1 tháng │\n│┌──────────────────────┐ ┌───────────┐│\n││ ▢▢▢ Gói 5G 1 tháng   │ │ Tóm tắt   ││\n││ Dung lượng : ──────  │ │ Giá  ──── ││\n││ Thời hạn   : ──────  │ │ KM   ──── ││\n││ Điều kiện  : ──────  │ │ ───────── ││\n││ ─────────────────────│ │ [Mua ngay]││\n│└──────────────────────┘ └───────────┘│\n│Footer  Điều khoản · Liên hệ          │\n└──────────────────────────────────────┘"
+        },
+        {
+          "id": "web-detail-portal-result-center",
+          "bands": [
+            "header-nav",
+            "hero",
+            "kv",
+            "actions",
+            "footer"
+          ],
+          "sketch": "┌──────────────────────────────────────┐\n│◆ Logo Trang chủ  Dịch vụ  Hỗ trợ ▢ TK│\n│                                      │\n│             ┌──────────┐             │\n│             │    ✓     │             │\n│             └──────────┘             │\n│         Giao dịch thành công         │\n│    Mã GD : ─────────   Số tiền: ──── │\n│    Thời gian: ────────  Người nhận ──│\n│       [Về trang chủ]  [Xem chi tiết] │\n│Footer  Điều khoản · Liên hệ          │\n└──────────────────────────────────────┘"
+        }
+      ]
+    },
+    "web-form": {
+      "platform": "web",
+      "templates": [
+        {
+          "id": "web-form-shell-form-2col-actions",
+          "bands": [
+            "topbar",
+            "sidenav",
+            "breadcrumb",
+            "form-2col",
+            "actions"
+          ],
+          "sketch": "┌────────┬─────────────────────────────┐\n│ ≡ BO   │ Topbar        ⌕   ◔  ▢ user │\n│────────│ Home › Khách hàng › Tạo mới │\n│ ▸ Tổng │ Họ tên      Số điện thoại   │\n│ ▸ Đơn  │ [_________] [_________]     │\n│ ▸ Khách│ Email       Loại KH         │\n│ ▸ Báo  │ [_________] [_________▾]    │\n│ ▸ Cài  │ Địa chỉ                     │\n│        │ [_____________________]     │\n│        │ ─────────────────────────── │\n│ ▢ Admin│            [Huỷ]  [Lưu]     │\n└────────┴─────────────────────────────┘"
+        },
+        {
+          "id": "web-form-shell-table-modal",
+          "bands": [
+            "topbar",
+            "sidenav",
+            "table",
+            "modal"
+          ],
+          "sketch": "┌────────┬─────────────────────────────┐\n│ ≡ BO   │ Topbar        ⌕   ◔  ▢ user │\n│────────│ ░░░░░░░░░░░░░░░░░░░░░░░░░░░ │\n│ ▸ Tổng │ ░░┌───────────────────┐░░░░ │\n│ ▸ Đơn  │ ░░│ Thêm người dùng  ×│░░░░ │\n│ ▸ Khách│ ░░│ Tên  [_________]  │░░░░ │\n│ ▸ Báo  │ ░░│ Vai  [_______▾]   │░░░░ │\n│ ▸ Cài  │ ░░│ Email[_________]  │░░░░ │\n│        │ ░░│      [Huỷ] [Lưu]  │░░░░ │\n│        │ ░░└───────────────────┘░░░░ │\n│ ▢ Admin│ ░░░░░░░░░░░░░░░░░░░░░░░░░░░ │\n└────────┴─────────────────────────────┘"
+        },
+        {
+          "id": "web-form-portal-form-summary",
+          "bands": [
+            "header-nav",
+            "breadcrumb",
+            "form",
+            "summary",
+            "actions",
+            "footer"
+          ],
+          "sketch": "┌──────────────────────────────────────┐\n│◆ Logo Trang chủ  Dịch vụ  Hỗ trợ ▢ TK│\n│Trang chủ › Nạp tiền                  │\n│┌──────────────────────┐ ┌───────────┐│\n││ Số điện thoại        │ │ Tóm tắt   ││\n││ [________________]   │ │ Gói  ──── ││\n││ Mệnh giá             │ │ Phí  ──── ││\n││ (●) 50k ( ) 100k     │ │ ───────── ││\n││ Nguồn tiền [______▾] │ │ Tổng ──── ││\n│└──────────────────────┘ │[Thanh toán││\n│Footer                   └───────────┘│\n└──────────────────────────────────────┘"
+        }
+      ]
+    },
+    "web-dashboard": {
+      "platform": "web",
+      "templates": [
+        {
+          "id": "web-dashboard-shell-kpi-chart-table",
+          "bands": [
+            "topbar",
+            "sidenav",
+            "kpi-cards",
+            "chart",
+            "table"
+          ],
+          "sketch": "┌────────┬─────────────────────────────┐\n│ ≡ BO   │ Topbar        ⌕   ◔  ▢ user │\n│────────│ Tổng quan         [Hôm nay▾]│\n│ ▸ Tổng │┌─────┐ ┌─────┐ ┌─────┐ ┌───┐│\n│ ▸ Đơn  ││ 12k │ │ 98% │ │ 3.4 │ │ 7 ││\n│ ▸ Khách│└─────┘ └─────┘ └─────┘ └───┘│\n│ ▸ Báo  │┌───────────────────────────┐│\n│ ▸ Cài  ││ ▁▂▃▅▆▇ Doanh thu 7 ngày   ││\n│        │└───────────────────────────┘│\n│        │ ┌────┬───────────┬─────┬───┐│\n│ ▢ Admin│ │ ── │ ───────── │ ─── │ ● ││\n└────────┴─────────────────────────────┘"
+        },
+        {
+          "id": "web-dashboard-shell-filterbar-kpi-two-charts",
+          "bands": [
+            "topbar",
+            "sidenav",
+            "filterbar",
+            "kpi-cards",
+            "chart",
+            "chart"
+          ],
+          "sketch": "┌────────┬─────────────────────────────┐\n│ ≡ BO   │ Topbar        ⌕   ◔  ▢ user │\n│────────│ [Chi nhánh▾] [Từ] [Đến][Lọc]│\n│ ▸ Tổng │┌─────┐ ┌─────┐ ┌─────┐ ┌───┐│\n│ ▸ Đơn  ││ 12k │ │ 98% │ │ 3.4 │ │ 7 ││\n│ ▸ Khách│└─────┘ └─────┘ └─────┘ └───┘│\n│ ▸ Báo  │┌────────────┐ ┌────────────┐│\n│ ▸ Cài  ││ ▁▃▅▇ Theo  │ │  ◔ Tỷ lệ   ││\n│        ││ ngày       │ │  theo loại ││\n│        ││            │ │            ││\n│ ▢ Admin│└────────────┘ └────────────┘│\n└────────┴─────────────────────────────┘"
+        },
+        {
+          "id": "web-dashboard-portal-hero-cards",
+          "bands": [
+            "header-nav",
+            "hero",
+            "cards-3",
+            "footer"
+          ],
+          "sketch": "┌──────────────────────────────────────┐\n│◆ Logo Trang chủ  Dịch vụ  Hỗ trợ ▢ TK│\n│┌────────────────────────────────────┐│\n││ Xin chào, Nguyễn A   Số dư: ─────  ││\n││ [Nạp tiền] [Chuyển] [Thanh toán]   ││\n│└────────────────────────────────────┘│\n│┌──────────┐ ┌──────────┐ ┌──────────┐│\n││ ▢ Ví     │ │ ▢ Thẻ    │ │ ▢ Ưu đãi ││\n││ ──────   │ │ ──────   │ │ ──────   ││\n│└──────────┘ └──────────┘ └──────────┘│\n│Footer  Điều khoản · Liên hệ          │\n└──────────────────────────────────────┘"
+        }
+      ]
+    },
+    "web-settings": {
+      "platform": "web",
+      "templates": [
+        {
+          "id": "web-settings-shell-subnav-form-actions",
+          "bands": [
+            "topbar",
+            "sidenav",
+            "breadcrumb",
+            "tabs",
+            "form",
+            "actions"
+          ],
+          "sketch": "┌────────┬─────────────────────────────┐\n│ ≡ BO   │ Topbar        ⌕   ◔  ▢ user │\n│────────│ Home › Cài đặt              │\n│ ▸ Tổng │ ┌────────┐ Thông tin chung  │\n│ ▸ Đơn  │ │▸Chung  │ Tên hệ thống     │\n│ ▸ Khách│ │ Bảo mật│ [____________]   │\n│ ▸ Báo  │ │ Thông  │ Múi giờ          │\n│ ▸ Cài  │ │  báo   │ [__________▾]    │\n│        │ │ Tích   │ Ngôn ngữ         │\n│        │ │  hợp   │ [__________▾]    │\n│ ▢ Admin│ └────────┘      [Huỷ] [Lưu] │\n└────────┴─────────────────────────────┘"
+        },
+        {
+          "id": "web-settings-shell-kv-toggles",
+          "bands": [
+            "topbar",
+            "sidenav",
+            "breadcrumb",
+            "kv",
+            "actions"
+          ],
+          "sketch": "┌────────┬─────────────────────────────┐\n│ ≡ BO   │ Topbar        ⌕   ◔  ▢ user │\n│────────│ Home › Cài đặt › Thông báo  │\n│ ▸ Tổng │ Thông báo                   │\n│ ▸ Đơn  │ ─────────────────────────── │\n│ ▸ Khách│ Email giao dịch     [●─ ]   │\n│ ▸ Báo  │ SMS xác thực        [●─ ]   │\n│ ▸ Cài  │ Thông báo đẩy       [ ─●]   │\n│        │ Báo cáo hàng tuần   [ ─●]   │\n│        │ ─────────────────────────── │\n│ ▢ Admin│                     [Lưu]   │\n└────────┴─────────────────────────────┘"
+        },
+        {
+          "id": "web-settings-portal-profile-form",
+          "bands": [
+            "header-nav",
+            "breadcrumb",
+            "form",
+            "actions",
+            "footer"
+          ],
+          "sketch": "┌──────────────────────────────────────┐\n│◆ Logo Trang chủ  Dịch vụ  Hỗ trợ ▢ TK│\n│Trang chủ › Tài khoản › Hồ sơ         │\n│┌────────┐ ┌─────────────────────────┐│\n││▸Hồ sơ  │ │ Họ tên   [____________] ││\n││ Bảo mật│ │ Email    [____________] ││\n││ Thông  │ │ SĐT      [____________] ││\n││  báo   │ │ Ngày sinh[_________ ▾]  ││\n││ Liên   │ │                         ││\n││  kết   │ │         [Huỷ] [Cập nhật]││\n│└────────┘ └─────────────────────────┘│\n└──────────────────────────────────────┘"
+        }
+      ]
+    },
+    "web-auth": {
+      "platform": "web",
+      "templates": [
+        {
+          "id": "web-auth-split-hero-form",
+          "bands": [
+            "hero",
+            "form",
+            "actions"
+          ],
+          "sketch": "┌──────────────────────────────────────┐\n│┌─────────────────┐ ┌────────────────┐│\n││                 │ │ ◆ Logo         ││\n││   ░░░░░░░░░░░   │ │ Đăng nhập      ││\n││   ░ Ảnh/KV ░    │ │ Tài khoản      ││\n││   ░░░░░░░░░░░   │ │ [____________] ││\n││                 │ │ Mật khẩu       ││\n││  Thông điệp     │ │ [____________] ││\n││  thương hiệu    │ │ [ Đăng nhập ]  ││\n││                 │ │ Quên mật khẩu? ││\n│└─────────────────┘ └────────────────┘│\n└──────────────────────────────────────┘"
+        },
+        {
+          "id": "web-auth-center-card",
+          "bands": [
+            "header-nav",
+            "form",
+            "actions",
+            "footer"
+          ],
+          "sketch": "┌──────────────────────────────────────┐\n│◆ Logo                        Trợ giúp│\n│                                      │\n│        ┌──────────────────────┐      │\n│        │ Đăng nhập            │      │\n│        │ Tài khoản            │      │\n│        │ [________________]   │      │\n│        │ Mật khẩu             │      │\n│        │ [________________]   │      │\n│        │ [   Đăng nhập    ]   │      │\n│       └──────────────────────┘ Footer│\n└──────────────────────────────────────┘"
+        },
+        {
+          "id": "web-auth-stepper-otp",
+          "bands": [
+            "header-nav",
+            "stepper",
+            "form",
+            "actions"
+          ],
+          "sketch": "┌──────────────────────────────────────┐\n│◆ Logo                        Trợ giúp│\n│  (1) Tài khoản ── (2) OTP ── (3) Xong│\n│                                      │\n│        ┌──────────────────────┐      │\n│        │ Nhập mã OTP          │      │\n│        │ Đã gửi tới ****1234  │      │\n│        │ [_] [_] [_] [_] [_]  │      │\n│        │ Gửi lại (59s)        │      │\n│        │ [    Xác nhận    ]   │      │\n│        └──────────────────────┘      │\n└──────────────────────────────────────┘"
+        }
+      ]
+    },
+    "web-list": {
+      "platform": "web",
+      "templates": [
+        {
+          "id": "web-list-portal-hero-filterbar-cards",
+          "bands": [
+            "header-nav",
+            "hero",
+            "filterbar",
+            "cards-3",
+            "pagination",
+            "footer"
+          ],
+          "sketch": "┌──────────────────────────────────────┐\n│◆ Logo Trang chủ  Dịch vụ  Hỗ trợ ▢ TK│\n│┌────────────────────────────────────┐│\n││ Ưu đãi tháng này        [Tìm…   ⌕] ││\n│└────────────────────────────────────┘│\n│[Tất cả▾] [Danh mục▾] [Sắp xếp▾]      │\n│┌──────────┐ ┌──────────┐ ┌──────────┐│\n││ ▢▢▢▢▢▢▢▢ │ │ ▢▢▢▢▢▢▢▢ │ │ ▢▢▢▢▢▢▢▢ ││\n││ ──────   │ │ ──────   │ │ ──────   ││\n│└──────────┘ └──────────┘ └──────────┘│\n│              ‹ 1 2 3 ›         Footer│\n└──────────────────────────────────────┘"
+        },
+        {
+          "id": "web-list-portal-tabs-cards",
+          "bands": [
+            "header-nav",
+            "tabs",
+            "cards-3",
+            "pagination",
+            "footer"
+          ],
+          "sketch": "┌──────────────────────────────────────┐\n│◆ Logo Trang chủ  Dịch vụ  Hỗ trợ ▢ TK│\n│[Tất cả]  Điện thoại  Internet  Khác  │\n│──────────────────────────────────────│\n│┌──────────┐ ┌──────────┐ ┌──────────┐│\n││ ▢▢▢▢▢▢▢▢ │ │ ▢▢▢▢▢▢▢▢ │ │ ▢▢▢▢▢▢▢▢ ││\n││ ──────   │ │ ──────   │ │ ──────   ││\n│├──────────┤ ├──────────┤ ├──────────┤│\n││ ▢▢▢▢▢▢▢▢ │ │ ▢▢▢▢▢▢▢▢ │ │ ▢▢▢▢▢▢▢▢ ││\n│└──────────┘ └──────────┘ └──────────┘│\n│              ‹ 1 2 3 ›         Footer│\n└──────────────────────────────────────┘"
+        },
+        {
+          "id": "web-list-shell-filterbar-cards",
+          "bands": [
+            "topbar",
+            "sidenav",
+            "filterbar",
+            "cards-3",
+            "pagination"
+          ],
+          "sketch": "┌────────┬─────────────────────────────┐\n│ ≡ BO   │ Topbar        ⌕   ◔  ▢ user │\n│────────│ Mẫu tin [Tìm…] [Loại▾] [+]  │\n│ ▸ Tổng │┌───────┐ ┌───────┐ ┌───────┐│\n│ ▸ Đơn  ││ ▢▢▢▢▢ │ │ ▢▢▢▢▢ │ │ ▢▢▢▢▢ ││\n│ ▸ Khách││ ────  │ │ ────  │ │ ────  ││\n│ ▸ Báo  │└───────┘ └───────┘ └───────┘│\n│ ▸ Cài  │┌───────┐ ┌───────┐ ┌───────┐│\n│        ││ ▢▢▢▢▢ │ │ ▢▢▢▢▢ │ │ ▢▢▢▢▢ ││\n│        │└───────┘ └───────┘ └───────┘│\n│ ▢ Admin│                   ‹ 1 2 3 › │\n└────────┴─────────────────────────────┘"
+        }
+      ]
+    },
+    "web-wizard": {
+      "platform": "web",
+      "templates": [
+        {
+          "id": "web-wizard-shell-stepper-form-2col-actions",
+          "bands": [
+            "topbar",
+            "sidenav",
+            "breadcrumb",
+            "stepper",
+            "form-2col",
+            "actions"
+          ],
+          "sketch": "┌────────┬─────────────────────────────┐\n│ ≡ BO   │ Topbar        ⌕   ◔  ▢ user │\n│────────│ Home › Mở tài khoản         │\n│ ▸ Tổng │ (1)Thông tin─(2)Giấy tờ─(3) │\n│ ▸ Đơn  │ Họ tên      Số CCCD         │\n│ ▸ Khách│ [_________] [_________]     │\n│ ▸ Báo  │ Ngày sinh   Giới tính       │\n│ ▸ Cài  │ [_______▾]  (●) Nam ( ) Nữ  │\n│        │ Địa chỉ                     │\n│        │ [_____________________]     │\n│ ▢ Admin│          [Quay lại] [Tiếp]  │\n└────────┴─────────────────────────────┘"
+        },
+        {
+          "id": "web-wizard-portal-stepper-form-summary",
+          "bands": [
+            "header-nav",
+            "stepper",
+            "form",
+            "summary",
+            "actions"
+          ],
+          "sketch": "┌──────────────────────────────────────┐\n│◆ Logo Trang chủ  Dịch vụ  Hỗ trợ ▢ TK│\n│ (1) Chọn gói ─ (2) Thông tin ─ (3) TT│\n│┌──────────────────────┐ ┌───────────┐│\n││ Người nhận           │ │ Tóm tắt   ││\n││ [________________]   │ │ Gói  ──── ││\n││ Số điện thoại        │ │ Phí  ──── ││\n││ [________________]   │ │ ───────── ││\n││ Ghi chú              │ │ Tổng ──── ││\n││ [________________]   │ └───────────┘│\n│└──────────────────────┘  [Lại][Tiếp] │\n└──────────────────────────────────────┘"
+        },
+        {
+          "id": "web-wizard-shell-stepper-review-kv",
+          "bands": [
+            "topbar",
+            "sidenav",
+            "stepper",
+            "kv",
+            "actions"
+          ],
+          "sketch": "┌────────┬─────────────────────────────┐\n│ ≡ BO   │ Topbar        ⌕   ◔  ▢ user │\n│────────│ (1)Ttin─(2)Giấy tờ─(3)X.nhận│\n│ ▸ Tổng │ Xác nhận thông tin          │\n│ ▸ Đơn  │ ─────────────────────────── │\n│ ▸ Khách│ Họ tên      : ───────────   │\n│ ▸ Báo  │ Số CCCD     : ───────────   │\n│ ▸ Cài  │ Ngày sinh   : ───────────   │\n│        │ Địa chỉ     : ───────────   │\n│        │ [✓] Tôi đồng ý điều khoản   │\n│ ▢ Admin│       [Quay lại] [Hoàn tất] │\n└────────┴─────────────────────────────┘"
+        }
+      ]
+    }
+  }
+}

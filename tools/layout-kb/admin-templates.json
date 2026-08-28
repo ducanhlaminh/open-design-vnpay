@@ -1,0 +1,318 @@
+{
+  "$comment": "Nguồn nhánh --admin của build-web.mjs. Mỗi template: dist HTML tĩnh (MIT) render qua Playwright 1440×900; `pages[].topic` là override tuỳ chọn (mặc định = topicFor(name,url,bands) trong web-band.mjs). `name` = tên trang (dùng cho id sample `<template>-<name>`).",
+  "templates": [
+    {
+      "id": "adminlte",
+      "name": "AdminLTE 4.9.1",
+      "license": "MIT",
+      "source": "https://github.com/ColorlibHQ/AdminLTE (dist/ qua jsDelivr gh@4.9.1)",
+      "base": "https://cdn.jsdelivr.net/gh/ColorlibHQ/AdminLTE@4.9.1/dist/",
+      "pages": [
+        {
+          "path": "index.html",
+          "name": "dashboard",
+          "topic": "web-dashboard"
+        },
+        {
+          "path": "index2.html",
+          "name": "dashboard-2",
+          "topic": "web-dashboard"
+        },
+        {
+          "path": "index3.html",
+          "name": "dashboard-3",
+          "topic": "web-dashboard"
+        },
+        {
+          "path": "tables/simple.html",
+          "name": "tables-simple",
+          "topic": "web-table"
+        },
+        {
+          "path": "tables/data.html",
+          "name": "tables-data",
+          "topic": "web-table"
+        },
+        {
+          "path": "forms/elements.html",
+          "name": "form-elements",
+          "topic": "web-form"
+        },
+        {
+          "path": "forms/layout.html",
+          "name": "form-layout",
+          "topic": "web-form"
+        },
+        {
+          "path": "forms/advanced.html",
+          "name": "form-advanced",
+          "topic": "web-form"
+        },
+        {
+          "path": "forms/validation.html",
+          "name": "form-validation",
+          "topic": "web-form"
+        },
+        {
+          "path": "forms/wizard.html",
+          "name": "form-wizard",
+          "topic": "web-wizard"
+        },
+        {
+          "path": "examples/login.html",
+          "name": "login",
+          "topic": "web-auth"
+        },
+        {
+          "path": "examples/login-v2.html",
+          "name": "login-v2",
+          "topic": "web-auth"
+        },
+        {
+          "path": "examples/register.html",
+          "name": "register",
+          "topic": "web-auth"
+        },
+        {
+          "path": "examples/forgot-password.html",
+          "name": "forgot-password",
+          "topic": "web-auth"
+        },
+        {
+          "path": "pages/profile.html",
+          "name": "profile",
+          "topic": "web-detail"
+        },
+        {
+          "path": "pages/settings.html",
+          "name": "settings",
+          "topic": "web-settings"
+        },
+        {
+          "path": "pages/invoice.html",
+          "name": "invoice",
+          "topic": "web-detail"
+        },
+        {
+          "path": "pages/search-results.html",
+          "name": "search-results",
+          "topic": "web-list"
+        },
+        {
+          "path": "pages/projects.html",
+          "name": "projects",
+          "topic": "web-list"
+        },
+        {
+          "path": "pages/file-manager.html",
+          "name": "file-manager",
+          "topic": "web-list"
+        },
+        {
+          "path": "pages/faq.html",
+          "name": "faq",
+          "topic": "web-detail"
+        },
+        {
+          "path": "pages/404.html",
+          "name": "empty-404",
+          "topic": "web-list"
+        },
+        {
+          "path": "mailbox/inbox.html",
+          "name": "inbox",
+          "topic": "web-table"
+        },
+        {
+          "path": "mailbox/compose.html",
+          "name": "compose",
+          "topic": "web-form"
+        }
+      ]
+    },
+    {
+      "id": "tabler",
+      "name": "Tabler 1.4.0",
+      "license": "MIT",
+      "source": "https://github.com/tabler/tabler (bản build chính thức phục vụ tại preview.tabler.io; release v1.4.0 không đính kèm zip HTML, jsDelivr gh không phục vụ repo này; một số trang ở preview là PRO → 404, không đưa vào)",
+      "base": "https://preview.tabler.io/",
+      "pages": [
+        {
+          "path": "index.html",
+          "name": "dashboard",
+          "topic": "web-dashboard"
+        },
+        {
+          "path": "widgets.html",
+          "name": "widgets",
+          "topic": "web-dashboard"
+        },
+        {
+          "path": "tables.html",
+          "name": "tables",
+          "topic": "web-table"
+        },
+        {
+          "path": "datatables.html",
+          "name": "datatables",
+          "topic": "web-table"
+        },
+        {
+          "path": "users.html",
+          "name": "users",
+          "topic": "web-table"
+        },
+        {
+          "path": "logs.html",
+          "name": "logs",
+          "topic": "web-table"
+        },
+        {
+          "path": "form-elements.html",
+          "name": "form-elements",
+          "topic": "web-form"
+        },
+        {
+          "path": "wizard.html",
+          "name": "wizard",
+          "topic": "web-wizard"
+        },
+        {
+          "path": "sign-in.html",
+          "name": "sign-in",
+          "topic": "web-auth"
+        },
+        {
+          "path": "sign-up.html",
+          "name": "sign-up",
+          "topic": "web-auth"
+        },
+        {
+          "path": "forgot-password.html",
+          "name": "forgot-password",
+          "topic": "web-auth"
+        },
+        {
+          "path": "settings.html",
+          "name": "settings",
+          "topic": "web-settings"
+        },
+        {
+          "path": "profile.html",
+          "name": "profile",
+          "topic": "web-detail"
+        },
+        {
+          "path": "invoice.html",
+          "name": "invoice",
+          "topic": "web-detail"
+        },
+        {
+          "path": "activity.html",
+          "name": "activity",
+          "topic": "web-detail"
+        },
+        {
+          "path": "empty.html",
+          "name": "empty",
+          "topic": "web-list"
+        },
+        {
+          "path": "cards.html",
+          "name": "cards",
+          "topic": "web-list"
+        },
+        {
+          "path": "search-results.html",
+          "name": "search-results",
+          "topic": "web-list"
+        },
+        {
+          "path": "pricing.html",
+          "name": "pricing",
+          "topic": "web-list"
+        },
+        {
+          "path": "gallery.html",
+          "name": "gallery",
+          "topic": "web-list"
+        },
+        {
+          "path": "tasks.html",
+          "name": "tasks",
+          "topic": "web-list"
+        },
+        {
+          "path": "layout-vertical.html",
+          "name": "layout-vertical",
+          "topic": "web-dashboard"
+        },
+        {
+          "path": "layout-combo.html",
+          "name": "layout-combo",
+          "topic": "web-dashboard"
+        },
+        {
+          "path": "layout-condensed.html",
+          "name": "layout-condensed",
+          "topic": "web-dashboard"
+        },
+        {
+          "path": "form-layout.html",
+          "name": "form-layout",
+          "topic": "web-form"
+        },
+        {
+          "path": "modals.html",
+          "name": "modals",
+          "topic": "web-form"
+        },
+        {
+          "path": "settings-plan.html",
+          "name": "settings-plan",
+          "topic": "web-settings"
+        },
+        {
+          "path": "job-listing.html",
+          "name": "job-listing",
+          "topic": "web-list"
+        },
+        {
+          "path": "cards-masonry.html",
+          "name": "cards-masonry",
+          "topic": "web-list"
+        },
+        {
+          "path": "photogrid.html",
+          "name": "photogrid",
+          "topic": "web-list"
+        },
+        {
+          "path": "error-500.html",
+          "name": "error-500",
+          "topic": "web-list"
+        },
+        {
+          "path": "terms-of-service.html",
+          "name": "terms-of-service",
+          "topic": "web-detail"
+        },
+        {
+          "path": "faq.html",
+          "name": "faq",
+          "topic": "web-detail"
+        },
+        {
+          "path": "sign-in-cover.html",
+          "name": "sign-in-cover",
+          "topic": "web-auth"
+        },
+        {
+          "path": "sign-in-illustration.html",
+          "name": "sign-in-illustration",
+          "topic": "web-auth"
+        }
+      ]
+    }
+  ]
+}

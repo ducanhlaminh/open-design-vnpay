@@ -50,9 +50,12 @@ import {
   ScreenFlowPanelViewer,
   SCREEN_FLOW_VARIANT_LABEL,
   findEdgeCellId,
+  loadScreenFlowDoc,
   useScreenFlowDoc,
+  type ScreenFlowDoc,
   type ScreenFlowHighlight,
 } from './ScreenFlowPanelViewer';
+import { SCREEN_FLOW_ID } from './screen-flow-ids';
 import { parseUxReview, SEVERITY_LABEL as UX_SEVERITY_LABEL, CHANGE_LABEL as UX_CHANGE_LABEL, type UxFinding } from './FlowUxReviewPreview';
 import { DocRedlineModeControls } from './DocRedlineModeControls';
 import { DocRedlineNavigation } from './DocRedlineNavigation';
@@ -588,35 +591,51 @@ function isComponentTableChange(c: Pick<DocRedlineChange, 'kind' | 'before' | 'r
 // ── WP dr-review-screen-flow (2026-08-27) — Luồng màn hình bản đã chọn ──────
 // Hợp đồng `rule_id` có mảnh `#` (daemon + skill docs-spec-review ghi, web
 // dùng để TÔ CELL trên sơ đồ trong right panel): phần trước `#` = file thật
-// trong workflow, phần sau = id trong file. Ba dạng:
-//   - `flows/SCREEN-FLOW/ux-review.json#UX-01`  → finding UX (change kind flow)
-//   - `flows/SCREEN-FLOW/screens.json#<KEY>`    → màn (note gap / edge-case)
-//   - `flows/SCREEN-FLOW.flowchart.json#<from→to>` → cạnh (edgeKey, mũi tên
+// trong workflow, phần sau = id trong file. Ba dạng (WP screen-flow-platform-
+// split 2026-08-28: `<SCREEN-FLOW-ID>` = `SCREEN-FLOW` | `SCREEN-FLOW--app` |
+// `SCREEN-FLOW--web` — panel mở sơ đồ ĐÚNG flow của ref):
+//   - `flows/<SCREEN-FLOW-ID>/ux-review.json#UX-01`  → finding UX (change kind flow)
+//   - `flows/<SCREEN-FLOW-ID>/screens.json#<KEY>`    → màn (note gap / edge-case)
+//   - `flows/<SCREEN-FLOW-ID>.flowchart.json#<from→to>` → cạnh (edgeKey, mũi tên
 //     unicode `→` vì flowchart.json.edges[] không có id)
 export const SCREEN_FLOW_UX_REVIEW_FILE = 'flows/SCREEN-FLOW/ux-review.json';
 export const SCREEN_FLOW_SCREENS_FILE = 'flows/SCREEN-FLOW/screens.json';
 export const SCREEN_FLOW_SCREENS_IMPROVED_FILE = 'flows/SCREEN-FLOW/screens.improved.json';
 export const SCREEN_FLOW_FLOWCHART_FILE = 'flows/SCREEN-FLOW.flowchart.json';
 
+/** Đường dẫn file (workflow-relative) của một flow — flow đơn trả đúng các
+ *  hằng trên. */
+export function screenFlowFiles(flowId: string): { uxReview: string; screens: string; screensImproved: string; flowchart: string } {
+  return {
+    uxReview: `flows/${flowId}/ux-review.json`,
+    screens: `flows/${flowId}/screens.json`,
+    screensImproved: `flows/${flowId}/screens.improved.json`,
+    flowchart: `flows/${flowId}.flowchart.json`,
+  };
+}
+
 export interface ScreenFlowRef {
   file: 'ux-review' | 'screens' | 'flowchart';
   id: string;
+  /** Id thư mục flow của ref (`SCREEN-FLOW`, `SCREEN-FLOW--app`, `SCREEN-FLOW--web`). */
+  flowId: string;
 }
+
+const SCREEN_FLOW_REF_RE = /^flows\/(SCREEN-FLOW(?:--(?:app|web))?)(\/(ux-review|screens|screens\.improved)\.json|\.flowchart\.json)#(.+)$/;
 
 /** Tách `rule_id` theo hợp đồng trên → `null` khi không phải ref SCREEN-FLOW
  *  (không có `#`, file lạ, id rỗng). `screens.improved.json#KEY` cũng nhận
  *  (màn `provenance: proposed` chỉ có ở file đó) và gom về `screens`. */
 export function parseScreenFlowRef(ruleId: string | undefined): ScreenFlowRef | null {
   if (!ruleId) return null;
-  const hash = ruleId.indexOf('#');
-  if (hash < 0) return null;
-  const file = ruleId.slice(0, hash).trim();
-  const id = ruleId.slice(hash + 1).trim();
+  const m = SCREEN_FLOW_REF_RE.exec(ruleId.trim());
+  if (!m) return null;
+  const flowId = m[1]!;
+  const id = m[4]!.trim();
   if (!id) return null;
-  if (file === SCREEN_FLOW_UX_REVIEW_FILE) return { file: 'ux-review', id };
-  if (file === SCREEN_FLOW_SCREENS_FILE || file === SCREEN_FLOW_SCREENS_IMPROVED_FILE) return { file: 'screens', id };
-  if (file === SCREEN_FLOW_FLOWCHART_FILE) return { file: 'flowchart', id };
-  return null;
+  if (m[3] === 'ux-review') return { file: 'ux-review', id, flowId };
+  if (m[3] === 'screens' || m[3] === 'screens.improved') return { file: 'screens', id, flowId };
+  return { file: 'flowchart', id, flowId };
 }
 
 /** Panel chi tiết có hiện sơ đồ Luồng màn hình không: mọi change/note `kind:
@@ -1265,11 +1284,26 @@ export function DocRedlinePreview({
   // (không mục in, panel hiện "Chưa có Luồng màn hình").
   const screenFlowLoad = useScreenFlowDoc(projectId, workflowPrefix);
   const screenFlowDoc = screenFlowLoad.status === 'ready' ? screenFlowLoad.doc : null;
+  // WP screen-flow-platform-split: tài liệu tách nền tảng có flow
+  // `SCREEN-FLOW--app`/`--web` — sơ đồ của các flow đó nạp LƯỜI khi panel mở
+  // tới ref của chúng (key = flowId; `undefined` = chưa nạp, `null` = không
+  // có). Flow đơn `SCREEN-FLOW` vẫn đi qua screenFlowLoad ở trên (bản in +
+  // fetch y hệt trước).
+  const [screenFlowDocs, setScreenFlowDocs] = useState<Record<string, ScreenFlowDoc | null>>({});
+  useEffect(() => { setScreenFlowDocs({}); }, [projectId, workflowPrefix]);
+  /** Trạng thái sơ đồ của một flow: flow đơn → hook; flow tách → cache lười. */
+  const screenFlowDocFor = (flowId: string): { status: 'loading' } | { status: 'ready'; doc: ScreenFlowDoc } | { status: 'missing' } => {
+    if (flowId === SCREEN_FLOW_ID) return screenFlowLoad;
+    const hit = screenFlowDocs[flowId];
+    if (hit === undefined) return { status: 'loading' };
+    return hit ? { status: 'ready', doc: hit } : { status: 'missing' };
+  };
   // map KEY màn → cell (screens.json, phủ screens.improved.json khi bản
-  // improved) — nạp lazy khi panel mở tới ref `screens.json#<KEY>`.
-  // `undefined` = chưa nạp, `null` = không có/không đọc được.
-  const [screenFlowCells, setScreenFlowCells] = useState<Record<string, string | null> | null | undefined>(undefined);
-  useEffect(() => { setScreenFlowCells(undefined); }, [projectId, workflowPrefix]);
+  // improved) — nạp lazy khi panel mở tới ref `screens.json#<KEY>`, theo
+  // TỪNG flow (key = flowId). `undefined` = chưa nạp, `null` = không có/không
+  // đọc được.
+  const [screenFlowCells, setScreenFlowCells] = useState<Record<string, Record<string, string | null> | null>>({});
+  useEffect(() => { setScreenFlowCells({}); }, [projectId, workflowPrefix]);
   // Mục "Luồng màn hình — bản đang dùng" trong sheet in + host viewer in
   // offscreen (nguồn SVG để clone vào mục đó, xem printDocument).
   const printScreenFlowSectionRef = useRef<HTMLElement | null>(null);
@@ -1348,9 +1382,12 @@ export function DocRedlinePreview({
     if (target.kind === 'change' && kind === 'flow-diagram') {
       flowId = /^flows\/([^/]+)\/ux-review\.json$/.exec(ruleId)?.[1] ?? null;
       ruleFile = flowId ? ruleId : null;
-    } else if (wantsScreenFlowPanel(kind, ruleId) && parseScreenFlowRef(ruleId)?.file === 'ux-review') {
-      ruleFile = SCREEN_FLOW_UX_REVIEW_FILE;
-      flowId = 'SCREEN-FLOW';
+    } else if (wantsScreenFlowPanel(kind, ruleId)) {
+      const ref = parseScreenFlowRef(ruleId);
+      if (ref?.file === 'ux-review') {
+        ruleFile = screenFlowFiles(ref.flowId).uxReview;
+        flowId = ref.flowId;
+      }
     }
     if (!ruleFile || !flowId || uxFindingsByRule[ruleFile] !== undefined) return;
     const file = ruleFile;
@@ -1374,34 +1411,60 @@ export function DocRedlinePreview({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [detailPanel, changes, notes, projectId, workflowPrefix]);
 
-  // Ref `flows/SCREEN-FLOW/screens.json#<KEY>` → cần map KEY → cell. Đợi
-  // biết bản đang dùng (screenFlowLoad) rồi mới nạp, để bản improved phủ
-  // thêm screens.improved.json (màn đề xuất chỉ có ở đó) đúng một lần.
+  // WP screen-flow-platform-split: panel mở tới ref của flow tách
+  // (`SCREEN-FLOW--app`/`--web`) → nạp sơ đồ bản đã chọn của ĐÚNG flow đó
+  // (cache module của loadScreenFlowDoc theo flowId). Flow đơn không đi
+  // đường này (đã có screenFlowLoad).
   useEffect(() => {
-    if (!detailPanel || screenFlowCells !== undefined || screenFlowLoad.status === 'loading') return;
+    if (!detailPanel) return;
     const target = resolveAnnotationDetail(detailPanel.id, changes, notes);
     if (!target) return;
     const ruleId = target.kind === 'change' ? target.change.rule_id : target.note.rule_id;
-    if (parseScreenFlowRef(ruleId)?.file !== 'screens') return;
-    const improved = screenFlowDoc?.variant === 'improved';
+    const ref = parseScreenFlowRef(ruleId);
+    if (!ref || ref.flowId === SCREEN_FLOW_ID || screenFlowDocs[ref.flowId] !== undefined) return;
+    const flowId = ref.flowId;
+    let cancelled = false;
+    void loadScreenFlowDoc(projectId, workflowPrefix, flowId).then((doc) => {
+      if (!cancelled) setScreenFlowDocs((prev) => (prev[flowId] !== undefined ? prev : { ...prev, [flowId]: doc }));
+    });
+    return () => { cancelled = true; };
+    // screenFlowDocs chỉ là guard chống nạp lặp (như uxFindingsByRule trên).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detailPanel, changes, notes, projectId, workflowPrefix]);
+
+  // Ref `flows/<SCREEN-FLOW-ID>/screens.json#<KEY>` → cần map KEY → cell của
+  // flow đó. Đợi biết bản đang dùng của flow rồi mới nạp, để bản improved
+  // phủ thêm screens.improved.json (màn đề xuất chỉ có ở đó) đúng một lần.
+  useEffect(() => {
+    if (!detailPanel) return;
+    const target = resolveAnnotationDetail(detailPanel.id, changes, notes);
+    if (!target) return;
+    const ruleId = target.kind === 'change' ? target.change.rule_id : target.note.rule_id;
+    const ref = parseScreenFlowRef(ruleId);
+    if (ref?.file !== 'screens' || screenFlowCells[ref.flowId] !== undefined) return;
+    const docState = screenFlowDocFor(ref.flowId);
+    if (docState.status === 'loading') return;
+    const improved = docState.status === 'ready' && docState.doc.variant === 'improved';
+    const flowId = ref.flowId;
+    const files = screenFlowFiles(flowId);
     let cancelled = false;
     void (async () => {
       let map: Record<string, string | null> | null = null;
       try {
-        map = parseScreenCells(await fetchProjectFileText(projectId, `${workflowPrefix}/${SCREEN_FLOW_SCREENS_FILE}`));
+        map = parseScreenCells(await fetchProjectFileText(projectId, `${workflowPrefix}/${files.screens}`));
         if (improved) {
-          const extra = parseScreenCells(await fetchProjectFileText(projectId, `${workflowPrefix}/${SCREEN_FLOW_SCREENS_IMPROVED_FILE}`));
+          const extra = parseScreenCells(await fetchProjectFileText(projectId, `${workflowPrefix}/${files.screensImproved}`));
           if (extra) map = { ...(map ?? {}), ...extra };
         }
       } catch {
         map = null;
       }
-      if (!cancelled) setScreenFlowCells(map);
+      if (!cancelled) setScreenFlowCells((prev) => (prev[flowId] !== undefined ? prev : { ...prev, [flowId]: map }));
     })();
     return () => { cancelled = true; };
     // screenFlowCells chỉ là guard chống nạp lặp (như uxFindingsByRule trên).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [detailPanel, changes, notes, projectId, workflowPrefix, screenFlowLoad.status, screenFlowDoc]);
+  }, [detailPanel, changes, notes, projectId, workflowPrefix, screenFlowLoad.status, screenFlowDoc, screenFlowDocs]);
   const events = useMemo(
     () => (changesState.status === 'ok' ? changesState.events : []),
     [changesState],
@@ -1718,30 +1781,34 @@ export function DocRedlinePreview({
    *  `undefined` = panel không hiện sơ đồ; không ref/chưa nạp → sơ đồ không tô. */
   function screenFlowPanelFor(
     target: AnnotationDetailTarget,
-  ): { projectId: string; workflowPrefix: string; title: string; highlight?: ScreenFlowHighlight } | undefined {
+  ): { projectId: string; workflowPrefix: string; flowId: string; title: string; highlight?: ScreenFlowHighlight } | undefined {
     const kind = target.kind === 'change' ? target.change.kind : target.note.kind;
     const ruleId = target.kind === 'change' ? target.change.rule_id : target.note.rule_id;
     if (!wantsScreenFlowPanel(kind, ruleId)) return undefined;
-    const base = { projectId, workflowPrefix, title: 'Luồng màn hình' };
     const ref = parseScreenFlowRef(ruleId);
+    // Không ref (change kind flow trần) → flow đơn như trước.
+    const flowId = ref?.flowId ?? SCREEN_FLOW_ID;
+    const base = { projectId, workflowPrefix, flowId, title: 'Luồng màn hình' };
     if (!ref) return base;
+    const docState = screenFlowDocFor(flowId);
+    const doc = docState.status === 'ready' ? docState.doc : null;
     if (ref.file === 'ux-review') {
-      const findings = uxFindingsByRule[SCREEN_FLOW_UX_REVIEW_FILE];
+      const findings = uxFindingsByRule[screenFlowFiles(flowId).uxReview];
       const f = Array.isArray(findings) ? findings.find((x) => x.id === ref.id) : undefined;
       if (!f?.cells) return base;
-      const cells = screenFlowDoc?.variant === 'original'
+      const cells = doc?.variant === 'original'
         ? f.cells.asIs ?? f.cells.proposed ?? []
         : f.cells.proposed ?? f.cells.asIs ?? [];
       const hlKind: HighlightKind | undefined = f.change && f.change !== 'none' ? f.change : undefined;
       return { ...base, highlight: { cells, ...(hlKind ? { kind: hlKind } : {}) } };
     }
     if (ref.file === 'screens') {
-      const cell = screenFlowCells?.[ref.id];
+      const cell = screenFlowCells[flowId]?.[ref.id];
       return cell ? { ...base, highlight: { cells: [cell] } } : base;
     }
     const edge = splitEdgeKey(ref.id);
     if (!edge) return base;
-    const edgeId = screenFlowDoc ? findEdgeCellId(screenFlowDoc.xml, screenFlowDoc.page, edge.from, edge.to) : null;
+    const edgeId = doc ? findEdgeCellId(doc.xml, doc.page, edge.from, edge.to) : null;
     return { ...base, highlight: { cells: edgeId ? [edgeId] : [edge.from, edge.to] } };
   }
 
@@ -3276,7 +3343,7 @@ function AnnotationDetailPanel({
   /** WP dr-review-screen-flow B2: có mặt = panel hiện sơ đồ Luồng màn hình
    *  bản đã chọn (dưới lý do, trên bình luận) và tô `highlight.cells`; không
    *  `highlight` → sơ đồ không tô. Cha quyết định (xem `screenFlowPanelFor`). */
-  screenFlow?: { projectId: string; workflowPrefix: string; title: string; highlight?: ScreenFlowHighlight };
+  screenFlow?: { projectId: string; workflowPrefix: string; flowId?: string; title: string; highlight?: ScreenFlowHighlight };
 }) {
   const c = target.kind === 'change' ? target.change : null;
   const n = target.kind === 'note' ? target.note : null;
@@ -3420,6 +3487,7 @@ function AnnotationDetailPanel({
             <ScreenFlowPanelViewer
               projectId={screenFlow.projectId}
               workflowPrefix={screenFlow.workflowPrefix}
+              flowId={screenFlow.flowId}
               highlight={screenFlow.highlight}
               title={screenFlow.title}
             />

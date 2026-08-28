@@ -25,7 +25,15 @@
 
 import path from 'node:path';
 
-import { scanDocScreens, isBlockedScreenName, MOBILE_HINT_RE, findAnchorTextLines, type ScreenInput } from './screen-components.js';
+import {
+  scanDocScreens,
+  isBlockedScreenName,
+  MOBILE_HINT_RE,
+  findAnchorTextLines,
+  codeOfScreenKey,
+  screenPlatformToInput,
+  type ScreenInput,
+} from './screen-components.js';
 import { resolveScreenPlatform } from './screen-platform.js';
 
 export const DOC_SCREENS_FILE = 'comp/_doc-screens.json';
@@ -75,6 +83,12 @@ export interface ExtractAccepted {
   code: string;
   name: string;
   line: number;
+  /** WP screen-flow-platform-split A0: SCREEN-KEY có thẩm quyền (entry khai
+   *  `key`) — mergeExtractedScreens dùng NGUYÊN VĂN thay vì `<stem>__<code>`. */
+  key?: string;
+  /** Nền tảng AGENT quyết (screens.json v2) — pass-through, daemon không suy. */
+  platform?: 'app' | 'web';
+  groupKey?: string;
   /** HINT cho lượt SCREEN (kickoff dặn agent đọc lân cận) — không cần khớp
    *  cấu trúc heading hoàn hảo. */
   section?: { startLine: number; endLine: number };
@@ -143,7 +157,15 @@ export function validateDocScreenExtract(mdBySource: Map<string, string>, doc: u
 
     // Vòng 1 — kiểm (ii) anchor duy nhất + (iii) name hợp lệ, GIỮ THỨ TỰ JSON
     // gốc (để vòng 3 biết "cái sau" theo đúng thứ tự agent liệt kê).
-    type Candidate = { code: string | null; name: string; anchorText: string; line: number };
+    type Candidate = {
+      code: string | null;
+      name: string;
+      anchorText: string;
+      line: number;
+      key?: string;
+      platform?: 'app' | 'web';
+      groupKey?: string;
+    };
     const candidates: (Candidate | null)[] = rawScreens.map((rs) => {
       if (!rs || typeof rs !== 'object') {
         rejected.push({ source, reason: 'Một mục "screens" không phải object.' });
@@ -184,14 +206,30 @@ export function validateDocScreenExtract(mdBySource: Map<string, string>, doc: u
         rejected.push({ source, code, name, anchorText: anchorTextRaw, reason: `name "${name}" là mục tài liệu (danh sách/mô tả/luồng màn hình), không phải một màn.` });
         return null;
       }
-      return { code, name, anchorText: anchorTextRaw, line: hits[0]! };
+      // WP screen-flow-platform-split A0: `key` (từ screens.json đã finalize)
+      // là thẩm quyền — code lấy từ key, KHÔNG tự đánh lại. `platform`/
+      // `groupKey` pass-through (agent quyết, daemon chỉ kiểm giá trị).
+      const key = str(e.key).trim() || undefined;
+      const platform = e.platform === 'app' || e.platform === 'web' ? e.platform : undefined;
+      const groupKey = str(e.groupKey).trim() || undefined;
+      return {
+        code,
+        name,
+        anchorText: anchorTextRaw,
+        line: hits[0]!,
+        ...(key ? { key } : {}),
+        ...(platform ? { platform } : {}),
+        ...(groupKey ? { groupKey } : {}),
+      };
     });
 
     // Vòng 2 — (iv) code null → tự đánh X1, X2… theo thứ tự DÒNG anchor
     // TRONG TRANG (ổn định giữa các lần chạy — không phụ thuộc thứ tự agent
-    // liệt kê trong JSON).
+    // liệt kê trong JSON). CHỈ cho entry KHÔNG có `key` — entry có key giữ
+    // đúng code của key (A0: trước đây đánh lại làm comp/_screens.json lệch
+    // hẳn screens.json khi thứ tự agent ≠ thứ tự dòng hoặc có màn bị loại).
     const passing = candidates.filter((c): c is Candidate => c != null);
-    const nullOrderedByLine = passing.filter((c) => c.code == null).sort((a, b) => a.line - b.line);
+    const nullOrderedByLine = passing.filter((c) => c.code == null && !c.key).sort((a, b) => a.line - b.line);
     const autoCode = new Map<Candidate, string>();
     nullOrderedByLine.forEach((c, i) => autoCode.set(c, `X${i + 1}`));
 
@@ -200,13 +238,21 @@ export function validateDocScreenExtract(mdBySource: Map<string, string>, doc: u
     const usedCodes = new Set<string>();
     const acceptedBefore = accepted.length;
     for (const c of passing) {
-      const finalCode = c.code ?? autoCode.get(c)!;
+      const finalCode = c.key ? codeOfScreenKey(c.key) : (c.code ?? autoCode.get(c)!);
       if (usedCodes.has(finalCode)) {
         rejected.push({ source, code: finalCode, name: c.name, anchorText: c.anchorText, reason: `mã "${finalCode}" trùng với một màn khác đã nhận trong cùng trang.` });
         continue;
       }
       usedCodes.add(finalCode);
-      accepted.push({ source, code: finalCode, name: c.name, line: c.line });
+      accepted.push({
+        source,
+        code: finalCode,
+        name: c.name,
+        line: c.line,
+        ...(c.key ? { key: c.key } : {}),
+        ...(c.platform ? { platform: c.platform } : {}),
+        ...(c.groupKey ? { groupKey: c.groupKey } : {}),
+      });
     }
 
     // Section — theo thứ tự DÒNG của các màn ACCEPTED (đã loại mã trùng):
@@ -265,15 +311,21 @@ export function mergeExtractedScreens(
 
   for (const a of accepted) {
     const stem = path.posix.basename(a.source, '.md');
-    const key = `${stem}__${a.code}`;
+    // WP screen-flow-platform-split A0: key có thẩm quyền từ screens.json thắng.
+    const key = a.key ?? `${stem}__${a.code}`;
     if (existingKeys.has(key)) continue; // màn có sẵn thắng — không nhân đôi.
     existingKeys.add(key);
     const md = mdBySource.get(a.source) ?? '';
     // WP14: 'agent' nay là thành viên chính thức của ScreenInput['origin']
     // (screen-components.ts) — không còn cần cast cục bộ như WP12.
     // screen-variants WP-V1: platform theo heading cha của section màn này
-    // (khi suy được) — không còn một hint chung cho cả tài liệu.
-    const platform = md && a.section ? resolveScreenPlatform(md, a.section.startLine) : null;
+    // (khi suy được) — không còn một hint chung cho cả tài liệu. WP
+    // screen-flow-platform-split: agent đã quyết `platform` → dùng thẳng.
+    const platform = a.platform
+      ? screenPlatformToInput(a.platform)
+      : md && a.section
+        ? resolveScreenPlatform(md, a.section.startLine)
+        : null;
     const input: ScreenInput = {
       key,
       name: a.name,
@@ -287,6 +339,7 @@ export function mergeExtractedScreens(
       findings: [],
       platformHint: MOBILE_HINT_RE.test(md) ? 'mobile' : 'web',
       ...(platform ? { platform } : {}),
+      ...(a.groupKey ? { groupKey: a.groupKey } : {}),
       origin: 'agent',
       ...(a.section ? { section: buildAgentSection(md, a.section.startLine, a.section.endLine) } : {}),
     };

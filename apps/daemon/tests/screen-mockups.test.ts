@@ -311,7 +311,7 @@ test('assets/_mockup.css có đủ class kit bố cục + references/layout-patt
     'detail-hero-kv-cta', 'detail-tabs', 'form-grouped-cards', 'form-two-col-short',
     'checkout-summary-sticky', 'checkout-accordion', 'result-center-status', 'result-timeline',
     'status-processing', 'status-empty', 'overlay-dialog', 'overlay-sheet',
-    'home-hero-quickactions', 'settings-groups', 'web-master-detail', 'web-two-col-form',
+    'home-hero-quickactions', 'settings-groups', 'web-master-detail', 'web-form-two-col',
   ]) {
     assert.ok(md.includes(`### ${id}`), `layout-patterns.md thiếu pattern ${id}`);
   }
