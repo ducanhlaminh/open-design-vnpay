@@ -29,6 +29,8 @@ interface StoredFile {
 
 // Minimal in-memory media-service. `db` is reset between tests.
 const db = { folders: new Map<string, { id: string; name: string }>(), files: new Map<string, StoredFile>() };
+// Request counters (reset between tests) — the session tests assert on them.
+const hits = { listFiles: 0, download: 0, upload: 0, del: 0 };
 let seq = 0;
 const nextId = () => `obj-${++seq}`;
 
@@ -52,6 +54,7 @@ function buildMockMediaService() {
   });
 
   app.get('/api/v1/files', (req, res) => {
+    hits.listFiles += 1;
     const folderId = String(req.query.folder_id ?? '');
     const limit = Number(req.query.limit ?? 20);
     const offset = Number(req.query.offset ?? 0);
@@ -67,6 +70,7 @@ function buildMockMediaService() {
     res.json({ items: page, total: all.length, limit, offset });
   });
   app.post('/api/v1/files', upload.single('file'), (req, res) => {
+    hits.upload += 1;
     const content = req.file?.buffer ?? Buffer.alloc(0);
     const id = nextId();
     const file: StoredFile = {
@@ -83,12 +87,14 @@ function buildMockMediaService() {
     res.json({ id: file.id, name: file.name, checksum: file.checksum, tags: file.tags });
   });
   app.get('/api/v1/files/:id/download', (req, res) => {
+    hits.download += 1;
     const f = db.files.get(req.params.id);
     if (!f) return res.status(404).end();
     res.setHeader('content-type', f.mime_type);
     res.end(f.content);
   });
   app.delete('/api/v1/files/:id', (req, res) => {
+    hits.del += 1;
     db.files.delete(req.params.id);
     res.status(204).end();
   });
@@ -115,6 +121,7 @@ afterAll(async () => {
 afterEach(() => {
   db.folders.clear();
   db.files.clear();
+  hits.listFiles = 0; hits.download = 0; hits.upload = 0; hits.del = 0;
 });
 
 const lf = (path: string, content: string, stage = 'ux-spec') => ({
@@ -211,6 +218,90 @@ describe('MediaClient', () => {
     expect(res.deleted).toBe(1); // one duplicate removed, one kept
     const remaining = (await client.listAllFiles(folderId)).filter((f) => f.path === 'ux/spec.json');
     expect(remaining).toHaveLength(1);
+  });
+});
+
+describe('MediaFolderSession', () => {
+  it('lists the folder once for N uploads and keeps the index in sync', async () => {
+    const session = await client.openFolderSession('XPOS', { create: true });
+    const listsAfterOpen = hits.listFiles;
+    expect(listsAfterOpen).toBeGreaterThanOrEqual(1);
+    for (let i = 0; i < 12; i += 1) await session.upload(`ux/f${i}.json`, 'ux-spec', 'application/json', Buffer.from(`v${i}`));
+    expect(hits.listFiles).toBe(listsAfterOpen); // no list per upload
+    expect(hits.upload).toBe(12);
+    expect(session.has('ux/f3.json')).toBe(true);
+    expect(session.has('ux/nope.json')).toBe(false);
+    expect(session.list()).toHaveLength(12);
+    // Store agrees with the index (ids came back from the Create response).
+    const stored = await client.listAllFiles(session.folderId!);
+    expect(stored.map((f) => f.path).sort()).toEqual(session.list().map((f) => f.path).sort());
+    expect(stored.every((f) => session.get(f.path)[0]?.id === f.id)).toBe(true);
+  });
+
+  it('uploads concurrently on distinct paths with a single list', async () => {
+    const session = await client.openFolderSession('XPOS', { create: true });
+    const lists = hits.listFiles;
+    await Promise.all(Array.from({ length: 8 }, (_, i) => session.upload(`p/${i}.txt`, 's', 'text/plain', Buffer.from(`c${i}`))));
+    expect(hits.listFiles).toBe(lists);
+    expect(hits.upload).toBe(8);
+    expect(session.list()).toHaveLength(8);
+    expect(await client.listAllFiles(session.folderId!)).toHaveLength(8);
+  });
+
+  it('dedupes same-path uploads like uploadFile: skip unchanged, replace changed, drop duplicates', async () => {
+    const session = await client.openFolderSession('XPOS', { create: true });
+    await session.upload('a.json', 's', 'application/json', Buffer.from('one'));
+    expect(hits.upload).toBe(1);
+    // Unchanged → no upload, no delete.
+    await session.upload('a.json', 's', 'application/json', Buffer.from('one'));
+    expect(hits.upload).toBe(1);
+    expect(hits.del).toBe(0);
+    // Changed → old row deleted, new row uploaded, index has exactly one row.
+    await session.upload('a.json', 's', 'application/json', Buffer.from('two'));
+    expect(hits.upload).toBe(2);
+    expect(hits.del).toBe(1);
+    expect(session.get('a.json')).toHaveLength(1);
+    expect(session.get('a.json')[0]!.checksum).toBe(sha(Buffer.from('two')));
+    const stored = (await client.listAllFiles(session.folderId!)).filter((f) => f.path === 'a.json');
+    expect(stored).toHaveLength(1);
+    expect(stored[0]!.checksum).toBe(sha(Buffer.from('two')));
+    // Same-path duplicates already on the server collapse to the kept row.
+    const dup = Buffer.from('two');
+    db.files.set('dup-x', { id: 'dup-x', name: 'a.json', folder_id: session.folderId!, checksum: `sha256:${sha(dup)}`, tags: ['path:a.json'], content: dup, size: dup.length, mime_type: 'application/json' });
+    const fresh = await client.openFolderSession('XPOS', { create: false });
+    expect(fresh.get('a.json')).toHaveLength(2);
+    await fresh.upload('a.json', 's', 'application/json', dup);
+    expect(fresh.get('a.json')).toHaveLength(1);
+    expect((await client.listAllFiles(session.folderId!)).filter((f) => f.path === 'a.json')).toHaveLength(1);
+  });
+
+  it('downloads from the index without re-listing and deleteByPath updates it', async () => {
+    await client.syncProjectFiles('XPOS', [lf('ux/a.json', 'A'), lf('ux/b.json', 'B'), lf('ux/c.json', 'C')]);
+    hits.listFiles = 0;
+    const session = await client.openFolderSession('XPOS', { create: false });
+    expect(hits.listFiles).toBe(1);
+    const [a, b, c] = await Promise.all(['ux/a.json', 'ux/b.json', 'ux/c.json'].map((p) => session.download(p)));
+    expect([a!.toString(), b!.toString(), c!.toString()]).toEqual(['A', 'B', 'C']);
+    expect(hits.listFiles).toBe(1);
+    expect(hits.download).toBe(3);
+    await expect(session.download('ux/missing.json')).rejects.toThrow(/not found/);
+    expect(await session.deleteByPath('ux/b.json')).toBe(1);
+    expect(session.has('ux/b.json')).toBe(false);
+    expect(await session.deleteByPath('ux/b.json')).toBe(0);
+    expect((await client.listAllFiles(session.folderId!)).map((f) => f.path).sort()).toEqual(['ux/a.json', 'ux/c.json']);
+    expect(hits.listFiles).toBe(2);
+  });
+
+  it('create:false never materialises a folder; the first upload creates it lazily', async () => {
+    const before = db.folders.size;
+    const session = await client.openFolderSession('lazy', { create: false });
+    expect(session.folderId).toBeNull();
+    expect(session.list()).toEqual([]);
+    expect(db.folders.size).toBe(before);
+    await session.upload('x.txt', '', 'text/plain', Buffer.from('x'));
+    expect(session.folderId).not.toBeNull();
+    expect(db.folders.size).toBe(before + 1);
+    expect((await client.listFiles('lazy')).map((f) => f.path)).toEqual(['x.txt']);
   });
 });
 

@@ -40,7 +40,7 @@ import {
   setPipelineAppDocsReviewComponentSource,
 } from './db.js';
 import { featureContextBindingFromMetadata, parseManifestComponentSource } from './app-context-version.js';
-import { MediaClient, mediaConfigFromEnv } from './kg-sync/media-client.js';
+import { MediaClient, mediaConfigFromEnv, type MediaFolderSession } from './kg-sync/media-client.js';
 import { loadRemoteProjects, PROJECT_LIFECYCLE_PATH } from './kg-sync/remote-registry.js';
 import { studioConfigOf } from './kg-sync/push-dest.js';
 import { PROJECT_SYNC_PLAN_TTL_MS, ProjectSyncPlanStore, planProjectSync, projectSyncPlanIsFresh, type ProjectSyncSnapshotFile } from './project-sync.js';
@@ -71,11 +71,19 @@ import {
 
 /** Raw Confluence attachments are re-downloaded from the wiki, 4 at a time. */
 const CONFLUENCE_PULL_CONCURRENCY = 4;
+// Media transfers (upload/download) per project folder run through ONE
+// MediaFolderSession (single list) with bounded parallelism.
+const MEDIA_TRANSFER_CONCURRENCY = 4;
 const CONFLUENCE_CREDS_MISSING = 'Chưa cấu hình PAT Confluence';
 type ConfluenceCreds = { base: string; token: string };
 
 /** Origin ledgers of one media folder → synthetic entries for files whose
  * bytes are NOT on media. Ledgers are tiny, so sequential downloads are fine. */
+/** Adapter so ledger reads reuse an already-listed session (no per-file list). */
+function sessionReader(session: MediaFolderSession): Pick<MediaClient, 'downloadFile'> {
+  return { downloadFile: (_projectId: string, rel: string) => session.download(rel) };
+}
+
 async function originConfluenceEntries(
   media: Pick<MediaClient, 'downloadFile'>,
   originId: string,
@@ -702,21 +710,27 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
     }
     const originFiles: ProjectSyncSnapshotFile[] = [];
     const featureFiles: BatchExecutionFeature['featureFiles'] = [];
-    const remoteFeatureFiles = await media.listFiles(originId);
+    const session = await media.openFolderSession(originId, { create: false });
+    const remoteFeatureFiles = session.listFiles();
     const remoteRels = remoteFeatureFiles.map((file) => (typeof file.path === 'string' ? file.path : '')).filter(Boolean);
     // Confluence-backed files: the ledger sha IS the origin checksum — nothing
     // to download at PLAN time, and APPLY verifies against that same sha.
-    for (const synthetic of await originConfluenceEntries(media, originId, remoteRels, (rel) => !isControl(rel))) {
+    for (const synthetic of await originConfluenceEntries(sessionReader(session), originId, remoteRels, (rel) => !isControl(rel))) {
       if (!safeRelativePath(synthetic.rel)) throw new Error(`Unsafe remote Feature path: ${synthetic.rel}`);
       const stage = stageForOutput(synthetic.rel)?.id;
       featureFiles.push({ rel: synthetic.rel, checksum: synthetic.checksum, confluence: synthetic.confluence });
       originFiles.push({ path: `feature/${synthetic.rel}`, checksum: synthetic.checksum, size: synthetic.size, kind: kindOf(synthetic.rel, false), featureId: originId, ...(stage ? { stage } : {}), confluence: synthetic.confluence });
     }
+    const featureRels: string[] = [];
     for (const file of remoteFeatureFiles) {
       const rel = typeof file.path === 'string' ? file.path : '';
       if (!rel || isControl(rel)) continue;
       if (!safeRelativePath(rel)) throw new Error(`Unsafe remote Feature path: ${rel}`);
-      const content = await media.downloadFile(originId, rel);
+      featureRels.push(rel);
+    }
+    const featureContents = await mapLimit(featureRels, MEDIA_TRANSFER_CONCURRENCY, (rel) => session.download(rel));
+    for (const [i, rel] of featureRels.entries()) {
+      const content = featureContents[i]!;
       const digest = checksum(content);
       let comparisonContent = content;
       if (rel === 'project.json') {
@@ -741,12 +755,13 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
     if (!contextVersion || !/^v[1-9]\d*$/.test(contextVersion)) return empty;
     const media = new MediaClient(mediaConfigFromEnv());
     const root = `context/versions/${contextVersion}`;
-    const allRemote = await media.listFiles(originAppId);
+    const session = await media.openFolderSession(originAppId, { create: false });
+    const allRemote = session.listFiles();
     const inVersion = (rel: string) => rel === `${root}/manifest.json` || rel.startsWith(`${root}/files/`);
     const remote = allRemote.filter((file) => typeof file.path === 'string' && inVersion(file.path));
     if (!remote.some((file) => file.path === `${root}/manifest.json`)) throw new Error(`Bound Context ${contextVersion} is missing from origin App ${originAppId}`);
     const remoteRels = allRemote.map((file) => (typeof file.path === 'string' ? file.path : '')).filter(Boolean);
-    for (const synthetic of await originConfluenceEntries(media, originAppId, remoteRels, inVersion)) {
+    for (const synthetic of await originConfluenceEntries(sessionReader(session), originAppId, remoteRels, inVersion)) {
       if (!safeRelativePath(synthetic.rel)) throw new Error(`Unsafe bound Context path: ${synthetic.rel}`);
       const entryPath = `bound-context/${featureId}/${synthetic.rel}`;
       empty.originFiles.push({ path: entryPath, checksum: synthetic.checksum, size: synthetic.size, kind: 'context', featureId, contextVersion, confluence: synthetic.confluence });
@@ -754,10 +769,11 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
       const local = await fs.readFile(path.join(ctx.paths.PROJECTS_DIR, localAppId, synthetic.rel)).catch(() => null);
       if (local) empty.localFiles.push({ path: entryPath, checksum: checksum(local), size: local.length, kind: 'context', featureId, contextVersion });
     }
-    for (const file of remote) {
-      const rel = file.path as string;
-      if (!safeRelativePath(rel)) throw new Error(`Unsafe bound Context path: ${rel}`);
-      const content = await media.downloadFile(originAppId, rel);
+    const contextRels = remote.map((file) => file.path as string);
+    for (const rel of contextRels) if (!safeRelativePath(rel)) throw new Error(`Unsafe bound Context path: ${rel}`);
+    const contextContents = await mapLimit(contextRels, MEDIA_TRANSFER_CONCURRENCY, (rel) => session.download(rel));
+    for (const [i, rel] of contextRels.entries()) {
+      const content = contextContents[i]!;
       const digest = checksum(content);
       const entryPath = `bound-context/${featureId}/${rel}`;
       empty.originFiles.push({ path: entryPath, checksum: digest, size: content.length, kind: 'context', featureId, contextVersion });
@@ -933,6 +949,9 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
     const creds = await confluenceCreds();
     let completed = 0;
     const items: ProjectSyncFeaturePullBatchResult['items'] = [];
+    // The origin App folder is shared by every Feature in the batch: list once.
+    let appSessionPromise: Promise<MediaFolderSession> | null = null;
+    const appSession = () => (appSessionPromise ??= media.openFolderSession(stored.plan.originAppId, { create: false }));
     const updateProgress = (phase: 'validating' | 'transferring' | 'finalizing', currentFeatureId?: string | null, currentPath?: string | null): void => {
       operation.phase = phase;
       operation.progress = {
@@ -960,7 +979,8 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
       let installedDestination = false;
       try {
         updateProgress('validating', feature.originId, null);
-        const control = JSON.parse((await media.downloadFile(feature.originId, 'project.json')).toString('utf8')) as Record<string, unknown>;
+        const featureSession = await media.openFolderSession(feature.originId, { create: false });
+        const control = JSON.parse((await featureSession.download('project.json')).toString('utf8')) as Record<string, unknown>;
         if (control.appId !== stored.plan.originAppId) throw new Error(`Feature ${feature.originId} no longer belongs to App ${stored.plan.originAppId}`);
         if (feature.mode === 'update') {
           // Fence the current local state so the overwrite below is undoable.
@@ -969,9 +989,11 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
           await fs.cp(destination, stageFeature, { recursive: true });
         } else await fs.mkdir(stageFeature, { recursive: true });
         updateProgress('transferring', feature.originId, null);
-        // Confluence-backed files are pulled from the wiki after the media
-        // files, CONFLUENCE_PULL_CONCURRENCY at a time (media stays sequential).
+        // Media files are downloaded through the per-folder sessions,
+        // MEDIA_TRANSFER_CONCURRENCY at a time; Confluence-backed files are
+        // pulled from the wiki afterwards, CONFLUENCE_PULL_CONCURRENCY at a time.
         const confluenceTasks: Array<{ entryPath: string; source: ProjectSyncConfluenceSource; checksum: string; target: string }> = [];
+        const mediaTasks: Array<{ entryPath: string; download: () => Promise<Buffer>; checksum: string; target: string; label: string }> = [];
         const confluenceOutcome = emptyConfluenceOutcome();
         for (const entry of actionable) {
           updateProgress('transferring', feature.originId, entry.path);
@@ -989,11 +1011,8 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
               confluenceTasks.push({ entryPath: entry.path, source: expected.confluence, checksum: expected.checksum, target: path.join(stageFeature, rel) });
               continue;
             }
-            const content = await media.downloadFile(feature.originId, rel);
-            if (checksum(content) !== expected.checksum) throw new Error(`Remote Feature changed after PLAN: ${rel}`);
-            const target = path.join(stageFeature, rel);
-            await fs.mkdir(path.dirname(target), { recursive: true });
-            await fs.writeFile(target, content);
+            mediaTasks.push({ entryPath: entry.path, download: () => featureSession.download(rel), checksum: expected.checksum, target: path.join(stageFeature, rel), label: `Remote Feature changed after PLAN: ${rel}` });
+            continue;
           } else if (entry.path.startsWith(`bound-context/${feature.originId}/`)) {
             const rel = entry.path.slice(`bound-context/${feature.originId}/`.length);
             const expected = feature.contextFiles.find((file) => file.rel === rel);
@@ -1002,15 +1021,20 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
               confluenceTasks.push({ entryPath: entry.path, source: expected.confluence, checksum: expected.checksum, target: path.join(stageContext, rel) });
               continue;
             }
-            const content = await media.downloadFile(stored.plan.originAppId, rel);
-            if (checksum(content) !== expected.checksum) throw new Error(`Bound Context changed after PLAN: ${rel}`);
-            const target = path.join(stageContext, rel);
-            await fs.mkdir(path.dirname(target), { recursive: true });
-            await fs.writeFile(target, content);
+            mediaTasks.push({ entryPath: entry.path, download: async () => (await appSession()).download(rel), checksum: expected.checksum, target: path.join(stageContext, rel), label: `Bound Context changed after PLAN: ${rel}` });
+            continue;
           }
           completed += 1;
           updateProgress('transferring', feature.originId, entry.path);
         }
+        await mapLimit(mediaTasks, MEDIA_TRANSFER_CONCURRENCY, async (task) => {
+          const content = await task.download();
+          if (checksum(content) !== task.checksum) throw new Error(task.label);
+          await fs.mkdir(path.dirname(task.target), { recursive: true });
+          await fs.writeFile(task.target, content);
+          completed += 1;
+          updateProgress('transferring', feature.originId, task.entryPath);
+        });
         await mapLimit(confluenceTasks, CONFLUENCE_PULL_CONCURRENCY, async (task) => {
           await pullConfluenceBlob(creds, task.entryPath, task.source, task.checksum, task.target, confluenceOutcome);
           completed += 1;
@@ -1190,6 +1214,18 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
     const current = await snapshot(exec.units, exec.direction);
     if (!projectSyncPlanIsFresh(stored, current.localFiles, current.originFiles)) return sendApiError(res, 409, ERR_PROJECT_SYNC_PLAN_EXPIRED, 'plan baseline changed — re-plan and retry');
     const media = new MediaClient(mediaConfigFromEnv());
+    // One MediaFolderSession per origin folder for the whole APPLY: the folder
+    // is listed once and every upload/download/delete below hits the index.
+    // Push may create the folder; pull never does.
+    const sessions = new Map<string, Promise<MediaFolderSession>>();
+    const sessionFor = (originId: string): Promise<MediaFolderSession> => {
+      let pending = sessions.get(originId);
+      if (!pending) {
+        pending = media.openFolderSession(originId, { create: stored.plan.direction === 'push' });
+        sessions.set(originId, pending);
+      }
+      return pending;
+    };
     const unitFor = (entryPath: string) => exec.units.find((unit) => entryPath === unit.prefix || entryPath.startsWith(`${unit.prefix}/`));
     const relFor = (entryPath: string, unit: Unit) => entryPath.slice(unit.prefix.length + 1);
     let applied = 0; let skipped = 0; let unchanged = 0; let manifested = 0;
@@ -1198,13 +1234,17 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
     // parallel after every media entry has been handled sequentially.
     const confluenceTasks: Array<{ entry: typeof stored.plan.entries[number]; source: ProjectSyncConfluenceSource; dest: string }> = [];
     const confluenceOutcome = emptyConfluenceOutcome();
+    // Media transfers run MEDIA_TRANSFER_CONCURRENCY at a time after the
+    // sequential pass: push uploads, and plain pull downloads (control-file
+    // rewrites — project.json / app.json — stay inline and sequential).
+    const mediaTasks: Array<{ entry: typeof stored.plan.entries[number]; run: () => Promise<void> }> = [];
     // App Push removes an origin-only Feature as one lifecycle operation, not
     // once for every file in its folder. The current files and history remain
     // intact so an administrator can audit or restore the hidden Feature.
     if (stored.plan.direction === 'push' && exec.scope.kind === 'app') {
       for (const unit of exec.units.filter((candidate) => !candidate.localId && candidate.featureId && candidate.originId)) {
         try {
-          await media.uploadFile(unit.originId, '', PROJECT_LIFECYCLE_PATH, 'application/json', Buffer.from(JSON.stringify({ schemaVersion: 1, projectId: unit.originId, visibility: 'hidden', hiddenAt: new Date().toISOString() })));
+          await (await sessionFor(unit.originId)).upload(PROJECT_LIFECYCLE_PATH, '', 'application/json', Buffer.from(JSON.stringify({ schemaVersion: 1, projectId: unit.originId, visibility: 'hidden', hiddenAt: new Date().toISOString() })));
           softHiddenOriginFeatureIds.push(unit.originId);
           applied += 1;
         } catch (error) {
@@ -1253,21 +1293,23 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
                 // A ledger-synthesized origin entry has no media file to remove;
                 // the next ledger upload drops it from every origin listing.
                 applied += 1;
-              } else if (!isHistory(rel)) { const files = await media.listFiles(unit.originId); const found = files.find((file) => file.path === rel) as { id?: string } | undefined; if (found?.id) await media.deleteFile(found.id); applied += 1; }
+              } else if (!isHistory(rel)) { await (await sessionFor(unit.originId)).deleteByPath(rel); applied += 1; }
             } else if (entry.confluence) {
               // Bytes stay on Confluence: the ledger (uploaded as a plain file)
               // is the manifest. A stale media copy from a pre-ledger push is
               // removed so the origin listing stops shadowing the ledger.
               if (entry.change === 'changed' && entry.origin && !isHistory(rel)) {
-                const files = await media.listFiles(unit.originId);
-                const found = files.find((file) => file.path === rel) as { id?: string } | undefined;
-                if (found?.id) await media.deleteFile(found.id);
+                await (await sessionFor(unit.originId)).deleteByPath(rel);
               }
               manifested += 1;
             } else if (unit.localId) {
-              const content = exec.localContentByPath.get(entry.path)
-                ?? await fs.readFile(path.join(ctx.paths.PROJECTS_DIR, unit.localId, rel));
-              await media.uploadFile(unit.originId, '', rel, 'application/octet-stream', content); applied += 1;
+              const { localId, originId } = unit;
+              mediaTasks.push({ entry, run: async () => {
+                const content = exec.localContentByPath.get(entry.path)
+                  ?? await fs.readFile(path.join(ctx.paths.PROJECTS_DIR, localId, rel));
+                await (await sessionFor(originId)).upload(rel, '', 'application/octet-stream', content);
+              } });
+              deferred = true;
             }
           } else if (stored.plan.direction === 'pull' && resolution === 'pull') {
             const dest = unit.localId ? path.join(ctx.paths.PROJECTS_DIR, unit.localId, rel) : null;
@@ -1283,8 +1325,16 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
             else if (entry.confluence && entry.origin) {
               confluenceTasks.push({ entry, source: entry.confluence, dest });
               deferred = true;
+            } else if (!(unit.featureId && rel === 'project.json') && !(unit.isApp && !unit.contextVersion && rel === 'app.json')) {
+              const { originId } = unit;
+              mediaTasks.push({ entry, run: async () => {
+                const content = await (await sessionFor(originId)).download(rel);
+                await fs.mkdir(path.dirname(dest), { recursive: true });
+                await fs.writeFile(dest, content);
+              } });
+              deferred = true;
             } else {
-              const content = await media.downloadFile(unit.originId, rel);
+              const content = await (await sessionFor(unit.originId)).download(rel);
               if (unit.featureId && rel === 'project.json') {
                 const remote = JSON.parse(content.toString('utf8')) as Record<string, unknown>;
                 const project = getProject(db, unit.localId!) as LocalProject;
@@ -1324,6 +1374,13 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
           report?.('transferring', completedItems, entry.path, entry.featureId ?? null);
         }
       }
+    }
+    if (mediaTasks.length > 0) {
+      await mapLimit(mediaTasks, MEDIA_TRANSFER_CONCURRENCY, async ({ entry, run }) => {
+        try { await run(); applied += 1; } catch (error) { stale.push({ path: entry.path, reason: (error as Error).message }); }
+        completedItems += 1;
+        report?.('transferring', completedItems, entry.path, entry.featureId ?? null);
+      });
     }
     if (confluenceTasks.length > 0) {
       const creds = await confluenceCreds();

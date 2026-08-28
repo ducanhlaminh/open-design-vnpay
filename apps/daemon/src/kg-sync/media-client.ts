@@ -241,17 +241,34 @@ export class MediaClient {
     return files.map((f) => ({ path: f.path, stage: f.stage, checksum: f.checksum, id: f.id, mime: f.mime }));
   }
 
+  /** One-shot: resolve folder + list + download. For N files on the same
+   *  project open a MediaFolderSession instead (lists once). */
   async downloadFile(projectId: string, filePath: string): Promise<Buffer> {
-    const folderId = await this.findFolderId(projectId);
-    if (!folderId) throw new Error(`downloadFile: no folder for ${projectId}`);
-    const files = await this.listAllFiles(folderId);
-    const match = files.find((f) => f.path === filePath);
-    if (!match) throw new Error(`downloadFile: not found ${projectId}/${filePath}`);
-    const res = await fetch(this.url(`/api/v1/files/${encodeURIComponent(match.id)}/download`), {
+    const session = await this.openFolderSession(projectId, { create: false });
+    if (!session.folderId) throw new Error(`downloadFile: no folder for ${projectId}`);
+    return session.download(filePath);
+  }
+
+  /** @internal GET a file's bytes by store id. */
+  async downloadById(id: string): Promise<Buffer> {
+    const res = await fetch(this.url(`/api/v1/files/${encodeURIComponent(id)}/download`), {
       headers: this.headers(),
     });
     await this.assertOk(res, 'downloadFile');
     return Buffer.from(await res.arrayBuffer());
+  }
+
+  // ── sessions ─────────────────────────────────────────────────────────────
+
+  /** Open a per-project session that lists the folder EXACTLY ONCE and serves
+   *  every subsequent upload/download/delete from an in-memory path index.
+   *  `create:false` never materialises the folder (read-only callers); the
+   *  session then has `folderId === null` and an empty index — uploads still
+   *  work (they ensureFolder lazily on first write). */
+  async openFolderSession(projectId: string, opts: { create: boolean } = { create: false }): Promise<MediaFolderSession> {
+    const folderId = opts.create ? await this.ensureFolder(projectId) : await this.findFolderId(projectId);
+    const files = folderId ? await this.listAllFiles(folderId) : [];
+    return new MediaFolderSession(this, projectId, folderId, files);
   }
 
   // ── writes ───────────────────────────────────────────────────────────────
@@ -267,13 +284,16 @@ export class MediaClient {
     await this.assertOk(res, 'deleteFile');
   }
 
-  private async uploadOne(
+  /** @internal Raw multipart Create (no dedupe). Returns the stored row as the
+   *  server reported it (id/checksum), falling back to locally-known values
+   *  when the response omits them, so a session can index it without re-listing. */
+  async uploadOne(
     folderId: string,
     filePath: string,
     stage: string,
     mime: string,
     content: Buffer,
-  ): Promise<void> {
+  ): Promise<MediaFile> {
     const fd = new FormData();
     const base = filePath.split('/').pop() || filePath;
     fd.append('file', new Blob([content], { type: mime || 'application/octet-stream' }), base);
@@ -287,10 +307,22 @@ export class MediaClient {
       body: fd,
     });
     await this.assertOk(res, 'uploadFile');
+    const raw = (await res.json().catch(() => null)) as RawFile | null;
+    const fromServer = raw && typeof raw === 'object' && typeof raw.id === 'string' ? this.toMediaFile(raw) : null;
+    return {
+      id: fromServer?.id ?? '',
+      path: filePath,
+      stage,
+      checksum: fromServer?.checksum || sha256hex(content),
+      name: fromServer?.name ?? base,
+      mime: fromServer?.mime || mime,
+      size: fromServer?.size || content.length,
+    };
   }
 
   /** KgsClient-compatible single-file upload (content-hash dedup against any
-   *  same-path copies). Prefer syncProjectFiles for batches — it lists once. */
+   *  same-path copies). One-shot: ensureFolder + list per call. For N files on
+   *  the same project open a MediaFolderSession (or use syncProjectFiles). */
   async uploadFile(
     projectId: string,
     stage: string,
@@ -298,16 +330,8 @@ export class MediaClient {
     mime: string,
     content: Buffer,
   ): Promise<void> {
-    const folderId = await this.ensureFolder(projectId);
-    const remote = (await this.listAllFiles(folderId)).filter((f) => f.path === filePath);
-    const sum = sha256hex(content);
-    const keep = remote.find((f) => f.checksum === sum);
-    if (keep) {
-      for (const dup of remote) if (dup.id !== keep.id) await this.deleteFile(dup.id);
-      return;
-    }
-    for (const dup of remote) await this.deleteFile(dup.id);
-    await this.uploadOne(folderId, filePath, stage, mime, content);
+    const session = await this.openFolderSession(projectId, { create: true });
+    await session.upload(filePath, stage, mime, content);
   }
 
   /** Optimal batch sync (rsync/content-hash): one list, then per file
@@ -350,5 +374,112 @@ export class MediaClient {
       }
     }
     return { uploaded, skipped, deleted };
+  }
+}
+
+/** In-memory view of one project folder: listed once at open, then kept in
+ *  sync by every upload/delete that goes through it. Safe for CONCURRENT calls
+ *  on DIFFERENT paths (the index is mutated synchronously after each await, so
+ *  no interleaving can observe a half-applied state); callers must not run two
+ *  writes on the SAME path at once. Reads never create the folder; the first
+ *  upload on a session opened with `create:false` ensures it lazily. */
+export class MediaFolderSession {
+  private readonly index = new Map<string, MediaFile[]>();
+  private folder: string | null;
+  private folderPromise: Promise<string> | null = null;
+
+  constructor(
+    private readonly client: MediaClient,
+    readonly projectId: string,
+    folderId: string | null,
+    files: MediaFile[],
+  ) {
+    this.folder = folderId;
+    for (const f of files) this.add(f);
+  }
+
+  /** Resolved folder id, or null when the project has no media folder (yet). */
+  get folderId(): string | null { return this.folder; }
+
+  private add(f: MediaFile): void {
+    const arr = this.index.get(f.path);
+    if (arr) arr.push(f);
+    else this.index.set(f.path, [f]);
+  }
+
+  private remove(filePath: string, id: string): void {
+    const arr = this.index.get(filePath);
+    if (!arr) return;
+    const next = arr.filter((f) => f.id !== id);
+    if (next.length === 0) this.index.delete(filePath);
+    else this.index.set(filePath, next);
+  }
+
+  private async ensureFolder(): Promise<string> {
+    if (this.folder) return this.folder;
+    if (!this.folderPromise) {
+      this.folderPromise = this.client.ensureFolder(this.projectId).then((id) => { this.folder = id; return id; });
+    }
+    return this.folderPromise;
+  }
+
+  has(filePath: string): boolean { return this.index.has(filePath); }
+
+  /** Indexed rows for a path (same-path duplicates included). */
+  get(filePath: string): MediaFile[] { return [...(this.index.get(filePath) ?? [])]; }
+
+  /** Every indexed row (snapshot). */
+  list(): MediaFile[] {
+    const out: MediaFile[] = [];
+    for (const arr of this.index.values()) out.push(...arr);
+    return out;
+  }
+
+  /** KgsClient-compatible rows (`{path, stage, checksum, id, mime}`), like
+   *  MediaClient.listFiles but served from the index. */
+  listFiles(): Array<Record<string, unknown>> {
+    return this.list().map((f) => ({ path: f.path, stage: f.stage, checksum: f.checksum, id: f.id, mime: f.mime }));
+  }
+
+  async download(filePath: string): Promise<Buffer> {
+    const match = (this.index.get(filePath) ?? []).find((f) => f.id);
+    if (!match) throw new Error(`downloadFile: not found ${this.projectId}/${filePath}`);
+    return this.client.downloadById(match.id);
+  }
+
+  /** Content-hash dedupe/replace exactly like MediaClient.uploadFile, against
+   *  the index instead of a fresh list. */
+  async upload(filePath: string, stage: string, mime: string, content: Buffer): Promise<void> {
+    const remote = this.get(filePath);
+    const sum = sha256hex(content);
+    const keep = remote.find((f) => f.checksum === sum);
+    if (keep) {
+      for (const dup of remote) {
+        if (dup.id === keep.id || !dup.id) continue;
+        await this.client.deleteFile(dup.id);
+        this.remove(filePath, dup.id);
+      }
+      return;
+    }
+    for (const dup of remote) {
+      if (!dup.id) continue;
+      await this.client.deleteFile(dup.id);
+      this.remove(filePath, dup.id);
+    }
+    const folderId = await this.ensureFolder();
+    const stored = await this.client.uploadOne(folderId, filePath, stage, mime, content);
+    this.add(stored);
+  }
+
+  /** Delete every row at `filePath` (no-op when absent). */
+  async deleteByPath(filePath: string): Promise<number> {
+    let deleted = 0;
+    for (const f of this.get(filePath)) {
+      if (!f.id) continue;
+      await this.client.deleteFile(f.id);
+      this.remove(filePath, f.id);
+      deleted += 1;
+    }
+    return deleted;
   }
 }

@@ -12,6 +12,7 @@ const state = vi.hoisted(() => ({
   pipelineApps: [] as Array<{ id: string; name: string }>,
   failDownloads: new Set<string>(),
   downloads: [] as string[],
+  sessionOpens: [] as string[],
   failAppUpsert: false,
   history: [] as Array<{ cwd: string; kind: string; input?: string }>,
   confluenceCreds: null as { base: string; token: string } | null,
@@ -71,6 +72,24 @@ vi.mock('../src/kg-sync/media-client.js', () => ({
       state.uploads.push({ projectId, path: filePath, content });
     }
     async deleteFile() {}
+    // Mirrors MediaFolderSession: one "list" per open (counted in
+    // state.sessionOpens), every read/write delegated to the fake above so
+    // state.uploads / state.downloads keep recording.
+    async openFolderSession(projectId: string) {
+      state.sessionOpens.push(projectId);
+      const rows = () => state.mediaFiles[projectId] ?? [];
+      return {
+        projectId,
+        folderId: projectId,
+        has: (filePath: string) => rows().some((row) => row.path === filePath),
+        get: (filePath: string) => rows().filter((row) => row.path === filePath),
+        list: () => rows(),
+        listFiles: () => rows(),
+        download: (filePath: string) => this.downloadFile(projectId, filePath),
+        upload: (filePath: string, stage: string, mime: string, content: Buffer) => this.uploadFile(projectId, stage, filePath, mime, content),
+        deleteByPath: async () => 0,
+      };
+    }
   },
   mediaConfigFromEnv: () => ({}),
 }));
@@ -123,7 +142,7 @@ async function pollFeaturePullOperation(table: Map<string, Handler>, operationId
 }
 
 describe('project-sync route contract', () => {
-  beforeEach(() => { state.projects = []; state.origins = []; state.mediaFiles = {}; state.uploads = []; state.appUpserts = []; state.pipelineApps = []; state.failDownloads = new Set(); state.downloads = []; state.failAppUpsert = false; state.history = []; state.confluenceCreds = null; state.confluenceFetch = null; state.confluenceRequests = []; });
+  beforeEach(() => { state.projects = []; state.origins = []; state.mediaFiles = {}; state.uploads = []; state.appUpserts = []; state.pipelineApps = []; state.failDownloads = new Set(); state.downloads = []; state.sessionOpens = []; state.failAppUpsert = false; state.history = []; state.confluenceCreds = null; state.confluenceFetch = null; state.confluenceRequests = []; });
 
   it('filters origins to visible rows and supports the Feature App filter', async () => {
     state.origins = [
@@ -204,6 +223,32 @@ describe('project-sync route contract', () => {
     expect(applied.status).toBe(200);
     const uploaded = state.uploads.find((item) => item.projectId === 'feature--generated' && item.path === 'project.json');
     expect(JSON.parse(uploaded!.content.toString('utf8')).name).toBe('Tên trên kho chung');
+  });
+
+  it('pushes many files through one folder session per unit (uploads all, lists at most twice)', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'od-push-session-'));
+    try {
+      state.projects = [{ id: 'local', name: 'Local', metadata: { studioConfig: {} } }];
+      await fs.mkdir(path.join(root, 'local', 'ux'), { recursive: true });
+      for (let i = 0; i < 10; i += 1) await fs.writeFile(path.join(root, 'local', 'ux', `file-${i}.json`), JSON.stringify({ i }));
+      const table = handlers(root);
+      const planned = await call(table.get('POST /api/project-sync/plan')!, {
+        direction: 'push', scope: { kind: 'feature', projectId: 'local' }, origin: { mode: 'new', originId: 'feature--many' },
+      });
+      expect(planned.status).toBe(200);
+      state.sessionOpens = [];
+      const applied = await call(table.get('POST /api/project-sync/apply')!, { planId: planned.body.data.planId });
+      expect(applied.status).toBe(200);
+      expect(applied.body.data.stale).toEqual([]);
+      const uploaded = state.uploads.filter((item) => item.projectId === 'feature--many' && item.path.startsWith('ux/')).map((item) => item.path).sort();
+      expect(uploaded).toEqual(Array.from({ length: 10 }, (_, i) => `ux/file-${i}.json`).sort());
+      expect(applied.body.data.applied).toBeGreaterThanOrEqual(10);
+      // The apply itself opens ONE session for the unit; the post-apply verify
+      // plan may open one more. Never one list per file.
+      expect(state.sessionOpens.filter((id) => id === 'feature--many').length).toBeLessThanOrEqual(2);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
   });
 
   it('starts and polls an asynchronous APPLY operation while preserving legacy APPLY', async () => {
