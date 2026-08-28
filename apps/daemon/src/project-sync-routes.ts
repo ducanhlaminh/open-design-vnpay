@@ -57,48 +57,67 @@ import { historyActor } from './history-actor.js';
 import { digestProjectSyncSides, evaluateProjectSyncStatus } from './project-sync-status.js';
 import { ProjectSyncStateStore } from './project-sync-state.js';
 import { resolveConfluenceCreds } from './bas/bas-client.js';
-import { readConfluenceSourcesLedger, type ConfluenceSourcesLedger } from './confluence-sources.js';
+import type { ConfluenceSourceItem, ConfluenceSourcesLedger } from './confluence-sources.js';
 import {
-  attachmentDirOf,
+  CONFLUENCE_CREDS_MISSING,
+  CONFLUENCE_PULL_CONCURRENCY,
   confluencePreflight,
+  confluenceSourceOf,
+  expandLedgerGroup,
   fetchConfluenceBlob,
+  groupLocalLedgers,
+  groupOriginLedgers,
   isAttachmentsLedgerPath,
   mapLimit,
   parseConfluenceLedgerBuffer,
-  resolveLocalConfluenceSources,
-  synthesizeOriginConfluenceEntries,
+  type LazyLocalFile,
+  type OriginLedgerGroup,
 } from './confluence-blobs.js';
 
-/** Raw Confluence attachments are re-downloaded from the wiki, 4 at a time. */
-const CONFLUENCE_PULL_CONCURRENCY = 4;
 // Media transfers (upload/download) per project folder run through ONE
 // MediaFolderSession (single list) with bounded parallelism.
 const MEDIA_TRANSFER_CONCURRENCY = 4;
-const CONFLUENCE_CREDS_MISSING = 'Chưa cấu hình PAT Confluence';
 type ConfluenceCreds = { base: string; token: string };
+/** Wiki items one `attachments/_sources.json` entry stands for (origin side),
+ * kept out of the plan JSON so APPLY/preflight never re-download the ledger. */
+type LedgerRef = { base: string; items: ConfluenceSourceItem[] };
+const groupOf = (group: Pick<OriginLedgerGroup, 'files' | 'bytes' | 'missing'>) => ({ files: group.files, bytes: group.bytes, missing: group.missing });
+const ledgerRefOf = (group: OriginLedgerGroup): LedgerRef => ({ base: group.base, items: group.items });
 
-/** Origin ledgers of one media folder → synthetic entries for files whose
- * bytes are NOT on media. Ledgers are tiny, so sequential downloads are fine. */
-/** Adapter so ledger reads reuse an already-listed session (no per-file list). */
-function sessionReader(session: MediaFolderSession): Pick<MediaClient, 'downloadFile'> {
-  return { downloadFile: (_projectId: string, rel: string) => session.download(rel) };
-}
-
-async function originConfluenceEntries(
-  media: Pick<MediaClient, 'downloadFile'>,
-  originId: string,
+/** Origin ledgers of one media folder → one group per ledger for the items
+ * whose bytes are NOT on media. Ledgers are tiny, so sequential downloads are
+ * fine. `local` = null skips the pull-only `missing` stat. */
+async function originLedgerGroups(
+  download: (rel: string) => Promise<Buffer>,
   remoteRels: readonly string[],
-  include: (rel: string) => boolean = () => true,
-): Promise<Array<{ rel: string; checksum: string; size: number; confluence: ProjectSyncConfluenceSource }>> {
+  include: (rel: string) => boolean,
+  local: { root: string | null } | null,
+): Promise<Map<string, OriginLedgerGroup>> {
   const ledgers: Array<{ dirRel: string; ledger: ConfluenceSourcesLedger }> = [];
   for (const rel of remoteRels) {
     if (!isAttachmentsLedgerPath(rel) || !include(rel)) continue;
-    const content = await media.downloadFile(originId, rel).catch(() => null);
+    const content = await download(rel).catch(() => null);
     const ledger = content ? parseConfluenceLedgerBuffer(content) : null;
     if (ledger) ledgers.push({ dirRel: path.posix.dirname(rel), ledger });
   }
-  if (ledgers.length === 0) return [];
-  return synthesizeOriginConfluenceEntries(ledgers, new Set(remoteRels)).filter((entry) => include(entry.rel));
+  if (ledgers.length === 0) return new Map();
+  return groupOriginLedgers(ledgers, new Set(remoteRels), local);
+}
+
+/** Same, from ledger blobs that were already downloaded (batch PLAN). */
+async function ledgerGroupsFromContents(
+  contents: ReadonlyArray<{ rel: string; content: Buffer }>,
+  remoteRels: readonly string[],
+  local: { root: string | null } | null,
+): Promise<Map<string, OriginLedgerGroup>> {
+  const ledgers: Array<{ dirRel: string; ledger: ConfluenceSourcesLedger }> = [];
+  for (const { rel, content } of contents) {
+    if (!isAttachmentsLedgerPath(rel)) continue;
+    const ledger = parseConfluenceLedgerBuffer(content);
+    if (ledger) ledgers.push({ dirRel: path.posix.dirname(rel), ledger });
+  }
+  if (ledgers.length === 0) return new Map();
+  return groupOriginLedgers(ledgers, new Set(remoteRels), local);
 }
 
 const emptyConfluenceOutcome = (): ProjectSyncConfluencePullOutcome => ({ fetched: 0, drifted: [], missing: [] });
@@ -250,8 +269,10 @@ export function runningStageIdsOf(metadata: unknown): string[] {
     .map(([stageId]) => stageId);
 }
 
-async function walkFiles(root: string): Promise<Array<{ rel: string; content: Buffer }>> {
-  const out: Array<{ rel: string; content: Buffer }> = [];
+/** Lazy walk: stat every file up front, read bytes only on `read()` (cached).
+ * Files matching a sibling Confluence ledger are never read at all. */
+async function walkFiles(root: string): Promise<LazyLocalFile[]> {
+  const out: LazyLocalFile[] = [];
   const visit = async (dir: string, prefix: string): Promise<void> => {
     const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
     for (const entry of entries) {
@@ -260,8 +281,10 @@ async function walkFiles(root: string): Promise<Array<{ rel: string; content: Bu
       const abs = path.join(dir, entry.name);
       if (entry.isDirectory()) await visit(abs, rel);
       else if (entry.isFile()) {
-        const content = await fs.readFile(abs).catch(() => null);
-        if (content) out.push({ rel, content });
+        const stat = await fs.stat(abs).catch(() => null);
+        if (!stat) continue;
+        let cached: Promise<Buffer> | null = null;
+        out.push({ rel, size: stat.size, mtimeMs: stat.mtimeMs, read: () => (cached ??= fs.readFile(abs)) });
       }
     }
   };
@@ -281,10 +304,12 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
     localId: string;
     name: string;
     mode: 'create' | 'update';
-    featureFiles: Array<{ rel: string; checksum: string; confluence?: ProjectSyncConfluenceSource }>;
+    featureFiles: BatchExecutionFile[];
     contextVersion: string | null;
-    contextFiles: Array<{ rel: string; checksum: string; confluence?: ProjectSyncConfluenceSource }>;
+    contextFiles: BatchExecutionFile[];
   };
+  /** `ledger` marks an `attachments/_sources.json` whose wiki items expand at APPLY. */
+  type BatchExecutionFile = { rel: string; checksum: string; confluence?: ProjectSyncConfluenceSource; ledger?: LedgerRef };
   type StoredBatch = { plan: ProjectSyncFeaturePullBatchPlan; features: BatchExecutionFeature[]; expiresAt: number };
   const featurePullPlans = new Map<string, StoredBatch>();
   const featurePullOperations = new Map<string, { operation: ProjectSyncFeaturePullBatchOperation; expiresAt: number }>();
@@ -297,7 +322,7 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
     }, PROJECT_SYNC_OPERATION_TTL_MS);
     timer.unref();
   };
-  const execution = new Map<string, { units: Unit[]; direction: ProjectSyncDirection; scope: ProjectSyncScope; localContentByPath: Map<string, Buffer>; expiresAt: number }>();
+  const execution = new Map<string, { units: Unit[]; direction: ProjectSyncDirection; scope: ProjectSyncScope; localContentByPath: Map<string, Buffer>; ledgerItemsByPath: Map<string, LedgerRef>; expiresAt: number }>();
   const appliedResults = new Map<string, { expiresAt: number; result: ProjectSyncApplyResult }>();
   const projects = (): LocalProject[] => listProjects(db) as LocalProject[];
   // PAT + base of THIS machine; null means every Confluence-backed Pull entry
@@ -403,6 +428,7 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
     const localFiles: ProjectSyncSnapshotFile[] = [];
     const originFiles: ProjectSyncSnapshotFile[] = [];
     const localContentByPath = new Map<string, Buffer>();
+    const ledgerItemsByPath = new Map<string, LedgerRef>();
     for (const unit of units) {
       const remoteFiles = unit.originId ? await media.listFiles(unit.originId).catch(() => []) : [];
       let latestRemoteContextVersion: `v${number}` | null = null;
@@ -425,13 +451,18 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
         return rel === `${versionRoot}/manifest.json` || rel.startsWith(`${versionRoot}/files/`);
       };
       const localRels = new Set<string>();
-      const unitLocalFiles: Array<{ rel: string; file: ProjectSyncSnapshotFile }> = [];
-      if (unit.localId) {
-        for (const file of await walkFiles(path.join(ctx.paths.PROJECTS_DIR, unit.localId))) {
-          if (isControl(file.rel)) continue;
-          if (!includeLatestAppContext(file.rel)) continue;
-          if (unit.contextVersion && !file.rel.startsWith(`context/versions/${unit.contextVersion}/`)) continue;
-          let content = file.content;
+      const localRoot = unit.localId ? path.join(ctx.paths.PROJECTS_DIR, unit.localId) : null;
+      if (unit.localId && localRoot) {
+        const walked = (await walkFiles(localRoot)).filter((file) => !isControl(file.rel)
+          && includeLatestAppContext(file.rel)
+          && (!unit.contextVersion || file.rel.startsWith(`context/versions/${unit.contextVersion}/`)));
+        // A raw wiki attachment matching its sibling ledger is represented by
+        // the ledger entry alone (`confluenceGroup`): never read, never listed.
+        const ledgers = await groupLocalLedgers(localRoot, walked);
+        for (const file of walked) {
+          if (ledgers.matched.has(file.rel)) continue;
+          let content = await file.read().catch(() => null);
+          if (!content) continue;
           const controlRel = unit.isApp ? 'app.json' : 'project.json';
           // A pulled Feature keeps the LOCAL App id in its project.json; the
           // origin must always see the origin App id, otherwise a later push
@@ -458,37 +489,30 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
           localRels.add(file.rel);
           localContentByPath.set(entryPath, content);
           const stage = !unit.isApp ? stageForOutput(file.rel)?.id : undefined;
-          const snapshotFile: ProjectSyncSnapshotFile = { path: entryPath, checksum: checksum(content), size: content.length, kind: kindOf(file.rel, unit.isApp), ...(unit.featureId ? { featureId: unit.featureId } : {}), ...(stage ? { stage } : {}), ...(unit.contextVersion ? { contextVersion: unit.contextVersion } : {}) };
-          localFiles.push(snapshotFile);
-          unitLocalFiles.push({ rel: file.rel, file: snapshotFile });
-        }
-        // A raw wiki attachment listed (same sha) in its sibling ledger is
-        // Confluence-backed; the ledger file itself stays a plain byte file.
-        const sources = await resolveLocalConfluenceSources(path.join(ctx.paths.PROJECTS_DIR, unit.localId), unitLocalFiles.map(({ rel, file }) => ({ rel, checksum: file.checksum })));
-        for (const { rel, file } of unitLocalFiles) {
-          const source = sources.get(rel);
-          if (source) file.confluence = source;
+          const group = ledgers.groups.get(file.rel);
+          localFiles.push({ path: entryPath, checksum: checksum(content), size: content.length, kind: kindOf(file.rel, unit.isApp), ...(unit.featureId ? { featureId: unit.featureId } : {}), ...(stage ? { stage } : {}), ...(unit.contextVersion ? { contextVersion: unit.contextVersion } : {}), ...(group ? { confluenceGroup: { files: group.files, bytes: group.bytes, missing: 0 } } : {}) });
         }
       }
-      const remoteRels: string[] = [];
+      const remoteRels: string[] = remoteFiles.map((file) => (typeof file.path === 'string' ? file.path : '')).filter(Boolean);
       const includeRemote = (rel: string): boolean => Boolean(rel) && !isControl(rel) && includeLatestAppContext(rel)
         && (!unit.contextVersion || rel.startsWith(`context/versions/${unit.contextVersion}/`));
+      // Origin ledgers stand in for the attachment bytes that were never
+      // uploaded: ONE group per ledger entry, never one entry per file. Pull
+      // also stats the local copies so an identical ledger with files missing
+      // on this machine still expands.
+      const ledgerGroups = unit.originId
+        ? await originLedgerGroups((rel) => media.downloadFile(unit.originId, rel), remoteRels, includeRemote, direction === 'pull' ? { root: localRoot } : null)
+        : new Map<string, OriginLedgerGroup>();
       for (const file of remoteFiles) {
         const rel = typeof file.path === 'string' ? file.path : '';
-        if (rel) remoteRels.push(rel);
         if (!includeRemote(rel)) continue;
         const stage = !unit.isApp
           ? (typeof (file as { stage?: unknown }).stage === 'string' ? (file as { stage: string }).stage : stageForOutput(rel)?.id)
           : undefined;
-        originFiles.push({ path: `${unit.prefix}/${rel}`, checksum: typeof file.checksum === 'string' ? file.checksum : '', size: 0, kind: kindOf(rel, unit.isApp), ...(unit.featureId ? { featureId: unit.featureId } : {}), ...(stage ? { stage } : {}), ...(unit.contextVersion ? { contextVersion: unit.contextVersion } : {}) });
-      }
-      // Origin ledgers stand in for the attachment bytes that were never
-      // uploaded: the diff sees them as ordinary origin files.
-      if (unit.originId) {
-        for (const synthetic of await originConfluenceEntries(media, unit.originId, remoteRels, includeRemote)) {
-          const stage = !unit.isApp ? stageForOutput(synthetic.rel)?.id : undefined;
-          originFiles.push({ path: `${unit.prefix}/${synthetic.rel}`, checksum: synthetic.checksum, size: synthetic.size, kind: kindOf(synthetic.rel, unit.isApp), ...(unit.featureId ? { featureId: unit.featureId } : {}), ...(stage ? { stage } : {}), ...(unit.contextVersion ? { contextVersion: unit.contextVersion } : {}), confluence: synthetic.confluence });
-        }
+        const entryPath = `${unit.prefix}/${rel}`;
+        const group = ledgerGroups.get(rel);
+        if (group) ledgerItemsByPath.set(entryPath, ledgerRefOf(group));
+        originFiles.push({ path: entryPath, checksum: typeof file.checksum === 'string' ? file.checksum : '', size: 0, kind: kindOf(rel, unit.isApp), ...(unit.featureId ? { featureId: unit.featureId } : {}), ...(stage ? { stage } : {}), ...(unit.contextVersion ? { contextVersion: unit.contextVersion } : {}), ...(group ? { confluenceGroup: groupOf(group) } : {}) });
       }
       if (unit.localId && !unit.contextVersion) {
         const controlRel = unit.isApp ? 'app.json' : 'project.json';
@@ -520,7 +544,7 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
         }
       }
     }
-    return { localFiles, originFiles, localContentByPath };
+    return { localFiles, originFiles, localContentByPath, ledgerItemsByPath };
   };
 
   const planFor = async (request: ProjectSyncPlanRequest, options: { retain?: boolean; origins?: ProjectSyncOrigin[]; statusScope?: boolean } = {}) => {
@@ -659,11 +683,16 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
     ));
     if (options.retain !== false) {
       plans.put(built);
+      // Only bytes a Push may upload stay resident for the plan TTL; APPLY
+      // re-reads from disk when a buffer is absent.
+      if (request.direction !== 'push') files.localContentByPath.clear();
+      else for (const entry of built.plan.entries) if (entry.change === 'unchanged') files.localContentByPath.delete(entry.path);
       execution.set(built.plan.planId, {
         units,
         direction: request.direction,
         scope: request.scope,
         localContentByPath: files.localContentByPath,
+        ledgerItemsByPath: files.ledgerItemsByPath,
         expiresAt: Date.now() + PROJECT_SYNC_PLAN_TTL_MS,
       });
     }
@@ -703,24 +732,24 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
   const featureSnapshot = async (originId: string, localId: string | null, localAppId: string) => {
     const media = new MediaClient(mediaConfigFromEnv());
     const localFiles: ProjectSyncSnapshotFile[] = [];
-    if (localId) for (const file of await walkFiles(path.join(ctx.paths.PROJECTS_DIR, localId))) {
-      if (isControl(file.rel)) continue;
-      const stage = stageForOutput(file.rel)?.id;
-      localFiles.push({ path: `feature/${file.rel}`, checksum: checksum(file.content), size: file.content.length, kind: kindOf(file.rel, false), featureId: originId, ...(stage ? { stage } : {}) });
+    const localRoot = localId ? path.join(ctx.paths.PROJECTS_DIR, localId) : null;
+    if (localRoot) {
+      const walked = (await walkFiles(localRoot)).filter((file) => !isControl(file.rel));
+      const ledgers = await groupLocalLedgers(localRoot, walked);
+      for (const file of walked) {
+        if (ledgers.matched.has(file.rel)) continue;
+        const content = await file.read().catch(() => null);
+        if (!content) continue;
+        const stage = stageForOutput(file.rel)?.id;
+        const group = ledgers.groups.get(file.rel);
+        localFiles.push({ path: `feature/${file.rel}`, checksum: checksum(content), size: content.length, kind: kindOf(file.rel, false), featureId: originId, ...(stage ? { stage } : {}), ...(group ? { confluenceGroup: { files: group.files, bytes: group.bytes, missing: 0 } } : {}) });
+      }
     }
     const originFiles: ProjectSyncSnapshotFile[] = [];
     const featureFiles: BatchExecutionFeature['featureFiles'] = [];
     const session = await media.openFolderSession(originId, { create: false });
     const remoteFeatureFiles = session.listFiles();
     const remoteRels = remoteFeatureFiles.map((file) => (typeof file.path === 'string' ? file.path : '')).filter(Boolean);
-    // Confluence-backed files: the ledger sha IS the origin checksum — nothing
-    // to download at PLAN time, and APPLY verifies against that same sha.
-    for (const synthetic of await originConfluenceEntries(sessionReader(session), originId, remoteRels, (rel) => !isControl(rel))) {
-      if (!safeRelativePath(synthetic.rel)) throw new Error(`Unsafe remote Feature path: ${synthetic.rel}`);
-      const stage = stageForOutput(synthetic.rel)?.id;
-      featureFiles.push({ rel: synthetic.rel, checksum: synthetic.checksum, confluence: synthetic.confluence });
-      originFiles.push({ path: `feature/${synthetic.rel}`, checksum: synthetic.checksum, size: synthetic.size, kind: kindOf(synthetic.rel, false), featureId: originId, ...(stage ? { stage } : {}), confluence: synthetic.confluence });
-    }
     const featureRels: string[] = [];
     for (const file of remoteFeatureFiles) {
       const rel = typeof file.path === 'string' ? file.path : '';
@@ -729,9 +758,13 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
       featureRels.push(rel);
     }
     const featureContents = await mapLimit(featureRels, MEDIA_TRANSFER_CONCURRENCY, (rel) => session.download(rel));
+    // Confluence-backed attachments: ONE group per ledger (already downloaded
+    // above) — nothing else to fetch at PLAN time; APPLY expands the group.
+    const ledgerGroups = await ledgerGroupsFromContents(featureRels.map((rel, i) => ({ rel, content: featureContents[i]! })), remoteRels, { root: localRoot });
     for (const [i, rel] of featureRels.entries()) {
       const content = featureContents[i]!;
       const digest = checksum(content);
+      const group = ledgerGroups.get(rel);
       let comparisonContent = content;
       if (rel === 'project.json') {
         const remote = JSON.parse(content.toString('utf8')) as Record<string, unknown>;
@@ -744,8 +777,8 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
         }, null, 2)}\n`);
       }
       const stage = stageForOutput(rel)?.id;
-      featureFiles.push({ rel, checksum: digest });
-      originFiles.push({ path: `feature/${rel}`, checksum: checksum(comparisonContent), size: comparisonContent.length, kind: kindOf(rel, false), featureId: originId, ...(stage ? { stage } : {}) });
+      featureFiles.push({ rel, checksum: digest, ...(group ? { ledger: ledgerRefOf(group) } : {}) });
+      originFiles.push({ path: `feature/${rel}`, checksum: checksum(comparisonContent), size: comparisonContent.length, kind: kindOf(rel, false), featureId: originId, ...(stage ? { stage } : {}), ...(group ? { confluenceGroup: groupOf(group) } : {}) });
     }
     return { localFiles, originFiles, featureFiles };
   };
@@ -761,23 +794,18 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
     const remote = allRemote.filter((file) => typeof file.path === 'string' && inVersion(file.path));
     if (!remote.some((file) => file.path === `${root}/manifest.json`)) throw new Error(`Bound Context ${contextVersion} is missing from origin App ${originAppId}`);
     const remoteRels = allRemote.map((file) => (typeof file.path === 'string' ? file.path : '')).filter(Boolean);
-    for (const synthetic of await originConfluenceEntries(sessionReader(session), originAppId, remoteRels, inVersion)) {
-      if (!safeRelativePath(synthetic.rel)) throw new Error(`Unsafe bound Context path: ${synthetic.rel}`);
-      const entryPath = `bound-context/${featureId}/${synthetic.rel}`;
-      empty.originFiles.push({ path: entryPath, checksum: synthetic.checksum, size: synthetic.size, kind: 'context', featureId, contextVersion, confluence: synthetic.confluence });
-      empty.contextFiles.push({ rel: synthetic.rel, checksum: synthetic.checksum, confluence: synthetic.confluence });
-      const local = await fs.readFile(path.join(ctx.paths.PROJECTS_DIR, localAppId, synthetic.rel)).catch(() => null);
-      if (local) empty.localFiles.push({ path: entryPath, checksum: checksum(local), size: local.length, kind: 'context', featureId, contextVersion });
-    }
     const contextRels = remote.map((file) => file.path as string);
     for (const rel of contextRels) if (!safeRelativePath(rel)) throw new Error(`Unsafe bound Context path: ${rel}`);
     const contextContents = await mapLimit(contextRels, MEDIA_TRANSFER_CONCURRENCY, (rel) => session.download(rel));
+    const localRoot = path.join(ctx.paths.PROJECTS_DIR, localAppId);
+    const ledgerGroups = await ledgerGroupsFromContents(contextRels.map((rel, i) => ({ rel, content: contextContents[i]! })), remoteRels, { root: localRoot });
     for (const [i, rel] of contextRels.entries()) {
       const content = contextContents[i]!;
       const digest = checksum(content);
       const entryPath = `bound-context/${featureId}/${rel}`;
-      empty.originFiles.push({ path: entryPath, checksum: digest, size: content.length, kind: 'context', featureId, contextVersion });
-      empty.contextFiles.push({ rel, checksum: digest });
+      const group = ledgerGroups.get(rel);
+      empty.originFiles.push({ path: entryPath, checksum: digest, size: content.length, kind: 'context', featureId, contextVersion, ...(group ? { confluenceGroup: groupOf(group) } : {}) });
+      empty.contextFiles.push({ rel, checksum: digest, ...(group ? { ledger: ledgerRefOf(group) } : {}) });
       const local = await fs.readFile(path.join(ctx.paths.PROJECTS_DIR, localAppId, rel)).catch(() => null);
       if (local) empty.localFiles.push({ path: entryPath, checksum: checksum(local), size: local.length, kind: 'context', featureId, contextVersion });
     }
@@ -969,6 +997,8 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
       // defaults to `skip` and stays in place (it is already inside stageFeature
       // via the cp above). Mirrors applyHandler's pull branch.
       const actionable = planned.entries.filter((entry) => entry.change !== 'unchanged' && entry.resolution === 'pull');
+      // Progress units: one per entry plus one per wiki file a ledger expands.
+      const featureUnits = actionable.reduce((total, entry) => total + 1 + (entry.confluenceGroup?.files ?? 0), 0);
       const completedBeforeFeature = completed;
       const stageRoot = await fs.mkdtemp(path.join(ctx.paths.PROJECTS_DIR, `.feature-pull-${feature.localId}-`));
       const stageFeature = path.join(stageRoot, 'feature');
@@ -994,7 +1024,12 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
         // pulled from the wiki afterwards, CONFLUENCE_PULL_CONCURRENCY at a time.
         const confluenceTasks: Array<{ entryPath: string; source: ProjectSyncConfluenceSource; checksum: string; target: string }> = [];
         const mediaTasks: Array<{ entryPath: string; download: () => Promise<Buffer>; checksum: string; target: string; label: string }> = [];
+        // Ledger entries: download the ledger, expand its wiki items into the
+        // stage dir (progress per file), then write the ledger itself.
+        const groupTasks: Array<{ entryPath: string; ledger: LedgerRef; files: number; download: () => Promise<Buffer>; checksum: string; target: string; label: string }> = [];
         const confluenceOutcome = emptyConfluenceOutcome();
+        let groupFetched = 0;
+        let groupMissing = 0;
         for (const entry of actionable) {
           updateProgress('transferring', feature.originId, entry.path);
           if (entry.path.startsWith('feature/')) {
@@ -1007,6 +1042,10 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
             }
             const expected = feature.featureFiles.find((file) => file.rel === rel);
             if (!expected) throw new Error(`Remote Feature file disappeared: ${rel}`);
+            if (expected.ledger) {
+              groupTasks.push({ entryPath: entry.path, ledger: expected.ledger, files: entry.confluenceGroup?.files ?? expected.ledger.items.length, download: () => featureSession.download(rel), checksum: expected.checksum, target: path.join(stageFeature, rel), label: `Remote Feature changed after PLAN: ${rel}` });
+              continue;
+            }
             if (expected.confluence) {
               confluenceTasks.push({ entryPath: entry.path, source: expected.confluence, checksum: expected.checksum, target: path.join(stageFeature, rel) });
               continue;
@@ -1017,6 +1056,10 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
             const rel = entry.path.slice(`bound-context/${feature.originId}/`.length);
             const expected = feature.contextFiles.find((file) => file.rel === rel);
             if (!expected) throw new Error(`Bound Context file disappeared: ${rel}`);
+            if (expected.ledger) {
+              groupTasks.push({ entryPath: entry.path, ledger: expected.ledger, files: entry.confluenceGroup?.files ?? expected.ledger.items.length, download: async () => (await appSession()).download(rel), checksum: expected.checksum, target: path.join(stageContext, rel), label: `Bound Context changed after PLAN: ${rel}` });
+              continue;
+            }
             if (expected.confluence) {
               confluenceTasks.push({ entryPath: entry.path, source: expected.confluence, checksum: expected.checksum, target: path.join(stageContext, rel) });
               continue;
@@ -1040,6 +1083,31 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
           completed += 1;
           updateProgress('transferring', feature.originId, task.entryPath);
         });
+        for (const task of groupTasks) {
+          const content = await task.download();
+          if (checksum(content) !== task.checksum) throw new Error(task.label);
+          const relDir = path.posix.dirname(task.entryPath);
+          let reported = 0;
+          const outcome = await expandLedgerGroup(creds, task.ledger, path.dirname(task.target), {
+            relDir,
+            onItem: (name) => {
+              reported += 1;
+              completed += 1;
+              updateProgress('transferring', feature.originId, `${relDir}/${name}`);
+            },
+          });
+          completed += Math.max(0, task.files - reported);
+          confluenceOutcome.fetched += outcome.fetched;
+          confluenceOutcome.drifted.push(...outcome.drifted);
+          confluenceOutcome.missing.push(...outcome.missing);
+          groupFetched += outcome.fetched;
+          groupMissing += outcome.missing.length;
+          // The ledger lands last so its mtime caps every file it stands for.
+          await fs.mkdir(path.dirname(task.target), { recursive: true });
+          await fs.writeFile(task.target, content);
+          completed += 1;
+          updateProgress('transferring', feature.originId, task.entryPath);
+        }
         // Local project control always points at local ownership while the
         // explicit mapping below retains remote identity.
         const localControl = {
@@ -1111,7 +1179,10 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
           syncState.markIncomplete(featureScope, identity, undefined, feature.contextVersion);
         }
         const unchanged = planned.entries.filter((entry) => entry.change === 'unchanged').length;
-        items.push({ originId: feature.originId, localId: feature.localId, state: 'succeeded', result: { planId: stored.plan.planId, applied: actionable.length - confluenceOutcome.missing.length, skipped: planned.entries.length - actionable.length - unchanged, unchanged, softHiddenOriginFeatureIds: [], stale: [], ...(confluenceTasks.length > 0 ? { confluence: confluenceOutcome } : {}) } });
+        // `applied` = entries written + wiki files actually fetched (a missing
+        // legacy per-file entry was itself an entry; a missing group item is not).
+        const applied = actionable.length - (confluenceOutcome.missing.length - groupMissing) + groupFetched;
+        items.push({ originId: feature.originId, localId: feature.localId, state: 'succeeded', result: { planId: stored.plan.planId, applied, skipped: planned.entries.length - actionable.length - unchanged, unchanged, softHiddenOriginFeatureIds: [], stale: [], ...(confluenceTasks.length > 0 || groupTasks.length > 0 ? { confluence: confluenceOutcome } : {}) } });
       } catch (error) {
         syncState.markIncomplete(
           { kind: 'feature', projectId: feature.localId, appId: stored.plan.localAppId },
@@ -1125,7 +1196,7 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
         }
         // Count the remainder of this item as processed so operation progress
         // remains monotonic and reaches 100% even for partial failure.
-        completed = completedBeforeFeature + actionable.length;
+        completed = completedBeforeFeature + featureUnits;
         items.push({ originId: feature.originId, localId: feature.localId, state: 'failed', error: { code: 'FEATURE_PULL_ITEM_FAILED', message: (error as Error).message, retryable: true } });
       } finally {
         await fs.rm(stageRoot, { recursive: true, force: true }).catch(() => undefined);
@@ -1148,8 +1219,11 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
   };
 
   const startFeaturePullOperation = (stored: StoredBatch, selectedOriginIds: Set<string>): ProjectSyncFeaturePullBatchOperation => {
+    // One unit per actionable entry, plus one per wiki file its ledger expands.
     const totalItems = stored.plan.features.filter((feature) => selectedOriginIds.has(feature.originId))
-      .reduce((total, feature) => total + feature.entries.filter((entry) => entry.change !== 'unchanged' && entry.resolution === 'pull').length, 0);
+      .reduce((total, feature) => total + feature.entries
+        .filter((entry) => entry.change !== 'unchanged' && entry.resolution === 'pull')
+        .reduce((sum, entry) => sum + 1 + (entry.confluenceGroup?.files ?? 0), 0), 0);
     const operation = featurePullOperation(stored.plan.planId, totalItems);
     saveFeaturePullOperation(operation);
     setImmediate(() => void runFeaturePullBatch(stored, operation, selectedOriginIds).catch((error: Error) => {
@@ -1233,6 +1307,9 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
     // Pull phase 2: Confluence-backed entries, fetched from the wiki in
     // parallel after every media entry has been handled sequentially.
     const confluenceTasks: Array<{ entry: typeof stored.plan.entries[number]; source: ProjectSyncConfluenceSource; dest: string }> = [];
+    // Pull phase 3: ledger entries, each expanded into its wiki files
+    // (sequentially per ledger, CONFLUENCE_PULL_CONCURRENCY within one).
+    const groupTasks: Array<{ entry: typeof stored.plan.entries[number]; unit: Unit; rel: string; dest: string }> = [];
     const confluenceOutcome = emptyConfluenceOutcome();
     // Media transfers run MEDIA_TRANSFER_CONCURRENCY at a time after the
     // sequential pass: push uploads, and plain pull downloads (control-file
@@ -1303,6 +1380,9 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
               }
               manifested += 1;
             } else if (unit.localId) {
+              // A ledger uploads as a plain file; the wiki files it stands for
+              // are manifested, never uploaded.
+              if (entry.confluenceGroup) manifested += entry.confluenceGroup.files;
               const { localId, originId } = unit;
               mediaTasks.push({ entry, run: async () => {
                 const content = exec.localContentByPath.get(entry.path)
@@ -1322,7 +1402,10 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
               });
             }
             if (entry.change === 'deleted') { if (!isHistory(rel)) await fs.rm(dest, { force: true }); applied += 1; }
-            else if (entry.confluence && entry.origin) {
+            else if (entry.confluenceGroup && entry.origin && isAttachmentsLedgerPath(rel)) {
+              groupTasks.push({ entry, unit, rel, dest });
+              deferred = true;
+            } else if (entry.confluence && entry.origin) {
               confluenceTasks.push({ entry, source: entry.confluence, dest });
               deferred = true;
             } else if (!(unit.featureId && rel === 'project.json') && !(unit.isApp && !unit.contextVersion && rel === 'app.json')) {
@@ -1382,7 +1465,7 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
         report?.('transferring', completedItems, entry.path, entry.featureId ?? null);
       });
     }
-    if (confluenceTasks.length > 0) {
+    if (confluenceTasks.length > 0 || groupTasks.length > 0) {
       const creds = await confluenceCreds();
       await mapLimit(confluenceTasks, CONFLUENCE_PULL_CONCURRENCY, async ({ entry, source, dest }) => {
         try {
@@ -1391,6 +1474,36 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
         completedItems += 1;
         report?.('transferring', completedItems, entry.path, entry.featureId ?? null);
       });
+      for (const { entry, unit, rel, dest } of groupTasks) {
+        const files = entry.confluenceGroup?.files ?? 0;
+        const relDir = path.posix.dirname(entry.path);
+        let reported = 0;
+        try {
+          const content = await (await sessionFor(unit.originId)).download(rel);
+          if (checksum(content) !== entry.origin!.checksum) throw new Error(`Remote ledger changed after PLAN: ${rel}`);
+          const parsed = parseConfluenceLedgerBuffer(content);
+          const ledger = exec.ledgerItemsByPath.get(entry.path) ?? (parsed ? { base: parsed.base, items: parsed.items } : null);
+          if (!ledger) throw new Error(`Ledger unreadable: ${rel}`);
+          const outcome = await expandLedgerGroup(creds, ledger, path.dirname(dest), {
+            relDir,
+            onItem: (name) => {
+              reported += 1;
+              completedItems += 1;
+              report?.('transferring', completedItems, `${relDir}/${name}`, entry.featureId ?? null);
+            },
+          });
+          confluenceOutcome.fetched += outcome.fetched;
+          confluenceOutcome.drifted.push(...outcome.drifted);
+          confluenceOutcome.missing.push(...outcome.missing);
+          // The ledger lands last so its mtime caps every file it stands for
+          // (the next PLAN matches them by mtime instead of hashing bytes).
+          await fs.mkdir(path.dirname(dest), { recursive: true });
+          await fs.writeFile(dest, content);
+          applied += 1 + outcome.fetched;
+        } catch (error) { stale.push({ path: entry.path, reason: (error as Error).message }); }
+        completedItems += 1 + Math.max(0, files - reported);
+        report?.('transferring', completedItems, entry.path, entry.featureId ?? null);
+      }
     }
     report?.('finalizing', completedItems);
     if (stale.length === 0) {
@@ -1477,7 +1590,7 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
     const result: ProjectSyncApplyResult = {
       planId: stored.plan.planId, applied, skipped, unchanged, softHiddenOriginFeatureIds, stale,
       ...(manifested > 0 ? { manifested } : {}),
-      ...(confluenceTasks.length > 0 ? { confluence: confluenceOutcome } : {}),
+      ...(confluenceTasks.length > 0 || groupTasks.length > 0 ? { confluence: confluenceOutcome } : {}),
     };
     appliedResults.set(stored.plan.planId, { expiresAt: Date.now() + PROJECT_SYNC_PLAN_TTL_MS, result });
     res.json({ ok: true, data: result });
@@ -1491,25 +1604,44 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
     const planId = typeof body.planId === 'string' ? body.planId : '';
     const batchPlanId = typeof body.batchPlanId === 'string' ? body.batchPlanId : '';
     if ((planId ? 1 : 0) + (batchPlanId ? 1 : 0) !== 1) return sendApiError(res, 400, 'BAD_REQUEST', 'exactly one of planId or batchPlanId is required');
-    let entries: Array<{ confluence?: ProjectSyncConfluenceSource; resolution: string; local?: { size: number }; origin?: { size: number } }> | null = null;
+    // Sources = every wiki item of a selected ledger entry (from the retained
+    // ledger items, never re-downloaded) + legacy per-file Confluence entries.
+    type PreflightEntry = { path: string; confluence?: ProjectSyncConfluenceSource; confluenceGroup?: { files: number }; resolution: string; local?: { size: number }; origin?: { size: number } };
+    // Entry paths repeat across the Features of one batch (`feature/…`), so
+    // each Feature resolves its ledgers against its own execution record.
+    let scopes: Array<{ entries: PreflightEntry[]; ledgerAt: (entryPath: string) => LedgerRef | undefined }> | null = null;
     if (planId) {
       const now = Date.now();
       for (const [id, pending] of execution) if (pending.expiresAt <= now) execution.delete(id);
       const stored = plans.get(planId);
-      entries = stored && execution.has(planId) ? stored.plan.entries : null;
+      const exec = execution.get(planId);
+      scopes = stored && exec ? [{ entries: stored.plan.entries, ledgerAt: (entryPath) => exec.ledgerItemsByPath.get(entryPath) }] : null;
     } else {
       sweepFeaturePull();
       const stored = featurePullPlans.get(batchPlanId);
-      entries = stored ? stored.plan.features.flatMap((feature) => feature.entries) : null;
+      scopes = stored ? stored.plan.features.map((planned) => {
+        const feature = stored.features.find((row) => row.originId === planned.originId);
+        const byPath = new Map<string, LedgerRef>();
+        for (const file of feature?.featureFiles ?? []) if (file.ledger) byPath.set(`feature/${file.rel}`, file.ledger);
+        for (const file of feature?.contextFiles ?? []) if (file.ledger) byPath.set(`bound-context/${planned.originId}/${file.rel}`, file.ledger);
+        return { entries: planned.entries, ledgerAt: (entryPath: string) => byPath.get(entryPath) };
+      }) : null;
     }
-    if (!entries) return sendApiError(res, 404, ERR_PROJECT_SYNC_PLAN_EXPIRED, 'plan expired — re-plan and retry');
-    const selected = entries.filter((entry) => entry.confluence && entry.resolution !== 'skip');
+    if (!scopes) return sendApiError(res, 404, ERR_PROJECT_SYNC_PLAN_EXPIRED, 'plan expired — re-plan and retry');
+    const sources: ProjectSyncConfluenceSource[] = [];
+    const sizes: number[] = [];
+    for (const { entries, ledgerAt } of scopes) for (const entry of entries) {
+      if (entry.resolution === 'skip') continue;
+      const ledger = entry.confluenceGroup ? ledgerAt(entry.path) : undefined;
+      if (ledger) {
+        for (const item of ledger.items) { sources.push(confluenceSourceOf(ledger.base, item)); sizes.push(item.size); }
+      } else if (entry.confluence) {
+        sources.push(entry.confluence);
+        sizes.push(entry.local?.size ?? entry.origin?.size ?? 0);
+      }
+    }
     try {
-      const data = await confluencePreflight(
-        await confluenceCreds(),
-        selected.map((entry) => entry.confluence!),
-        selected.map((entry) => entry.local?.size ?? entry.origin?.size ?? 0),
-      );
+      const data = await confluencePreflight(await confluenceCreds(), sources, sizes);
       res.json({ ok: true, data });
     } catch (error) { sendApiError(res, 502, 'PROJECT_SYNC_CONFLUENCE_PREFLIGHT_FAILED', (error as Error).message); }
   });
@@ -1532,10 +1664,13 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
     if (!stored) {
       return sendApiError(res, 409, ERR_PROJECT_SYNC_PLAN_EXPIRED, 'plan expired — re-plan and retry');
     }
-    const totalItems = stored.plan.entries.filter((entry) => {
+    // One unit per actionable entry; a Pull adds one per wiki file a ledger
+    // entry expands (Push manifests the group as a single upload).
+    const totalItems = stored.plan.entries.reduce((total, entry) => {
       const resolution = body.resolutions?.[entry.path] ?? entry.resolution;
-      return entry.change !== 'unchanged' && resolution !== 'skip';
-    }).length;
+      if (entry.change === 'unchanged' || resolution === 'skip') return total;
+      return total + 1 + (stored.plan.direction === 'pull' ? entry.confluenceGroup?.files ?? 0 : 0);
+    }, 0);
     const operation = operations.create({ planId: body.planId, totalItems });
     operationIdByPlan.set(body.planId, operation.operationId);
 

@@ -21,6 +21,9 @@ import {
   ConfluencePreflightPanel,
   confluencePreflightBlocksPull,
   describeConfluencePullOutcome,
+  describeSyncProgressPath,
+  mergeConfluencePullOutcomes,
+  summarizeConfluencePullOutcome,
   type ConfluencePreflightState,
 } from '../project-sync/ConfluencePreflightPanel';
 import { PlModal } from './PlModal';
@@ -55,10 +58,16 @@ function confluenceWarningsOf(result: ProjectSyncFeaturePullBatchResult, origins
 }
 
 const PHASE_LABEL: Record<ProjectSyncOperationPhase, string> = {
-  validating: 'Đang kiểm tra',
+  validating: 'Đang kiểm tra kế hoạch…',
   transferring: 'Đang tải dữ liệu',
   finalizing: 'Đang hoàn tất',
 };
+
+function confluenceSummaryOf(result: ProjectSyncFeaturePullBatchResult): string | null {
+  return summarizeConfluencePullOutcome(mergeConfluencePullOutcomes(
+    result.items.map((item) => (item.state === 'succeeded' ? item.result.confluence : undefined)),
+  ));
+}
 
 export interface PullSharedFeaturesModalProps {
   localAppId: string;
@@ -91,6 +100,7 @@ export function PullSharedFeaturesModal({
   const [plan, setPlan] = useState<ProjectSyncFeaturePullBatchPlan | null>(null);
   const [operation, setOperation] = useState<ProjectSyncFeaturePullBatchOperation | null>(null);
   const [loadingPlan, setLoadingPlan] = useState(false);
+  const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [preflight, setPreflight] = useState<ConfluencePreflightState>({ status: 'idle' });
   const completionReported = useRef(false);
@@ -141,7 +151,7 @@ export function PullSharedFeaturesModal({
     () => (origins ?? []).filter((origin) => selected.has(origin.originId)).map((origin) => origin.originId),
     [origins, selected],
   );
-  const busy = loadingPlan || operationActive(operation);
+  const busy = loadingPlan || starting || operationActive(operation);
   const terminalResult = operation?.state === 'succeeded' ? operation.result : undefined;
   const failedItems = terminalResult?.items.filter((item) => item.state === 'failed') ?? [];
   const displayedError = error ?? (operation?.state === 'failed'
@@ -230,20 +240,26 @@ export function PullSharedFeaturesModal({
   const start = async () => {
     if (!plan) return;
     setError(null);
+    setStarting(true);
     try {
       setOperation(await createProjectSyncFeaturePullBatchOperation({ planId: plan.planId }));
     } catch (cause) {
       setError(errorMessage(cause, 'Không thể bắt đầu lấy tính năng.'));
+    } finally {
+      setStarting(false);
     }
   };
 
   const retryFailed = async () => {
     if (!operation || failedItems.length === 0) return;
     setError(null);
+    setStarting(true);
     try {
       setOperation(await retryProjectSyncFeaturePullBatchOperation(operation.operationId));
     } catch (cause) {
       setError(errorMessage(cause, 'Không thể thử lại các tính năng bị lỗi.'));
+    } finally {
+      setStarting(false);
     }
   };
 
@@ -260,6 +276,22 @@ export function PullSharedFeaturesModal({
   }, [onClose, onCompleted, terminalResult]);
 
   const progress = operation?.progress;
+  // Bar visible from the click until the operation ends; indeterminate while
+  // the request is in flight or the daemon is still validating the plan.
+  const operationDone = operation !== null && !operationActive(operation);
+  const showProgress = starting || progress !== undefined;
+  const indeterminate = !operationDone && (!operation || operation.phase === 'validating');
+  const progressPercent = operationDone || operation?.phase === 'finalizing' ? 100 : (progress?.percent ?? 0);
+  const phaseLabel = operationDone
+    ? (operation.state === 'failed' ? 'Lấy tính năng không thành công' : 'Đã hoàn tất')
+    : PHASE_LABEL[operation?.phase ?? 'validating'];
+  const currentLine = operation && !operationDone && operation.phase === 'transferring'
+    ? [
+      progress?.currentFeatureId ? `Tính năng: ${progress.currentFeatureId}` : null,
+      describeSyncProgressPath(progress?.currentPath),
+    ].filter((part): part is string => part !== null).join(' · ')
+    : '';
+  const confluenceSummary = terminalResult ? confluenceSummaryOf(terminalResult) : null;
   const confluenceTotals = plan ? confluenceTotalsOf(plan) : { files: 0, bytes: 0 };
   const pullBlockedByConfluence = confluencePreflightBlocksPull(confluenceTotals.files > 0, preflight);
   const footer = terminalResult ? (
@@ -310,22 +342,26 @@ export function PullSharedFeaturesModal({
           </div>
         ) : null}
 
-        {progress ? (
-          <section className={styles.progress} aria-label="Tiến độ lấy tính năng">
+        {showProgress ? (
+          <section className={styles.progress} aria-label="Tiến độ lấy tính năng" data-testid="feature-pull-progress">
             <div className={styles.progressHead}>
-              <strong>{PHASE_LABEL[operation!.phase]}</strong>
-              <span>{progress.percent}% · {progress.completedItems}/{progress.totalItems}</span>
+              <strong>{phaseLabel}</strong>
+              {!indeterminate && progress ? <span>{progress.completedItems}/{progress.totalItems} file · {progressPercent}%</span> : null}
             </div>
-            <div className={styles.track} role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress.percent}>
-              <span style={{ width: `${progress.percent}%` }} />
+            <div
+              className={styles.track}
+              role="progressbar"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={indeterminate ? undefined : progressPercent}
+              aria-valuetext={indeterminate ? 'Đang kiểm tra kế hoạch' : undefined}
+              aria-busy={indeterminate || undefined}
+              data-indeterminate={indeterminate || undefined}
+            >
+              <span style={indeterminate ? undefined : { width: `${progressPercent}%` }} />
             </div>
-            {progress.currentFeatureId || progress.currentPath ? (
-              <p className={styles.current}>
-                {progress.currentFeatureId ? `Tính năng: ${progress.currentFeatureId}` : ''}
-                {progress.currentFeatureId && progress.currentPath ? ' · ' : ''}
-                {progress.currentPath ?? ''}
-              </p>
-            ) : null}
+            {currentLine ? <p className={styles.current}>{currentLine}</p> : null}
+            {confluenceSummary ? <p className={styles.summaryLine} data-testid="feature-pull-confluence-summary">{confluenceSummary}</p> : null}
           </section>
         ) : null}
 

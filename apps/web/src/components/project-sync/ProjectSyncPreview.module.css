@@ -109,6 +109,8 @@
 .treeCount { flex: none; color: var(--text-faint); font-size: 12px; font-variant-numeric: tabular-nums; }
 .filePath { flex: 1 1 210px; font-family: var(--mono); font-size: 12px; color: var(--text-muted); }
 .version { flex: none; color: var(--text-soft); font-family: var(--mono); font-size: 11px; }
+.groupLabel { flex: 1 1 210px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.missingChip { flex: none; padding: 1px 6px; border: 1px solid var(--amber-border, var(--border)); border-radius: 999px; background: var(--amber-bg); color: var(--amber); font-size: 10.5px; font-weight: 650; line-height: 1.4; letter-spacing: .02em; }
 .wikiChip { flex: none; padding: 1px 6px; border: 1px solid var(--blue-border); border-radius: 999px; background: var(--blue-bg); color: var(--blue); font-size: 10.5px; font-weight: 650; line-height: 1.4; letter-spacing: .02em; }
 .confluence { display: grid; gap: 8px; padding: 10px 12px; border: 1px solid var(--amber-border, var(--border)); border-radius: var(--radius-sm); background: var(--amber-bg); color: var(--text); font-size: 12.5px; line-height: 1.45; }
 .confluence[data-ok] { border-color: var(--green-border); background: var(--green-bg); }
@@ -130,6 +132,9 @@
 .progressMeta strong { color: var(--text-strong); font-size: 12.5px; }
 .progressTrack { height: 7px; overflow: hidden; border-radius: 999px; background: color-mix(in srgb, var(--blue) 15%, var(--bg-panel)); }
 .progressTrack > span { display: block; height: 100%; border-radius: inherit; background: var(--blue); transition: width .2s ease; }
+.progressTrack[data-indeterminate] > span { width: 38%; animation: progressSlide 1.1s ease-in-out infinite; }
+@keyframes progressSlide { 0% { transform: translateX(-100%); } 100% { transform: translateX(265%); } }
+.progressSummary { color: var(--text); font-size: 12px; font-variant-numeric: tabular-nums; }
 .progressItem { overflow: hidden; color: var(--text-muted); font-family: var(--mono); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .notice, .error { display: flex; align-items: flex-start; gap: 8px; padding: 10px 11px; border-radius: var(--radius-sm); font-size: 12.5px; line-height: 1.45; }
 .notice { color: var(--amber); background: var(--amber-bg); }

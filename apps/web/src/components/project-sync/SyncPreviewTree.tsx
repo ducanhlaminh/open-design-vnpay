@@ -9,6 +9,7 @@ import type {
 } from '@open-design/contracts';
 
 import { Icon } from '../Icon';
+import { formatConfluenceBytes } from './ConfluencePreflightPanel';
 import { SyncStateBadge } from './SyncStateBadge';
 import styles from './ProjectSyncPreview.module.css';
 
@@ -118,13 +119,32 @@ function FileLeaf({ entry, direction, resolution, onResolutionChange }: {
   onResolutionChange: (resolution: ProjectSyncResolution) => void;
 }) {
   const fileName = entry.path.split('/').pop() ?? entry.path;
+  const group = entry.confluenceGroup;
   return (
-    <li className={styles.fileNode} data-origin-only={!entry.local && Boolean(entry.origin) || undefined}>
+    <li className={styles.fileNode} data-origin-only={!entry.local && Boolean(entry.origin) || undefined} data-confluence-group={group ? '' : undefined}>
       <div className={styles.fileRow}>
         <span className={styles.treeSpacer} aria-hidden />
-        <Icon name={entry.kind === 'output' ? 'file-code' : 'file'} size={14} />
-        <span className={styles.filePath} title={entry.path}>{fileName}</span>
+        <Icon name={group ? 'attach' : entry.kind === 'output' ? 'file-code' : 'file'} size={14} />
+        {group ? (
+          <span className={styles.groupLabel} title={entry.path}>
+            Bộ tài liệu Confluence · {group.files} file · {formatConfluenceBytes(group.bytes)}
+          </span>
+        ) : (
+          <span className={styles.filePath} title={entry.path}>{fileName}</span>
+        )}
         {entry.contextVersion ? <span className={styles.version}>v{entry.contextVersion.replace(/^v/i, '')}</span> : null}
+        {group && group.missing > 0 ? (
+          <span className={styles.missingChip} aria-label={`Thiếu ${group.missing} file trên máy`}>thiếu {group.missing}</span>
+        ) : null}
+        {group ? (
+          <span
+            className={styles.wikiChip}
+            title={`${group.files} file tải từ Confluence`}
+            aria-label={`Tải từ Confluence: ${group.files} file`}
+          >
+            wiki
+          </span>
+        ) : null}
         {entry.confluence ? (
           <span
             className={styles.wikiChip}

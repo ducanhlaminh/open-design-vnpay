@@ -128,6 +128,57 @@ describe('ProjectSyncPreviewModal', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps the bar indeterminate while validating, then shows wiki file progress and the pull summary', async () => {
+    const ledgerEntry = {
+      path: 'features/feature-a/attachments/_sources.json', kind: 'output', change: 'changed',
+      local: { checksum: 'l', size: 200 }, origin: { checksum: 'l', size: 200 }, resolution: 'pull', featureId: 'feature-a',
+      confluenceGroup: { files: 2, bytes: 2048, missing: 1 },
+    };
+    const groupPlan = { ...plan, planId: 'plan-g', entries: [...plan.entries, ledgerEntry], summary: { ...status.summary, changed: 2, confluence: { files: 2, bytes: 2048 } } };
+    const running = (overrides: Record<string, unknown>) => ({
+      operationId: 'op-g', planId: 'plan-g', state: 'running', phase: 'validating', progress: { completedItems: 0, totalItems: 3, percent: 0 },
+      createdAt: '', updatedAt: '', expiresAt: '', ...overrides,
+    });
+    const polls = [
+      running({ phase: 'transferring', progress: { completedItems: 1, totalItems: 3, percent: 33, currentPath: 'features/feature-a/attachments/bieu-mau.xlsx' } }),
+      running({
+        state: 'succeeded', phase: 'finalizing', progress: { completedItems: 3, totalItems: 3, percent: 100 },
+        result: { planId: 'plan-g', applied: 2, skipped: 0, unchanged: 1, softHiddenOriginFeatureIds: [], stale: [], confluence: { fetched: 1, drifted: [], missing: [{ path: 'features/feature-a/attachments/cu.pdf', reason: 'HTTP 404' }] } },
+      }),
+    ];
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/project-sync/plan') return new Response(JSON.stringify({ data: groupPlan }));
+      if (url === '/api/project-sync/confluence-preflight') return new Response(JSON.stringify({ ok: true, data: preflightOf({ files: 2, bytes: 2048 }) }));
+      if (url === '/api/project-sync/operations') return new Response(JSON.stringify({ data: running({}) }));
+      if (url.startsWith('/api/project-sync/operations/')) return new Response(JSON.stringify({ data: polls.length > 1 ? polls.shift() : polls[0] }));
+      return new Response(JSON.stringify({ data: {} }));
+    }));
+    const onClose = vi.fn();
+    render(<ProjectSyncPreviewModal scope={{ kind: 'app', projectId: 'app-a' }} subjectName="Thanh toán" onClose={onClose} />);
+    const pull = await screen.findByRole('button', { name: 'Lấy dự án về máy' }) as HTMLButtonElement;
+    await waitFor(() => expect(pull.disabled).toBe(false));
+    expect(screen.queryByTestId('project-sync-progress')).toBeNull();
+    fireEvent.click(pull);
+
+    const panel = await screen.findByTestId('project-sync-progress');
+    expect(panel.textContent).toContain('Đang kiểm tra kế hoạch…');
+    await waitFor(() => expect(screen.getByRole('progressbar').getAttribute('data-indeterminate')).toBe('true'));
+    expect(screen.getByRole('progressbar').getAttribute('aria-valuenow')).toBeNull();
+
+    // The count is echoed in the footer note as well, hence *All*.
+    expect(await screen.findAllByText('1/3 file · 33%', {}, { timeout: 3000 })).toHaveLength(2);
+    expect(screen.getByRole('progressbar').getAttribute('aria-valuenow')).toBe('33');
+    expect(screen.getByText('Đang tải tài liệu từ wiki: bieu-mau.xlsx')).toBeTruthy();
+
+    const summary = await screen.findByTestId('project-sync-confluence-summary', {}, { timeout: 3000 });
+    expect(summary.textContent).toBe('Đã tải 1 file từ wiki · lệch 0 · thiếu 1');
+    expect(screen.getByText('3/3 file · 100%')).toBeTruthy();
+    expect(screen.getByRole('progressbar').getAttribute('aria-valuenow')).toBe('100');
+    expect(screen.getByTestId('project-sync-confluence-warnings').textContent).toContain('features/feature-a/attachments/cu.pdf (HTTP 404)');
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
   it('shows PLAN_EXPIRED recovery and returns focus to reload', async () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);

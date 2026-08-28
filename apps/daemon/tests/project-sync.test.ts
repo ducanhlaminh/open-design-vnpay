@@ -74,4 +74,30 @@ describe('project sync plan engine', () => {
     expect(plan.summary).toEqual({ created: 2, unchanged: 1, changed: 0, deleted: 1, confluence: { files: 3, bytes: 22 } });
     expect(planProjectSync({ direction: 'push', scope, origin, local: [file('plain.md', 'pp')], originFiles: [] }).plan.summary.confluence).toBeUndefined();
   });
+
+  it('carries one ledger group per entry and keeps an identical ledger actionable on pull while files are missing', () => {
+    const ledger = 'attachments/_sources.json';
+    const pushed = planProjectSync({
+      direction: 'push', scope, origin,
+      local: [{ ...file(ledger, 'll'), size: 40, confluenceGroup: { files: 3, bytes: 300, missing: 0 } }, file('plain.md', 'pp')],
+      originFiles: [{ ...file(ledger, 'll'), size: 0, confluenceGroup: { files: 5, bytes: 500, missing: 0 } }],
+    });
+    expect(pushed.plan.entries.find((entry) => entry.path === ledger)).toMatchObject({ change: 'unchanged', resolution: 'skip', confluenceGroup: { files: 3, bytes: 300, missing: 0 } });
+    expect(pushed.plan.summary).toEqual({ created: 1, unchanged: 1, changed: 0, deleted: 0, confluence: { files: 3, bytes: 300 } });
+
+    const pulled = planProjectSync({
+      direction: 'pull', scope, origin,
+      local: [{ ...file(ledger, 'll'), size: 40, confluenceGroup: { files: 3, bytes: 300, missing: 0 } }],
+      originFiles: [{ ...file(ledger, 'll'), size: 0, confluenceGroup: { files: 5, bytes: 500, missing: 2 } }],
+    });
+    expect(pulled.plan.entries[0]).toMatchObject({ change: 'changed', resolution: 'pull', confluenceGroup: { files: 5, bytes: 500, missing: 2 } });
+    expect(pulled.plan.summary).toEqual({ created: 0, unchanged: 0, changed: 1, deleted: 0, confluence: { files: 5, bytes: 500 } });
+
+    const complete = planProjectSync({
+      direction: 'pull', scope, origin,
+      local: [file(ledger, 'll')],
+      originFiles: [{ ...file(ledger, 'll'), confluenceGroup: { files: 5, bytes: 500, missing: 0 } }],
+    });
+    expect(complete.plan.entries[0]).toMatchObject({ change: 'unchanged', resolution: 'skip', confluenceGroup: { files: 5, missing: 0 } });
+  });
 });

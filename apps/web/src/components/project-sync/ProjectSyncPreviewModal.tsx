@@ -22,6 +22,8 @@ import {
   ConfluencePreflightPanel,
   confluencePreflightBlocksPull,
   describeConfluencePullOutcome,
+  describeSyncProgressPath,
+  summarizeConfluencePullOutcome,
   type ConfluencePreflightState,
 } from './ConfluencePreflightPanel';
 import { SyncPreviewTree } from './SyncPreviewTree';
@@ -225,12 +227,30 @@ export function ProjectSyncPreviewModal({ scope, subjectName, origin, onClose, o
     }
   };
 
-  const operationItem = operation?.progress.currentFeatureId ?? operation?.progress.currentPath;
-  const phaseLabel = operation?.phase === 'validating'
-    ? 'Đang kiểm tra kế hoạch'
-    : operation?.phase === 'finalizing'
-      ? 'Đang hoàn tất'
-      : 'Đang tải dữ liệu';
+  // The bar is visible from the click on Pull until the operation ends. Before
+  // the daemon reports `transferring` (request in flight, or `validating`)
+  // there is no meaningful count, so the bar runs indeterminate.
+  const operationDone = operation !== null && operation.state !== 'queued' && operation.state !== 'running';
+  const showProgress = applying || operation !== null;
+  const indeterminate = !operationDone && (!operation || operation.phase === 'validating');
+  const progressPercent = operationDone || operation?.phase === 'finalizing' ? 100 : (operation?.progress.percent ?? 0);
+  const progressCount = operation
+    ? `${operation.progress.completedItems}/${operation.progress.totalItems} file · ${progressPercent}%`
+    : null;
+  const phaseLabel = operationDone
+    ? (operation.state === 'failed' ? 'Đồng bộ không thành công' : 'Đã hoàn tất')
+    : !operation || operation.phase === 'validating'
+      ? 'Đang kiểm tra kế hoạch…'
+      : operation.phase === 'finalizing'
+        ? 'Đang hoàn tất'
+        : 'Đang tải dữ liệu';
+  const operationItem = operation && !operationDone && operation.phase === 'transferring'
+    ? (describeSyncProgressPath(operation.progress.currentPath)
+      ?? (operation.progress.currentFeatureId ? `Tính năng: ${operation.progress.currentFeatureId}` : null))
+    : null;
+  const confluenceSummary = operationDone && operation.state === 'succeeded'
+    ? summarizeConfluencePullOutcome(operation.result?.confluence)
+    : null;
 
   const title = `Lấy dự án về máy · ${subjectName}`;
   const confluenceFiles = plan?.summary.confluence?.files ?? 0;
@@ -242,8 +262,8 @@ export function ProjectSyncPreviewModal({ scope, subjectName, origin, onClose, o
   const footer = (
     <div className={styles.footer}>
       <span className={styles.footerNote} aria-live="polite">
-        {applying && operation
-          ? `${operation.progress.completedItems}/${operation.progress.totalItems} mục · ${operation.progress.percent}%`
+        {applying
+          ? (indeterminate || !progressCount ? 'Đang kiểm tra kế hoạch…' : progressCount)
           : plan ? `${plan.summary.changed + plan.summary.created + plan.summary.deleted} mục sẽ được cập nhật` : 'Xem trước nội dung trước khi cập nhật'}
       </span>
       <div className={styles.footerActions}>
@@ -256,7 +276,7 @@ export function ProjectSyncPreviewModal({ scope, subjectName, origin, onClose, o
           disabled={!plan || loading || refreshing || applying || expired || completed || pullBlockedByConfluence}
         >
           <Icon name={applying ? 'spinner' : 'download'} size={14} />
-          {applying ? `Đang lấy về${operation ? ` · ${operation.progress.percent}%` : '…'}` : 'Lấy dự án về máy'}
+          {applying ? `Đang lấy về${!indeterminate ? ` · ${progressPercent}%` : '…'}` : 'Lấy dự án về máy'}
         </button>
       </div>
     </div>
@@ -267,11 +287,11 @@ export function ProjectSyncPreviewModal({ scope, subjectName, origin, onClose, o
       <div className={styles.modal}>
         {loading ? <div className={styles.loading} role="status">Đang tải trạng thái và bản trong kho chung…</div> : null}
         {refreshing ? <div className={styles.loading} role="status">Đang làm mới bản xem trước…</div> : null}
-        {operation ? (
-          <div className={styles.progressPanel} aria-live="polite">
+        {showProgress ? (
+          <div className={styles.progressPanel} aria-live="polite" data-testid="project-sync-progress">
             <div className={styles.progressMeta}>
               <strong>{phaseLabel}</strong>
-              <span>{operation.progress.completedItems}/{operation.progress.totalItems} mục · {operation.progress.percent}%</span>
+              {!indeterminate && progressCount ? <span>{progressCount}</span> : null}
             </div>
             <div
               className={styles.progressTrack}
@@ -279,11 +299,15 @@ export function ProjectSyncPreviewModal({ scope, subjectName, origin, onClose, o
               aria-label="Tiến độ lấy dự án về máy"
               aria-valuemin={0}
               aria-valuemax={100}
-              aria-valuenow={operation.progress.percent}
+              aria-valuenow={indeterminate ? undefined : progressPercent}
+              aria-valuetext={indeterminate ? 'Đang kiểm tra kế hoạch' : undefined}
+              aria-busy={indeterminate || undefined}
+              data-indeterminate={indeterminate || undefined}
             >
-              <span style={{ width: `${operation.progress.percent}%` }} />
+              <span style={indeterminate ? undefined : { width: `${progressPercent}%` }} />
             </div>
             {operationItem ? <div className={styles.progressItem} title={operationItem}>{operationItem}</div> : null}
+            {confluenceSummary ? <div className={styles.progressSummary} data-testid="project-sync-confluence-summary">{confluenceSummary}</div> : null}
           </div>
         ) : null}
         {plan ? (

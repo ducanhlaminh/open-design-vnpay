@@ -224,7 +224,10 @@ export function planProjectSyncFeaturePullBatch(
     localAppId: request.localAppId,
     originAppId: request.originAppId,
     features,
-    totalItems: features.reduce((total, feature) => total + feature.entries.filter((entry) => entry.change !== 'unchanged' && (entry.resolution === 'pull' || entry.change === 'deleted')).length, 0),
+    // One unit per actionable entry plus one per wiki file a ledger expands.
+    totalItems: features.reduce((total, feature) => total + feature.entries
+      .filter((entry) => entry.change !== 'unchanged' && (entry.resolution === 'pull' || entry.change === 'deleted'))
+      .reduce((sum, entry) => sum + 1 + (entry.confluenceGroup?.files ?? 0), 0), 0),
   };
   const digest = createHash('sha256').update(JSON.stringify(baseline)).digest('hex');
   return deepFreeze({ planId: `project_sync_feature_pull_${digest}`, ...baseline });

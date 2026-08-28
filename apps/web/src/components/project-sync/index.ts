@@ -2,7 +2,10 @@ export {
   ConfluencePreflightPanel,
   confluencePreflightBlocksPull,
   describeConfluencePullOutcome,
+  describeSyncProgressPath,
   formatConfluenceBytes,
+  mergeConfluencePullOutcomes,
+  summarizeConfluencePullOutcome,
   type ConfluencePreflightState,
 } from './ConfluencePreflightPanel';
 export { ProjectSyncPreviewModal, type ProjectSyncPreviewModalProps } from './ProjectSyncPreviewModal';

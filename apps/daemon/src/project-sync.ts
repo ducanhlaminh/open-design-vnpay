@@ -5,6 +5,7 @@
 import { randomUUID } from 'node:crypto';
 import type {
   ProjectSyncChange,
+  ProjectSyncConfluenceGroup,
   ProjectSyncConfluenceSource,
   ProjectSyncDirection,
   ProjectSyncEntry,
@@ -28,6 +29,9 @@ export interface ProjectSyncSnapshotFile {
   version?: string | null;
   /** Bytes live on Confluence (see `confluence-blobs.ts`); media has no copy. */
   confluence?: ProjectSyncConfluenceSource;
+  /** `attachments/_sources.json` ledger standing for its wiki attachments
+   * (one entry per ledger; the matched files themselves have no snapshot). */
+  confluenceGroup?: ProjectSyncConfluenceGroup;
 }
 
 export interface StoredProjectSyncPlan {
@@ -126,15 +130,25 @@ export function planProjectSync(input: {
   const entries: ProjectSyncEntry[] = paths.map((path) => {
     const local = localFiles.get(path);
     const origin = originFiles.get(path);
-    const change = entryChange(input.direction, local, origin);
+    const source = input.direction === 'push' ? local : origin;
+    // The source side's ledger group describes what APPLY will act on: the
+    // matched local files (push) or every wiki item on the origin (pull).
+    const confluenceGroup = source?.confluenceGroup ?? local?.confluenceGroup ?? origin?.confluenceGroup;
+    let change = entryChange(input.direction, local, origin);
+    // An identical ledger is still actionable when files it stands for are
+    // absent locally: the pull must expand the group again.
+    if (input.direction === 'pull' && change === 'unchanged' && (origin?.confluenceGroup?.missing ?? 0) > 0) change = 'changed';
     if (change === 'new') summary.created += 1;
     else summary[change] += 1;
-    const source = input.direction === 'push' ? local : origin;
     const metadata = source ?? local ?? origin;
     // The local ledger wins when both sides know the file: it reflects the
     // bytes actually on this machine (re-imported pool > older origin ledger).
     const confluence = local?.confluence ?? origin?.confluence;
-    if (confluence) {
+    if (confluenceGroup) {
+      summary.confluence ??= { files: 0, bytes: 0 };
+      summary.confluence.files += confluenceGroup.files;
+      summary.confluence.bytes += confluenceGroup.bytes;
+    } else if (confluence) {
       summary.confluence ??= { files: 0, bytes: 0 };
       summary.confluence.files += 1;
       summary.confluence.bytes += local?.size || origin?.size || 0;
@@ -150,6 +164,7 @@ export function planProjectSync(input: {
       ...(metadata?.stage ? { stage: metadata.stage } : {}),
       ...(metadata?.contextVersion ? { contextVersion: metadata.contextVersion } : {}),
       ...(confluence ? { confluence } : {}),
+      ...(confluenceGroup ? { confluenceGroup } : {}),
     };
   });
   const planId = `project_sync_${randomUUID()}`;

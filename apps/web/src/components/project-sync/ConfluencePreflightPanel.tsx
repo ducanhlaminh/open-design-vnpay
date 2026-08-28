@@ -60,6 +60,42 @@ export function describeConfluencePullOutcome(
   return lines;
 }
 
+/** One-line status for the pull progress panel. Files expanded from a
+ *  `attachments/_sources.json` ledger are fetched from the wiki, not media,
+ *  so the label says so and shows only the file name. */
+export function describeSyncProgressPath(path: string | null | undefined): string | null {
+  if (!path) return null;
+  const segments = path.split('/').filter(Boolean);
+  const index = segments.lastIndexOf('attachments');
+  if (index >= 0 && index < segments.length - 1) {
+    return `Đang tải tài liệu từ wiki: ${segments.slice(index + 1).join('/')}`;
+  }
+  return `Đang tải: ${path}`;
+}
+
+/** Post-apply one-liner from the daemon's Confluence pull outcome. The count
+ *  of files skipped because they already existed is not reported by the
+ *  daemon (contracts are frozen), so it is deliberately left out. */
+export function summarizeConfluencePullOutcome(outcome: ProjectSyncConfluencePullOutcome | undefined): string | null {
+  if (!outcome) return null;
+  return `Đã tải ${outcome.fetched} file từ wiki · lệch ${outcome.drifted.length} · thiếu ${outcome.missing.length}`;
+}
+
+/** Sum several pull outcomes (batch feature pulls) into one summary line;
+ *  `null` when no item carried a Confluence outcome. */
+export function mergeConfluencePullOutcomes(
+  outcomes: ReadonlyArray<ProjectSyncConfluencePullOutcome | undefined>,
+): ProjectSyncConfluencePullOutcome | undefined {
+  let merged: ProjectSyncConfluencePullOutcome | undefined;
+  for (const outcome of outcomes) {
+    if (!outcome) continue;
+    merged = merged
+      ? { fetched: merged.fetched + outcome.fetched, drifted: [...merged.drifted, ...outcome.drifted], missing: [...merged.missing, ...outcome.missing] }
+      : { fetched: outcome.fetched, drifted: [...outcome.drifted], missing: [...outcome.missing] };
+  }
+  return merged;
+}
+
 export interface ConfluencePreflightPanelProps {
   files: number;
   bytes: number;

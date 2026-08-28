@@ -218,13 +218,58 @@ describe('PullSharedFeaturesModal', () => {
     await screen.findByText('4 mục');
     fireEvent.click(screen.getByRole('button', { name: 'Lấy 2 tính năng' }));
 
-    expect(await screen.findByText('50% · 2/4')).toBeTruthy();
+    expect(await screen.findByText('2/4 file · 50%')).toBeTruthy();
     expect(screen.getByText('Feature A')).toBeTruthy();
     expect(screen.getByRole('progressbar').getAttribute('aria-valuenow')).toBe('50');
     await waitFor(() => expect(pollMock).toHaveBeenCalledWith('op-1'), { timeout: 2000 });
     await waitFor(() => expect(onCompleted).toHaveBeenCalledTimes(1));
-    expect(screen.getByText('100% · 4/4')).toBeTruthy();
+    expect(screen.getByText('4/4 file · 100%')).toBeTruthy();
     expect(screen.getAllByText('Thành công')).toHaveLength(2);
+  });
+
+  it('runs the bar indeterminate while validating, names wiki files while transferring and summarises the pull', async () => {
+    listMock.mockResolvedValue(origins);
+    planMock.mockResolvedValue(plan);
+    createMock.mockResolvedValue(operation({ phase: 'validating', progress: { completedItems: 0, totalItems: 5, percent: 0 } }));
+    const finished = result();
+    for (const item of finished.items) {
+      if (item.state === 'succeeded') {
+        item.result = { ...item.result, confluence: { fetched: item.originId === 'f-a' ? 2 : 1, drifted: [], missing: [] } };
+      }
+    }
+    pollMock
+      .mockResolvedValueOnce(operation({
+        phase: 'transferring',
+        progress: { completedItems: 2, totalItems: 5, percent: 40, currentFeatureId: 'f-a', currentPath: 'f-a/attachments/hd-su-dung.pdf' },
+      }))
+      .mockResolvedValueOnce(operation({
+        state: 'succeeded', phase: 'finalizing', progress: { completedItems: 5, totalItems: 5, percent: 100 }, result: finished,
+      }));
+    render(
+      <PullSharedFeaturesModal
+        localAppId="local-app" remoteAppOriginId="remote-app" preselectedOriginIds={['f-a', 'f-b']}
+        onClose={() => {}} onCompleted={() => {}}
+      />,
+    );
+    await screen.findByText('Feature A');
+    fireEvent.click(screen.getByRole('button', { name: 'Xem trước' }));
+    await screen.findByText('4 mục');
+    fireEvent.click(screen.getByRole('button', { name: 'Lấy 2 tính năng' }));
+
+    const progressPanel = await screen.findByTestId('feature-pull-progress');
+    expect(progressPanel.textContent).toContain('Đang kiểm tra kế hoạch…');
+    const bar = screen.getByRole('progressbar');
+    expect(bar.getAttribute('aria-valuenow')).toBeNull();
+    expect(bar.getAttribute('data-indeterminate')).toBe('true');
+
+    expect(await screen.findByText('2/5 file · 40%')).toBeTruthy();
+    expect(screen.getByRole('progressbar').getAttribute('aria-valuenow')).toBe('40');
+    expect(screen.getByRole('progressbar').getAttribute('data-indeterminate')).toBeNull();
+    expect(screen.getByText('Tính năng: f-a · Đang tải tài liệu từ wiki: hd-su-dung.pdf')).toBeTruthy();
+
+    expect(await screen.findByText('5/5 file · 100%')).toBeTruthy();
+    expect(screen.getByTestId('feature-pull-confluence-summary').textContent).toBe('Đã tải 3 file từ wiki · lệch 0 · thiếu 0');
+    expect(screen.getByText('Đã hoàn tất')).toBeTruthy();
   });
 
   it('shows per-item partial results and retries only through the failed-operation endpoint', async () => {
@@ -248,7 +293,7 @@ describe('PullSharedFeaturesModal', () => {
     expect(await screen.findByText('Không chép được Feature B')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Thử lại phần bị lỗi' }));
     await waitFor(() => expect(retryMock).toHaveBeenCalledWith('op-1'));
-    expect(await screen.findByText('0% · 0/2')).toBeTruthy();
+    expect(await screen.findByText('0/2 file · 0%')).toBeTruthy();
   });
 
   it('continues polling after a transient progress request fails', async () => {

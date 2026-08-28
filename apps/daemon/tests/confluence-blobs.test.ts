@@ -5,14 +5,19 @@ import os from 'node:os';
 import path from 'node:path';
 
 import {
+  CONFLUENCE_CREDS_MISSING,
   attachmentDirOf,
   confluencePreflight,
+  expandLedgerGroup,
   fetchConfluenceBlob,
+  groupLocalLedgers,
+  groupOriginLedgers,
   isAttachmentsLedgerPath,
   mapLimit,
   parseConfluenceLedgerBuffer,
   resolveLocalConfluenceSources,
   synthesizeOriginConfluenceEntries,
+  type LazyLocalFile,
 } from '../src/confluence-blobs.js';
 import type { ConfluenceSourcesLedger } from '../src/confluence-sources.js';
 
@@ -77,6 +82,106 @@ describe('confluence-blobs path helpers', () => {
       new Set(['docs/attachments/on-media.png', 'docs/attachments/_sources.json']),
     );
     expect(out).toEqual([{ rel: 'docs/attachments/a.png', checksum: sha('A'), size: 1, confluence: { base: 'https://wiki.test', pageId: '100', spaceKey: 'SMB', attachment: 'a.png', attachmentVersion: 3 } }]);
+  });
+});
+
+describe('ledger groups (one plan entry per ledger)', () => {
+  const lazy = (rel: string, content: string, mtimeMs: number, reads?: string[]): LazyLocalFile => ({
+    rel, size: content.length, mtimeMs,
+    read: async () => { reads?.push(rel); return Buffer.from(content); },
+  });
+
+  it('groups local files by name + size + (mtime | sha) and reads bytes only for the sha rule', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'od-ledger-group-'));
+    try {
+      const dir = path.join(root, 'docs', 'attachments');
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(path.join(dir, '_sources.json'), JSON.stringify(ledger([item('old.png', 'OLD'), item('new-ok.png', 'NEW'), item('new-bad.png', 'NEW'), item('short.png', 'SHORT')])));
+      const ledgerMtime = (await fs.stat(path.join(dir, '_sources.json'))).mtimeMs;
+      const reads: string[] = [];
+      const out = await groupLocalLedgers(root, [
+        lazy('docs/attachments/old.png', 'XXX', ledgerMtime - 1000, reads),     // older than the ledger, same size → matched without reading
+        lazy('docs/attachments/new-ok.png', 'NEW', ledgerMtime + 1000, reads),  // newer → sha read → matches
+        lazy('docs/attachments/new-bad.png', 'BAD', ledgerMtime + 1000, reads), // newer → sha read → differs
+        lazy('docs/attachments/short.png', 'S', 0, reads),                      // size differs → never read
+        lazy('docs/attachments/unlisted.png', 'U', 0, reads),
+        lazy('docs/attachments/_sources.json', 'L', 0, reads),
+        lazy('elsewhere/attachments/old.png', 'OLD', 0, reads),                 // no ledger there
+        lazy('docs/plain.md', 'P', 0, reads),
+      ]);
+      expect([...out.matched].sort()).toEqual(['docs/attachments/new-ok.png', 'docs/attachments/old.png']);
+      expect([...out.groups.keys()]).toEqual(['docs/attachments/_sources.json']);
+      expect(out.groups.get('docs/attachments/_sources.json')).toMatchObject({ files: 2, bytes: 6 });
+      expect(out.groups.get('docs/attachments/_sources.json')!.items.map((row) => row.name)).toEqual(['old.png', 'new-ok.png']);
+      expect(reads.sort()).toEqual(['docs/attachments/new-bad.png', 'docs/attachments/new-ok.png']);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('groups origin ledger items without a media file and stats local copies for missing', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'od-ledger-origin-'));
+    try {
+      const dir = path.join(root, 'docs', 'attachments');
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(path.join(dir, 'here.png'), 'HERE');
+      await fs.writeFile(path.join(dir, 'wrong-size.png'), 'X');
+      const ledgers = [
+        { dirRel: 'docs/attachments', ledger: ledger([item('here.png', 'HERE'), item('wrong-size.png', 'RIGHT'), item('absent.png', 'ABSENT'), item('on-media.png', 'M'), item('../escape.png', 'E')]) },
+        { dirRel: 'x/attachments', ledger: ledger([item('a.png', 'A')], '') }, // no base → ignored
+      ];
+      const present = new Set(['docs/attachments/on-media.png', 'docs/attachments/_sources.json']);
+      const pull = await groupOriginLedgers(ledgers, present, { root });
+      expect([...pull.keys()]).toEqual(['docs/attachments/_sources.json']);
+      expect(pull.get('docs/attachments/_sources.json')).toMatchObject({ base: 'https://wiki.test', files: 3, bytes: 15, missing: 2 });
+      expect(pull.get('docs/attachments/_sources.json')!.items.map((row) => row.name)).toEqual(['here.png', 'wrong-size.png', 'absent.png']);
+      expect((await groupOriginLedgers(ledgers, present, null)).get('docs/attachments/_sources.json')).toMatchObject({ files: 3, missing: 0 });
+      expect((await groupOriginLedgers(ledgers, present, { root: null })).get('docs/attachments/_sources.json')).toMatchObject({ files: 3, missing: 3 });
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('expands a ledger into files: skip present, fetch pinned/latest, report drifted/missing per item', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'od-ledger-expand-'));
+    try {
+      const target = path.join(root, 'docs', 'attachments');
+      await fs.mkdir(target, { recursive: true });
+      await fs.writeFile(path.join(target, 'have.png'), 'HAVE');
+      const items = [item('have.png', 'HAVE'), item('ok.png', 'OK'), item('latest.png', 'LATEST'), item('drift.png', 'DRIFT'), item('gone.png', 'GONE')];
+      const calls = stubFetch((url) => {
+        const name = new URL(url).pathname.split('/').pop()!;
+        const pinned = url.includes('version=');
+        if (name === 'ok.png') return new Response('OK', { status: 200 });
+        if (name === 'latest.png') return new Response(pinned ? 'STALE' : 'LATEST', { status: 200 });
+        if (name === 'drift.png') return new Response('ELSE', { status: 200 });
+        return new Response('', { status: 404 });
+      });
+      const seen: Array<[string, string]> = [];
+      const out = await expandLedgerGroup(creds, { base: 'https://wiki.test', items }, target, { relDir: 'feature/docs/attachments', onItem: (name, outcome) => seen.push([name, outcome]) });
+      expect(out).toEqual({
+        fetched: 3, skipped: 1,
+        drifted: [{ path: 'feature/docs/attachments/drift.png', reason: expect.stringContaining('v3') }],
+        missing: [{ path: 'feature/docs/attachments/gone.png', reason: 'HTTP 404' }],
+      });
+      expect(seen.sort()).toEqual([['drift.png', 'drifted'], ['gone.png', 'missing'], ['have.png', 'skipped'], ['latest.png', 'fetched'], ['ok.png', 'fetched']]);
+      expect(calls.some((url) => url.includes('/have.png'))).toBe(false);
+      expect(await fs.readFile(path.join(target, 'latest.png'), 'utf8')).toBe('LATEST');
+      expect(await fs.readFile(path.join(target, 'drift.png'), 'utf8')).toBe('ELSE');
+      expect(await fs.stat(path.join(target, 'gone.png')).catch(() => null)).toBeNull();
+
+      // No PAT: present files are still skipped, everything else is missing without touching the network.
+      const noCredsCalls = stubFetch(() => new Response('', { status: 200 }));
+      const none = await expandLedgerGroup(null, { base: 'https://wiki.test', items: [item('have.png', 'HAVE'), item('gone.png', 'GONE'), item('../escape.png', 'E')] }, target, { relDir: 'feature/docs/attachments' });
+      expect({ ...none, missing: [...none.missing].sort((a, b) => a.path.localeCompare(b.path)) }).toEqual({ fetched: 0, skipped: 1, drifted: [], missing: [
+        { path: 'feature/docs/attachments/../escape.png', reason: expect.stringContaining('không hợp lệ') },
+        { path: 'feature/docs/attachments/gone.png', reason: CONFLUENCE_CREDS_MISSING },
+      ] });
+      expect(noCredsCalls).toEqual([]);
+      expect(await fs.stat(path.join(root, 'docs', 'escape.png')).catch(() => null)).toBeNull();
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
   });
 });
 

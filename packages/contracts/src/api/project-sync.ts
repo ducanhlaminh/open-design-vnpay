@@ -113,6 +113,17 @@ export interface ProjectSyncEntry {
   contextVersion?: string;
   /** Present when the bytes live on Confluence rather than in media. */
   confluence?: ProjectSyncConfluenceSource;
+  /** Present on an `attachments/_sources.json` ledger entry: the raw wiki
+   * attachments it stands for (one plan entry per ledger, not per file). */
+  confluenceGroup?: ProjectSyncConfluenceGroup;
+}
+
+/** One ledger = one plan entry. `missing` (pull only) = items absent or
+ * size-mismatched on the local side, computed by stat at PLAN time. */
+export interface ProjectSyncConfluenceGroup {
+  files: number;
+  bytes: number;
+  missing: number;
 }
 
 export interface ProjectSyncSummary {
