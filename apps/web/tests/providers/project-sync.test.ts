@@ -2,7 +2,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  PROJECT_SYNC_PUSH_PLAN_EXPIRED_MESSAGE,
   ProjectSyncPlanExpiredError,
+  ProjectSyncStageRunningError,
   ProjectSyncTimeoutError,
   applyProjectSync,
   createProjectSyncFeaturePullBatchOperation,
@@ -48,6 +50,21 @@ describe('project-sync provider', () => {
     await expect(applyProjectSync({ planId: 'p1', resolutions: { 'x.md': 'skip' } })).rejects.toBeInstanceOf(ProjectSyncPlanExpiredError);
     expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({ direction: 'pull', scope: { kind: 'feature', projectId: 'f1' }, includeDeleted: true });
     expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toEqual({ planId: 'p1', resolutions: { 'x.md': 'skip' } });
+  });
+
+  it('surfaces a 409 PROJECT_SYNC_STAGE_RUNNING as a typed error carrying the server wording', async () => {
+    const serverMessage = 'Bước đang chạy — đợi xong rồi chia sẻ. checkout: dr-review';
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(response({ ok: false, error: { code: 'PROJECT_SYNC_STAGE_RUNNING', message: serverMessage } }, { status: 409 }))
+      .mockResolvedValueOnce(response({ ok: false, error: { code: 'PROJECT_SYNC_STAGE_RUNNING', message: serverMessage } }, { status: 409 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const planError = await planProjectSync({ direction: 'push', scope: { kind: 'feature', projectId: 'checkout', appId: 'retail' }, includeDeleted: true })
+      .then(() => null, (cause: unknown) => cause);
+    expect(planError).toBeInstanceOf(ProjectSyncStageRunningError);
+    expect((planError as Error).message).toBe(serverMessage);
+    expect((planError as ProjectSyncStageRunningError).code).toBe('PROJECT_SYNC_STAGE_RUNNING');
+    await expect(createProjectSyncOperation({ planId: 'p1', resolutions: {} })).rejects.toBeInstanceOf(ProjectSyncStageRunningError);
+    expect(PROJECT_SYNC_PUSH_PLAN_EXPIRED_MESSAGE).toContain('bước đang chạy');
   });
 
   it('creates and reads an asynchronous apply operation', async () => {

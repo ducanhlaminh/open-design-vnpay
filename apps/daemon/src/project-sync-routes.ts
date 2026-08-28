@@ -49,6 +49,8 @@ import {
   planProjectSyncFeaturePullBatch,
 } from './project-sync-feature-pull.js';
 import { stageForOutput } from './pipelines.js';
+import { commitHistory } from './project-history.js';
+import { historyActor } from './history-actor.js';
 import { digestProjectSyncSides, evaluateProjectSyncStatus } from './project-sync-status.js';
 import { ProjectSyncStateStore } from './project-sync-state.js';
 
@@ -163,12 +165,29 @@ function entity(id: string, name: string, kind: SyncEntitySummary['kind'], total
   return { id, name, kind, state: stateOf(totals), mappingValid, totals, ...(originId ? { originId } : {}) };
 }
 
+// `.od-skills` is the per-run private SKILL.md copy and `.tmp` is scratch —
+// neither is a shareable output (mirrors the `.odhistory` info/exclude list).
+const WALK_SKIP_DIRS = new Set(['.odhistory', 'node_modules', '.od-skills', '.tmp']);
+
+/** Stage ids whose pipeline state is queued/running in a project's metadata. */
+export function runningStageIdsOf(metadata: unknown): string[] {
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return [];
+  const pipelines = (metadata as Record<string, unknown>).pipelines;
+  if (!pipelines || typeof pipelines !== 'object' || Array.isArray(pipelines)) return [];
+  return Object.entries(pipelines as Record<string, unknown>)
+    .filter(([, row]) => {
+      const status = row && typeof row === 'object' && !Array.isArray(row) ? (row as { status?: unknown }).status : null;
+      return status === 'queued' || status === 'running';
+    })
+    .map(([stageId]) => stageId);
+}
+
 async function walkFiles(root: string): Promise<Array<{ rel: string; content: Buffer }>> {
   const out: Array<{ rel: string; content: Buffer }> = [];
   const visit = async (dir: string, prefix: string): Promise<void> => {
     const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
     for (const entry of entries) {
-      if (entry.name === '.odhistory' || entry.name === 'node_modules') continue;
+      if (WALK_SKIP_DIRS.has(entry.name)) continue;
       const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
       const abs = path.join(dir, entry.name);
       if (entry.isDirectory()) await visit(abs, rel);
@@ -340,10 +359,22 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
           if (unit.contextVersion && !file.rel.startsWith(`context/versions/${unit.contextVersion}/`)) continue;
           let content = file.content;
           const controlRel = unit.isApp ? 'app.json' : 'project.json';
-          if (unit.overrideName && file.rel === controlRel) {
+          // A pulled Feature keeps the LOCAL App id in its project.json; the
+          // origin must always see the origin App id, otherwise a later push
+          // re-parents the Feature on the registry (origin_missing for everyone).
+          const normalizeAppId = !unit.isApp && unit.featureId && unit.originAppId ? unit.originAppId : null;
+          if (file.rel === controlRel && (unit.overrideName || normalizeAppId)) {
             try {
               const current = JSON.parse(content.toString('utf8')) as Record<string, unknown>;
-              content = Buffer.from(`${JSON.stringify({ ...current, name: unit.name }, null, 2)}\n`);
+              const next: Record<string, unknown> = { ...current, ...(unit.overrideName ? { name: unit.name } : {}) };
+              if (normalizeAppId) {
+                next.appId = normalizeAppId;
+                const binding = next.appContextBinding;
+                if (binding && typeof binding === 'object' && !Array.isArray(binding)) {
+                  next.appContextBinding = { ...(binding as Record<string, unknown>), appId: normalizeAppId };
+                }
+              }
+              content = Buffer.from(`${JSON.stringify(next, null, 2)}\n`);
             } catch {
               // Keep malformed source visible to the normal validation/diff
               // path instead of silently replacing the whole control file.
@@ -428,8 +459,18 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
         ?? null
       : null;
     const typeValid = diagnosticOrigin?.kind === request.scope.kind;
+    // Self-heal: a pre-fix push uploaded the pulled project.json verbatim, so
+    // the origin's `appId` is this machine's LOCAL App id instead of the
+    // origin App id ("re-parented by pre-fix push"). Only a Push may claim it
+    // back — and only when the stray id is exactly the local App id, never
+    // when the origin genuinely belongs to another App. The normalized
+    // project.json (see snapshot) then repairs the origin for everyone.
+    const reparentedByPreFixPush = request.direction === 'push' && request.scope.kind === 'feature' && Boolean(request.scope.appId)
+      && defaultOrigin.mode === 'existing' && diagnosticOrigin?.kind === 'feature' && Boolean(expectedOriginAppId)
+      && diagnosticOrigin.appId !== expectedOriginAppId && diagnosticOrigin.appId === request.scope.appId;
     const parentValid = request.scope.kind !== 'feature' || !request.scope.appId
-      || Boolean(expectedOriginAppId && diagnosticOrigin?.appId === expectedOriginAppId);
+      || Boolean(expectedOriginAppId && diagnosticOrigin?.appId === expectedOriginAppId)
+      || reparentedByPreFixPush;
     const mappingValid = defaultOrigin.mode === 'new'
       ? request.scope.kind === 'app' || !request.scope.appId || Boolean(expectedOriginAppId)
       : Boolean(diagnosticOrigin?.visibility === 'visible' && typeValid && parentValid);
@@ -443,7 +484,11 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
       error.code = 'ORIGIN_MAPPING_INVALID';
       throw error;
     }
-    const units = await unitsFor(request.scope, defaultOrigin, request.direction === 'pull', diagnosticOrigin, expectedOriginAppId);
+    // Units must see the REAL origin App id (not the stray local id on the
+    // broken origin) so snapshot normalizes project.json to it and the bound
+    // Context resolves against the right origin App.
+    const unitOrigin = reparentedByPreFixPush && diagnosticOrigin ? { ...diagnosticOrigin, appId: expectedOriginAppId } : diagnosticOrigin;
+    const units = await unitsFor(request.scope, defaultOrigin, request.direction === 'pull', unitOrigin, expectedOriginAppId);
     if (options.statusScope && request.scope.kind === 'app') {
       units.splice(1);
       if (units[0]) units[0].latestAppContextOnly = true;
@@ -465,6 +510,23 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
     if (request.scope.kind === 'app' && request.direction === 'push' && !options.statusScope) {
       for (const origin of allOrigins.filter((row) => row.kind === 'feature' && row.appId === defaultOrigin.originId && row.visibility === 'visible')) {
         if (!units.some((unit) => unit.originId === origin.originId)) units.push({ originId: origin.originId, prefix: `features/${origin.originId}`, featureId: origin.originId, isApp: false, name: origin.name });
+      }
+    }
+    // A user-facing Push PLAN while a stage is still writing outputs would only
+    // expire at APPLY (`plan baseline changed`). STATUS and the post-apply /
+    // post-pull verification passes (retain: false) are read-only and exempt.
+    if (request.direction === 'push' && !options.statusScope && options.retain !== false) {
+      const running: string[] = [];
+      for (const unit of units) {
+        if (unit.isApp || !unit.localId) continue;
+        const project = projects().find((candidate) => candidate.id === unit.localId);
+        const stages = project ? runningStageIdsOf(project.metadata) : [];
+        if (stages.length > 0) running.push(`${unit.featureId ?? unit.localId}: ${stages.join(', ')}`);
+      }
+      if (running.length > 0) {
+        const error = new Error(`Bước đang chạy — đợi xong rồi chia sẻ (${running.join('; ')})`) as Error & { code?: string };
+        error.code = 'PROJECT_SYNC_STAGE_RUNNING';
+        throw error;
       }
     }
     const files = await snapshot(units, request.direction);
@@ -669,7 +731,7 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
     try { res.json({ ok: true, data: (await planFor(body as ProjectSyncPlanRequest)).plan }); }
     catch (error) {
       const code = (error as { code?: string }).code;
-      if (code === ERR_PROJECT_SYNC_ORIGIN_HIDDEN || code === 'ORIGIN_ID_EXISTS' || code === 'ORIGIN_MAPPING_INVALID') return sendApiError(res, 409, code, (error as Error).message);
+      if (code === ERR_PROJECT_SYNC_ORIGIN_HIDDEN || code === 'ORIGIN_ID_EXISTS' || code === 'ORIGIN_MAPPING_INVALID' || code === 'PROJECT_SYNC_STAGE_RUNNING') return sendApiError(res, 409, code, (error as Error).message);
       if (code === 'ORIGIN_REQUIRED') return sendApiError(res, 400, 'ORIGIN_REQUIRED', (error as Error).message);
       sendApiError(res, 502, 'PROJECT_SYNC_PLAN_FAILED', (error as Error).message);
     }
@@ -777,7 +839,10 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
     };
     for (const feature of stored.features.filter((item) => selectedOriginIds.has(item.originId))) {
       const planned = stored.plan.features.find((item) => item.originId === feature.originId)!;
-      const actionable = planned.entries.filter((entry) => entry.change !== 'unchanged' && (entry.resolution === 'pull' || entry.change === 'deleted'));
+      // Only an explicit `pull` resolution acts — a local-only file (`deleted`)
+      // defaults to `skip` and stays in place (it is already inside stageFeature
+      // via the cp above). Mirrors applyHandler's pull branch.
+      const actionable = planned.entries.filter((entry) => entry.change !== 'unchanged' && entry.resolution === 'pull');
       const completedBeforeFeature = completed;
       const stageRoot = await fs.mkdtemp(path.join(ctx.paths.PROJECTS_DIR, `.feature-pull-${feature.localId}-`));
       const stageFeature = path.join(stageRoot, 'feature');
@@ -790,8 +855,12 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
         updateProgress('validating', feature.originId, null);
         const control = JSON.parse((await media.downloadFile(feature.originId, 'project.json')).toString('utf8')) as Record<string, unknown>;
         if (control.appId !== stored.plan.originAppId) throw new Error(`Feature ${feature.originId} no longer belongs to App ${stored.plan.originAppId}`);
-        if (feature.mode === 'update') await fs.cp(destination, stageFeature, { recursive: true });
-        else await fs.mkdir(stageFeature, { recursive: true });
+        if (feature.mode === 'update') {
+          // Fence the current local state so the overwrite below is undoable.
+          // `.odhistory` lives inside `destination`, so cp + rename keeps it.
+          await commitHistory(destination, { kind: 'pre-pull', by: historyActor() }).catch(() => null);
+          await fs.cp(destination, stageFeature, { recursive: true });
+        } else await fs.mkdir(stageFeature, { recursive: true });
         updateProgress('transferring', feature.originId, null);
         for (const entry of actionable) {
           updateProgress('transferring', feature.originId, entry.path);
@@ -871,6 +940,7 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
         if (existing) updateProject(db, feature.localId, { name: feature.name, metadata, updatedAt: Date.now() });
         else insertProject(db, { id: feature.localId, name: feature.name, skillId: null, designSystemId: null, pendingPrompt: null, metadata, createdAt: Date.now(), updatedAt: Date.now() });
         if (backedUp) await fs.rm(backup, { recursive: true, force: true });
+        await commitHistory(destination, { kind: 'pull', by: historyActor(), input: feature.originId }).catch(() => null);
         const featureScope: ProjectSyncScope = { kind: 'feature', projectId: feature.localId, appId: stored.plan.localAppId };
         const identity = { originId: feature.originId, originAppId: stored.plan.originAppId };
         // Re-snapshot through the same code path used by STATUS. Local control
@@ -931,7 +1001,7 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
 
   const startFeaturePullOperation = (stored: StoredBatch, selectedOriginIds: Set<string>): ProjectSyncFeaturePullBatchOperation => {
     const totalItems = stored.plan.features.filter((feature) => selectedOriginIds.has(feature.originId))
-      .reduce((total, feature) => total + feature.entries.filter((entry) => entry.change !== 'unchanged' && (entry.resolution === 'pull' || entry.change === 'deleted')).length, 0);
+      .reduce((total, feature) => total + feature.entries.filter((entry) => entry.change !== 'unchanged' && entry.resolution === 'pull').length, 0);
     const operation = featurePullOperation(stored.plan.planId, totalItems);
     saveFeaturePullOperation(operation);
     setImmediate(() => void runFeaturePullBatch(stored, operation, selectedOriginIds).catch((error: Error) => {
@@ -1014,6 +1084,23 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
         }
       }
     }
+    // Pull overwrites local files in place: fence every touched local folder
+    // in `.odhistory` first (same contract as the legacy kg pull path), so a
+    // clobbered local edit can always be restored.
+    const fencedCwds: string[] = [];
+    if (stored.plan.direction === 'pull') {
+      for (const unit of exec.units) {
+        if (!unit.localId) continue;
+        const cwd = path.join(ctx.paths.PROJECTS_DIR, unit.localId);
+        if (fencedCwds.includes(cwd)) continue;
+        const touches = stored.plan.entries.some((entry) => entry.change !== 'unchanged'
+          && (body.resolutions?.[entry.path] ?? entry.resolution) === 'pull'
+          && unitFor(entry.path) === unit);
+        if (!touches || !(await fs.stat(cwd).then((stat) => stat.isDirectory(), () => false))) continue;
+        fencedCwds.push(cwd);
+        await commitHistory(cwd, { kind: 'pre-pull', by: historyActor() }).catch(() => null);
+      }
+    }
     let completedItems = 0;
     report?.('transferring', completedItems);
     for (const entry of stored.plan.entries) {
@@ -1093,6 +1180,9 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
       }
     }
     report?.('finalizing', completedItems);
+    if (stale.length === 0) {
+      for (const cwd of fencedCwds) await commitHistory(cwd, { kind: 'pull', by: historyActor(), input: stored.plan.origin.originId }).catch(() => null);
+    }
     const baselineIdentity = {
       originId: stored.plan.origin.originId,
       // App identity is the selected origin itself. Only a Feature baseline

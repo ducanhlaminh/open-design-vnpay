@@ -313,3 +313,124 @@ describe('PushAllModal · App Context tree', () => {
     expect(screen.getByText('Đã chọn 2 tính năng')).not.toBeNull();
   });
 });
+
+describe('PushAllModal · bước đang chạy', () => {
+  const apps = [{
+    id: 'app-run',
+    name: 'App đang chạy',
+    context: { currentVersion: 'v1', latestVersion: 'v1' },
+    features: [
+      { id: 'feat-running', name: 'Tính năng đang chạy', boundVersion: 'v1' },
+      { id: 'feat-idle', name: 'Tính năng rảnh', boundVersion: 'v1' },
+    ],
+  }];
+
+  it('feature đang chạy hiện chip Đang chạy và không tick được; feature rảnh vẫn chọn được', async () => {
+    render(
+      <PushAllModal
+        projects={[]}
+        apps={apps}
+        workflows={workflows}
+        initialAppIds={['app-run']}
+        runningByFeatureId={{ 'feat-running': ['Đánh giá tài liệu'] }}
+        syncReady
+        onReconnect={() => {}}
+        onClose={() => {}}
+        onConfirm={async () => {}}
+      />,
+    );
+
+    const runningBox = screen.getByRole('checkbox', { name: 'Chọn Feature Tính năng đang chạy' }) as HTMLInputElement;
+    const idleBox = screen.getByRole('checkbox', { name: 'Chọn Feature Tính năng rảnh' }) as HTMLInputElement;
+    expect(runningBox.disabled).toBe(true);
+    expect(idleBox.disabled).toBe(false);
+    const chip = screen.getByTestId('pipeline-push-running-feat-running');
+    expect(chip.textContent).toBe('Đang chạy: Đánh giá tài liệu');
+    expect(chip.getAttribute('title')).toBe('Đợi bước chạy xong rồi chia sẻ.');
+    expect(screen.queryByTestId('pipeline-push-running-feat-idle')).toBeNull();
+    // jsdom still flips `checked` on a disabled input; React skips onChange,
+    // so the real signal is the selection counter staying at zero.
+    fireEvent.click(runningBox);
+    expect(screen.getByText('Chưa chọn tính năng')).not.toBeNull();
+    fireEvent.click(idleBox);
+    expect(idleBox.checked).toBe(true);
+    expect(screen.getByText('Đã chọn 1 tính năng')).not.toBeNull();
+  });
+
+  it('mọi feature đã chọn đều đang chạy → nút xác nhận disabled + gợi ý đợi', async () => {
+    const onConfirm = vi.fn(async () => {});
+    render(
+      <PushAllModal
+        projects={[]}
+        apps={apps}
+        workflows={workflows}
+        initialSelectedIds={['feat-running']}
+        initialAppIds={['app-run']}
+        selectionLocked
+        runningByFeatureId={{ 'feat-running': ['Đánh giá tài liệu'] }}
+        syncReady
+        onReconnect={() => {}}
+        onClose={() => {}}
+        onConfirm={onConfirm}
+      />,
+    );
+
+    const confirm = screen.getByTestId('pipeline-push-confirm') as HTMLButtonElement;
+    // Sync status has loaded by then (fetch stub) — the only reason left to
+    // stay disabled is the running feature.
+    await waitFor(() => expect(screen.getByTestId('pipeline-push-running-hint')).not.toBeNull());
+    expect(confirm.disabled).toBe(true);
+    expect(confirm.getAttribute('title')).toBe('Đợi bước chạy xong rồi chia sẻ.');
+    expect(screen.getByTestId('pipeline-push-running-hint').textContent).toBe('Đợi bước chạy xong rồi chia sẻ.');
+    fireEvent.click(confirm);
+    expect(onConfirm).not.toHaveBeenCalled();
+  });
+
+  it('feature đang chạy lẫn trong lựa chọn bị loại khỏi phần gửi đi', async () => {
+    const onConfirm = vi.fn(async (
+      _selection: ContextTransferSelection,
+      _stages: string[],
+      _stagesByFeature?: Record<string, string[]>,
+    ) => {});
+    render(
+      <PushAllModal
+        projects={[]}
+        apps={apps}
+        workflows={workflows}
+        initialSelectedIds={['feat-running', 'feat-idle']}
+        initialAppIds={['app-run']}
+        runningByFeatureId={{ 'feat-running': ['Đánh giá tài liệu'] }}
+        syncReady
+        onReconnect={() => {}}
+        onClose={() => {}}
+        onConfirm={onConfirm}
+      />,
+    );
+
+    const confirm = screen.getByTestId('pipeline-push-confirm') as HTMLButtonElement;
+    await waitFor(() => expect(confirm.disabled).toBe(false));
+    expect(screen.getByTestId('pipeline-push-running-hint').textContent).toContain('Tính năng đang chạy');
+    fireEvent.click(confirm);
+    await waitFor(() => expect(onConfirm).toHaveBeenCalledOnce());
+    expect(onConfirm.mock.calls[0]?.[0]).toMatchObject({ appIds: ['app-run'], projectIds: ['feat-idle'] });
+    expect(Object.keys(onConfirm.mock.calls[0]?.[2] ?? {})).toEqual(['feat-idle']);
+  });
+});
+
+describe('runningLabelsByFeatureId', () => {
+  it('ưu tiên tên bước; liệt kê workflow khi nhiều workflow cùng chạy; bỏ feature rảnh', async () => {
+    const { runningLabelsByFeatureId } = await import('../../../src/components/pipelines/PipelineModals');
+    expect(runningLabelsByFeatureId([
+      { id: 'a', running: 1, runningStage: { id: 'dr-review', name: 'Đánh giá tài liệu' }, workflows: [{ id: 'docs-review', name: 'Review', running: 1 }] },
+      { id: 'b', running: 1, runningStage: { id: 'docs', name: 'Tài liệu' }, workflows: [{ id: 'docs-review', name: 'Review', running: 1 }, { id: 'ds-lab', name: 'DS Lab', running: 2 }] },
+      { id: 'c', running: 0, workflows: [{ id: 'docs-review', name: 'Review', running: 0 }, { id: 'ds-lab', name: 'DS Lab', running: 1 }] },
+      { id: 'd', running: 1 },
+      { id: 'e', running: 0 },
+    ])).toEqual({
+      a: ['Đánh giá tài liệu'],
+      b: ['Review', 'DS Lab'],
+      c: ['DS Lab'],
+      d: ['bước hiện tại'],
+    });
+  });
+});

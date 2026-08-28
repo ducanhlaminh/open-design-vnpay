@@ -20,10 +20,33 @@ import {
 } from '@open-design/contracts';
 
 export class ProjectSyncPlanExpiredError extends Error {
-  constructor() {
-    super('Kế hoạch đồng bộ đã hết hạn. Hãy tải lại phần xem trước.');
+  constructor(message = 'Kế hoạch đồng bộ đã hết hạn. Hãy tải lại phần xem trước.') {
+    super(message);
     this.name = 'ProjectSyncPlanExpiredError';
   }
+}
+
+/** Push while a feature still has a queued/running stage: the daemon refuses
+ *  the plan (409) because the local baseline is being rewritten under it.
+ *  Contract constant lives daemon-side for now; mirrored here verbatim. */
+export const ERR_PROJECT_SYNC_STAGE_RUNNING = 'PROJECT_SYNC_STAGE_RUNNING';
+
+/** Push-specific wording for PLAN_EXPIRED: the local tree (not the shared
+ *  copy) moved between plan and apply — almost always a stage still writing
+ *  output files. The generic "reload the preview" line is misleading here. */
+export const PROJECT_SYNC_PUSH_PLAN_EXPIRED_MESSAGE =
+  'Kết quả trên máy vừa thay đổi trong lúc chia sẻ (bước đang chạy?). Mở lại và thử lại.';
+
+export class ProjectSyncStageRunningError extends Error {
+  readonly code = ERR_PROJECT_SYNC_STAGE_RUNNING;
+  constructor(message = 'Bước đang chạy — đợi xong rồi chia sẻ.') {
+    super(message);
+    this.name = 'ProjectSyncStageRunningError';
+  }
+}
+
+function errorCodeOf(body: unknown): string | undefined {
+  return (body as { error?: { code?: string } } | null)?.error?.code;
 }
 
 export const PROJECT_SYNC_REQUEST_TIMEOUT_MS = 30_000;
@@ -164,6 +187,9 @@ export async function planProjectSync(request: ProjectSyncPlanRequest): Promise<
     body: JSON.stringify(request),
   });
   const body = await json(response);
+  if (response.status === 409 && errorCodeOf(body) === ERR_PROJECT_SYNC_STAGE_RUNNING) {
+    throw new ProjectSyncStageRunningError(messageFrom(body, 'Bước đang chạy — đợi xong rồi chia sẻ.'));
+  }
   if (!response.ok) throw new Error(messageFrom(body, 'Không thể lập kế hoạch đồng bộ.'));
   const plan = (body as { data?: ProjectSyncPlan }).data;
   if (!plan) throw new Error('Máy chủ không trả về kế hoạch đồng bộ.');
@@ -194,6 +220,9 @@ export async function createProjectSyncOperation(request: ProjectSyncOperationCr
   const body = await json(response);
   const code = (body as { error?: { code?: string } }).error?.code;
   if (response.status === 409 && code === ERR_PROJECT_SYNC_PLAN_EXPIRED) throw new ProjectSyncPlanExpiredError();
+  if (response.status === 409 && code === ERR_PROJECT_SYNC_STAGE_RUNNING) {
+    throw new ProjectSyncStageRunningError(messageFrom(body, 'Bước đang chạy — đợi xong rồi chia sẻ.'));
+  }
   if (!response.ok) throw new Error(messageFrom(body, 'Không thể bắt đầu đồng bộ.'));
   const operation = (body as { data?: ProjectSyncOperation }).data;
   if (!operation) throw new Error('Máy chủ không trả về tiến trình đồng bộ.');

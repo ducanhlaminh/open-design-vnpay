@@ -4515,6 +4515,45 @@ export function PullAllModal({
   );
 }
 
+/** Labels of what is currently running on a feature, for the share picker.
+ *  Built from data `/api/pipelines/projects` already returns — no extra
+ *  round-trip: `runningStage` names the exact stage (default workflow only),
+ *  `workflows[].running` counts in-flight stages per workflow. The stage name
+ *  wins when it is the only thing running; otherwise workflow names are listed
+ *  so a second workflow in flight is not hidden. Empty array = idle. */
+export function runningLabelsOf(project: {
+  running?: number;
+  runningStage?: { id: string; name?: string } | null;
+  workflows?: ReadonlyArray<{ id: string; name?: string; running: number }> | null;
+}): string[] {
+  const stage = project.runningStage ? (project.runningStage.name || project.runningStage.id) : null;
+  const workflowLabels = (project.workflows ?? [])
+    .filter((workflow) => workflow.running > 0)
+    .map((workflow) => workflow.name || workflow.id);
+  if (stage && workflowLabels.length <= 1) return [stage];
+  if (workflowLabels.length > 0) return [...new Set(workflowLabels)];
+  if (stage) return [stage];
+  return (project.running ?? 0) > 0 ? ['bước hiện tại'] : [];
+}
+
+/** featureId → running labels, dropping idle features so callers can test
+ *  `Boolean(map[id])`. */
+export function runningLabelsByFeatureId(projects: ReadonlyArray<{
+  id: string;
+  running?: number;
+  runningStage?: { id: string; name?: string } | null;
+  workflows?: ReadonlyArray<{ id: string; name?: string; running: number }> | null;
+}>): Record<string, string[]> {
+  const out: Record<string, string[]> = {};
+  for (const project of projects) {
+    const labels = runningLabelsOf(project);
+    if (labels.length > 0) out[project.id] = labels;
+  }
+  return out;
+}
+
+const RUNNING_SHARE_HINT = 'Đợi bước chạy xong rồi chia sẻ.';
+
 // ── PushAllModal — pick WHICH local projects to push to the shared
 // media-service store and WHICH pipelines' output files go with them.
 // Mirrors PullAllModal but lists the LOCAL mirror (no fetch needed); Confirm
@@ -4537,6 +4576,7 @@ export function PushAllModal({
   syncReady,
   onReconnect,
   onUpgradeFeatureContext,
+  runningByFeatureId,
 }: {
   /** Local pipeline projects (the push-eligible set). */
   projects: Array<{
@@ -4584,6 +4624,11 @@ export function PushAllModal({
     contextVersion: string,
     contentDigest: string,
   ) => Promise<void>;
+  /** featureId → labels of stages/workflows still running on it. A running
+   *  feature cannot be ticked (its output is being rewritten — the daemon
+   *  would refuse the plan with PROJECT_SYNC_STAGE_RUNNING anyway) and is
+   *  dropped from the submitted set. See `runningLabelsByFeatureId`. */
+  runningByFeatureId?: Record<string, string[]>;
 }) {
   const [error, setError] = useState<string | null>(null);
   const [contextData, setContextData] = useState<Record<string, {
@@ -4702,7 +4747,13 @@ export function PushAllModal({
   };
   const selectedStagesForFeature = (featureId: string): ReadonlySet<string> =>
     stageSelByFeature[featureId] ?? visibleStagesForFeature(featureId);
-  const selectedFeatureIds = [...selection.featureIds];
+  const runningLabelsFor = (featureId: string): string[] => runningByFeatureId?.[featureId] ?? [];
+  const isRunning = (featureId: string): boolean => runningLabelsFor(featureId).length > 0;
+  // Running features stay visible in the count (the user picked them) but are
+  // never part of what gets pushed — see the `runningByFeatureId` prop.
+  const selectedFeatureIds = [...selection.featureIds].filter((featureId) => !isRunning(featureId));
+  const selectedRunningFeatureIds = [...selection.featureIds].filter(isRunning);
+  const everySelectedFeatureRunning = selection.featureIds.size > 0 && selectedFeatureIds.length === 0;
   const hasFeatureWithNoSelectedOutput = selectedFeatureIds.some((featureId) => {
     const visible = visibleStagesForFeature(featureId);
     return visible.size > 0 && selectedStagesForFeature(featureId).size === 0;
@@ -4727,27 +4778,44 @@ export function PushAllModal({
   const filteredUngroupedProjects = ungroupedProjects.filter((project) => !searchQuery
     || project.name.toLowerCase().includes(searchQuery)
     || project.id.toLowerCase().includes(searchQuery));
+  const renderRunningChip = (featureId: string) => {
+    const labels = runningLabelsFor(featureId);
+    if (labels.length === 0) return null;
+    return (
+      <span
+        className="pl-pullall__version pl-pullall__version--stale"
+        data-testid={`pipeline-push-running-${featureId}`}
+        title={RUNNING_SHARE_HINT}
+      >
+        Đang chạy: {labels.join(', ')}
+      </span>
+    );
+  };
   const renderUngroupedProject = (project: (typeof projects)[number]) => (
     <li key={project.id}>
       <label className="pl-pullall__row">
         <input
           type="checkbox"
           checked={selection.featureIds.has(project.id)}
-          disabled={selectionLocked}
-          onChange={() => setSelection((current) => toggleUngroupedFeature(project.id, current))}
+          disabled={selectionLocked || isRunning(project.id)}
+          onChange={() => {
+            if (isRunning(project.id)) return;
+            setSelection((current) => toggleUngroupedFeature(project.id, current));
+          }}
         />
         <span className="pl-pullall__avatar" aria-hidden="true"><Icon name="folder" size={15} /></span>
         <span className="pl-pullall__text">
           <span className="pl-pullall__name">{project.name}</span>
           {project.name !== project.id ? <span className="pl-pullall__id">{project.id}</span> : null}
         </span>
+        {renderRunningChip(project.id)}
       </label>
     </li>
   );
 
   const submit = async () => {
     if (!syncReady || (selection.appIds.size === 0 && selection.featureIds.size === 0) || busy) return;
-    if (syncStatus === null || hasFeatureWithNoSelectedOutput) return;
+    if (syncStatus === null || hasFeatureWithNoSelectedOutput || everySelectedFeatureRunning) return;
     setBusy(true);
     setOperation(null);
     setError(null);
@@ -4758,9 +4826,10 @@ export function PushAllModal({
         [...selectedStagesForFeature(featureId)],
       ]));
       const stageUnion = [...new Set(Object.values(stagesByFeature).flat())];
+      const pushable: ContextTreeSelection = { appIds: selection.appIds, featureIds: new Set(selectedFeatureIds) };
       await onConfirm({
-        ...serializeContextSelection(selection),
-        contextVersions: contextVersionsForSelection(appGroups, selection),
+        ...serializeContextSelection(pushable),
+        contextVersions: contextVersionsForSelection(appGroups, pushable),
       }, stageUnion, stagesByFeature, setOperation);
       onClose();
     } catch (err) {
@@ -4793,10 +4862,12 @@ export function PushAllModal({
             // không còn ở local) — cùng lý do PullAllModal đổi sang danger.
             className="pl-btn pl-btn--danger"
             data-testid="pipeline-push-confirm"
+            title={everySelectedFeatureRunning ? RUNNING_SHARE_HINT : undefined}
             onClick={() => void submit()}
             disabled={!syncReady || busy || syncStatus === null
               || (selection.featureIds.size === 0 && selection.appIds.size === 0)
-              || hasFeatureWithNoSelectedOutput}
+              || hasFeatureWithNoSelectedOutput
+              || everySelectedFeatureRunning}
           >
             <Icon name={busy ? 'spinner' : 'upload'} size={14} />
             <span>
@@ -4930,19 +5001,23 @@ export function PushAllModal({
                                 type="checkbox"
                                 aria-label={`Chọn Feature ${feature.name}`}
                                 checked={selection.featureIds.has(feature.id)}
-                                disabled={selectionLocked}
-                                onChange={() => setSelection((current) => toggleFeatureSelection(
-                                  app,
-                                  feature.id,
-                                  current,
-                                  new Set(initialAppIds ?? []),
-                                ))}
+                                disabled={selectionLocked || isRunning(feature.id)}
+                                onChange={() => {
+                                  if (isRunning(feature.id)) return;
+                                  setSelection((current) => toggleFeatureSelection(
+                                    app,
+                                    feature.id,
+                                    current,
+                                    new Set(initialAppIds ?? []),
+                                  ));
+                                }}
                               />
                               <span className="pl-pullall__avatar" aria-hidden="true"><Icon name="folder" size={15} /></span>
                               <span className="pl-pullall__text">
                                 <span className="pl-pullall__name">{feature.name}</span>
                                 <span className="pl-pullall__id">Đang dùng bộ tài liệu {contextVersionLabel(upgradedFeatures.has(feature.id) ? latest : feature.boundVersion)}</span>
                               </span>
+                              {renderRunningChip(feature.id)}
                               {stale ? (
                                 <button
                                   type="button"
@@ -5054,6 +5129,14 @@ export function PushAllModal({
             <div className="pl-modal-error" role="alert">
               {SYNC_COPY.chooseStep}
             </div>
+          ) : null}
+          {selectedRunningFeatureIds.length > 0 ? (
+            <p className="pl-pullall__hint" role="note" data-testid="pipeline-push-running-hint">
+              {RUNNING_SHARE_HINT}
+              {everySelectedFeatureRunning
+                ? ''
+                : ` Các tính năng đang chạy (${selectedRunningFeatureIds.map((featureId) => featureNameById.get(featureId) ?? featureId).join(', ')}) sẽ không được chia sẻ lần này.`}
+            </p>
           ) : null}
           {error ? (
             <div className="pl-modal-error" role="alert">

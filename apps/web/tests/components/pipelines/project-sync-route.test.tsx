@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   appMapped: true,
   featureMapped: true,
   statusFailure: 'never' as 'never' | 'always' | 'after_first',
+  planRefusal: null as null | 'stage_running' | 'plan_expired_on_apply',
   statusCalls: 0,
   route: { kind: 'home', view: 'pipelines' as const } as { kind: 'home'; view: 'pipelines' } | { kind: 'pipelines-app'; appId: string },
 }));
@@ -95,11 +96,18 @@ beforeEach(() => {
   mocks.featureMapped = true;
   mocks.statusFailure = 'never';
   mocks.statusCalls = 0;
+  mocks.planRefusal = null;
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
     if (url === '/api/auth/me') return new Response(JSON.stringify({ syncReady: true }), { status: 200 });
     if (url === '/api/workflows') return new Response(JSON.stringify({ workflows: [{ id: 'docs-to-ui', name: 'URD/PRD → UI-Spec', pipelineIds: ['docs'], stages: [{ id: 'docs', name: 'Tài liệu' }] }] }), { status: 200 });
     if (url.startsWith('/api/project-sync/origins')) return new Response(JSON.stringify({ data: { origins: [] } }), { status: 200 });
+    if (url === '/api/project-sync/plan' && mocks.planRefusal === 'stage_running') {
+      return new Response(JSON.stringify({ ok: false, error: { code: 'PROJECT_SYNC_STAGE_RUNNING', message: 'Bước đang chạy — đợi xong rồi chia sẻ. checkout: dr-review' } }), { status: 409 });
+    }
+    if (url === '/api/project-sync/operations' && mocks.planRefusal === 'plan_expired_on_apply') {
+      return new Response(JSON.stringify({ ok: false, error: { code: 'PLAN_EXPIRED', message: 'plan baseline changed' } }), { status: 409 });
+    }
     if (url === '/api/project-sync/plan') return new Response(JSON.stringify({ data: {
       planId: 'plan-retail',
       createdAt: '2026-08-12T00:00:00.000Z',
@@ -165,6 +173,56 @@ describe('PipelinesRoute · App/Feature origin sync', () => {
     const planBody = JSON.parse(String((planCall?.[1] as RequestInit | undefined)?.body));
     expect(planBody.origin).toMatchObject({ mode: 'new', name: 'Retail bản demo' });
     expect(planBody.origin.originId).not.toBe('retail-cloud');
+  });
+
+  it('plan 409 PROJECT_SYNC_STAGE_RUNNING → toast lỗi với câu từ máy chủ, modal đóng, không reload', async () => {
+    mocks.planRefusal = 'stage_running';
+    render(<PipelinesRoute />);
+    await screen.findByText('needs_review');
+    const push = screen.getByLabelText('Chia sẻ kết quả của Dự án Retail');
+    await waitFor(() => expect(push.hasAttribute('disabled')).toBe(false));
+    fireEvent.click(push);
+    fireEvent.click(screen.getByLabelText('Chọn Feature Thanh toán'));
+    const confirm = screen.getByRole('button', { name: 'Chia sẻ tính năng đã chọn' });
+    await waitFor(() => expect(confirm.hasAttribute('disabled')).toBe(false));
+    fireEvent.click(confirm);
+    const toast = await screen.findByRole('alert');
+    expect(toast.textContent).toContain('Bước đang chạy — đợi xong rồi chia sẻ. checkout: dr-review');
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Chia sẻ kết quả — Dự án Retail' })).toBeNull());
+    expect(mocks.reload).not.toHaveBeenCalled();
+    expect(vi.mocked(globalThis.fetch).mock.calls.some(([url]) => String(url) === '/api/project-sync/operations')).toBe(false);
+  });
+
+  it('apply 409 PLAN_EXPIRED khi chia sẻ → toast giải thích kết quả trên máy vừa đổi', async () => {
+    mocks.planRefusal = 'plan_expired_on_apply';
+    render(<PipelinesRoute />);
+    await screen.findByText('needs_review');
+    const push = screen.getByLabelText('Chia sẻ kết quả của Dự án Retail');
+    await waitFor(() => expect(push.hasAttribute('disabled')).toBe(false));
+    fireEvent.click(push);
+    fireEvent.click(screen.getByLabelText('Chọn Feature Thanh toán'));
+    const confirm = screen.getByRole('button', { name: 'Chia sẻ tính năng đã chọn' });
+    await waitFor(() => expect(confirm.hasAttribute('disabled')).toBe(false));
+    fireEvent.click(confirm);
+    const toast = await screen.findByRole('alert');
+    expect(toast.textContent).toContain('Kết quả trên máy vừa thay đổi trong lúc chia sẻ (bước đang chạy?). Mở lại và thử lại.');
+    expect(mocks.reload).not.toHaveBeenCalled();
+  });
+
+  it('feature đang chạy (nav.workflows.running) không tick được trong modal Chia sẻ', async () => {
+    features[0] = { ...features[0]!, running: 1, runningStage: { id: 'dr-review', name: 'Đánh giá tài liệu' }, workflows: [{ id: 'docs-to-ui', name: 'URD/PRD → UI-Spec', done: 0, total: 3, running: 1 }] };
+    try {
+      render(<PipelinesRoute />);
+      await screen.findByText('needs_review');
+      const push = screen.getByLabelText('Chia sẻ kết quả của Dự án Retail');
+      await waitFor(() => expect(push.hasAttribute('disabled')).toBe(false));
+      fireEvent.click(push);
+      const box = screen.getByLabelText('Chọn Feature Thanh toán') as HTMLInputElement;
+      expect(box.disabled).toBe(true);
+      expect(screen.getByTestId('pipeline-push-running-checkout').textContent).toBe('Đang chạy: Đánh giá tài liệu');
+    } finally {
+      features[0] = { id: 'checkout', name: 'Thanh toán', done: 0, total: 3, running: 0, app: { id: 'retail', name: 'Retail' } };
+    }
   });
 
   it('keeps the App action cluster visible and disables Pull without a shared copy', async () => {

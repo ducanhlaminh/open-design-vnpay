@@ -17,6 +17,7 @@ import type {
   ProjectSyncOrigin,
   ProjectSyncOriginSelection,
   ProjectSyncOperation,
+  ProjectSyncPlan,
   ProjectSyncResolution,
   ProjectSyncScope,
   ProjectSyncScopeStatus,
@@ -27,7 +28,7 @@ import { UNASSIGNED_APP, navigate, useRoute } from '../../router';
 import { Toast } from '../Toast';
 import { PipelinesView } from '../PipelinesView';
 import { ProjectSyncPreviewModal } from '../project-sync';
-import { PushAllModal, type ContextTransferSelection, type FeatureStageSelections } from './PipelineModals';
+import { PushAllModal, runningLabelsByFeatureId, type ContextTransferSelection, type FeatureStageSelections } from './PipelineModals';
 import { ConfirmDeleteModal } from './ConfirmDeleteModal';
 import { EditAppModal } from './EditAppModal';
 import { EditFeatureModal } from './EditFeatureModal';
@@ -39,6 +40,9 @@ import { PullSharedFeaturesModal } from './PullSharedFeaturesModal';
 import { PipelinesFeaturesView } from './PipelinesFeaturesView';
 import { PipelinePickerView } from './PipelinePickerView';
 import {
+  PROJECT_SYNC_PUSH_PLAN_EXPIRED_MESSAGE,
+  ProjectSyncPlanExpiredError,
+  ProjectSyncStageRunningError,
   createProjectSyncOperation,
   getProjectSyncOperation,
   getProjectSyncStatuses,
@@ -190,15 +194,37 @@ export function PipelinesRoute() {
     if (!shareDialog || !shareDestination) {
       throw new Error('Hãy chọn nơi chia sẻ trước khi tiếp tục.');
     }
+    // Two refusals are about the LOCAL tree moving under the plan, not about
+    // the shared copy: a stage still writing output (409 STAGE_RUNNING, message
+    // from the daemon lists feature: stage) and PLAN_EXPIRED on push. Both get
+    // a toast with a plain-language line; the modal closes so the user comes
+    // back once the run is done.
+    const explainLocalRefusal = (cause: unknown): boolean => {
+      if (cause instanceof ProjectSyncStageRunningError) {
+        setSyncToast({ message: cause.message, error: true });
+        return true;
+      }
+      if (cause instanceof ProjectSyncPlanExpiredError) {
+        setSyncToast({ message: PROJECT_SYNC_PUSH_PLAN_EXPIRED_MESSAGE, error: true });
+        return true;
+      }
+      return false;
+    };
     // The modal keeps the familiar workflow-step picker.  The plan remains
     // authoritative: its scope controls the App/Feature tree and its selected
     // origin controls where the result is actually written.
-    const plan = await planProjectSync({
-      direction: 'push',
-      scope: shareDialog.scope,
-      origin: shareDestination,
-      includeDeleted: true,
-    });
+    let plan: ProjectSyncPlan;
+    try {
+      plan = await planProjectSync({
+        direction: 'push',
+        scope: shareDialog.scope,
+        origin: shareDestination,
+        includeDeleted: true,
+      });
+    } catch (cause) {
+      if (explainLocalRefusal(cause)) return;
+      throw cause;
+    }
     const selectedStages = new Set(stages);
     const selectedFeatureIds = new Set(selection.projectIds);
     const resolutions: Record<string, ProjectSyncResolution> = {};
@@ -213,7 +239,13 @@ export function PipelinesRoute() {
         : selectedStages;
       resolutions[entry.path] = stageId && !featureStages.has(stageId) ? 'skip' : entry.resolution;
     }
-    const initial = await createProjectSyncOperation({ planId: plan.planId, resolutions });
+    let initial: ProjectSyncOperation;
+    try {
+      initial = await createProjectSyncOperation({ planId: plan.planId, resolutions });
+    } catch (cause) {
+      if (explainLocalRefusal(cause)) return;
+      throw cause;
+    }
     const operation = await waitForProjectSyncOperation(initial, getProjectSyncOperation, {
       onUpdate: onProgress,
     });
@@ -229,6 +261,10 @@ export function PipelinesRoute() {
     setSyncStatusReloadTick((tick) => tick + 1);
     setSyncToast({ message: 'Đã chia sẻ kết quả. Danh sách trên máy đang được làm mới.' });
   }, [nav, shareDestination, shareDialog]);
+  // What is still running per feature, for the share picker (B1): built from
+  // the nav payload — `/api/pipelines/projects` already carries
+  // `workflows[].running` + `runningStage`, no extra request.
+  const runningByFeatureId = useMemo(() => runningLabelsByFeatureId(nav.projects), [nav.projects]);
   const localSyncScopes = useMemo<ProjectSyncScope[]>(() => [
       ...nav.apps.filter((app) => !app.unassigned).map((app) => ({ kind: 'app' as const, projectId: app.id })),
       ...nav.projects.map((feature) => ({
@@ -631,6 +667,7 @@ export function PipelinesRoute() {
           onReconnect={() => void reconnectSync()}
           onClose={() => setShareDialog(null)}
           onConfirm={shareSelectedResults}
+          runningByFeatureId={runningByFeatureId}
         />
       ) : null}
       {syncToast ? (
