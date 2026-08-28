@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
-import type { FSWatcher } from 'chokidar';
+import type { FSWatcher } from 'node:fs';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
@@ -125,8 +125,8 @@ describe('project-watchers (refcounting)', () => {
   });
 });
 
-describe('project-watchers (real chokidar)', () => {
-  it('ignores generated build trees case-insensitively before chokidar descends', async () => {
+describe('project-watchers (real fs.watch)', () => {
+  it('ignores generated build trees case-insensitively', async () => {
     const { root, projectId } = await makeProjectsRoot();
     const projectRoot = path.join(root, projectId);
     const ignored = makeIgnored(projectRoot);
@@ -243,7 +243,7 @@ describe('project-watchers (real chokidar)', () => {
   }, 8_000);
 
   it('attaches an error listener and survives an emitted error event', async () => {
-    // Regression for codex P1: chokidar's FSWatcher is an EventEmitter.
+    // Regression for codex P1: fs.FSWatcher is an EventEmitter.
     // Without an 'error' listener, transient FS faults (ENOSPC, EPERM,
     // EMFILE on saturated inotify watches) would surface as unhandled
     // exceptions and could crash the daemon — taking down all routes.
@@ -273,7 +273,37 @@ describe('project-watchers (real chokidar)', () => {
   }, 8_000);
 });
 
-describe('project-watchers (chokidar options)', () => {
+describe('project-watchers (descriptor budget)', () => {
+  it('does not hold one descriptor per watched file (regression: spawn EBADF 2026-08-28)', async () => {
+    // chokidar ≥ 4 on macOS watched every FILE with kqueue → 1 fd/file; a
+    // 4 300-file project tab held 4 300 fds and a batch of docs-review runs
+    // exhausted kern.maxfilesperproc, so every spawn() failed with EBADF.
+    // /dev/fd lists this process's open descriptors on macOS + Linux.
+    const { readdir } = await import('node:fs/promises');
+    const countFds = () => readdir('/dev/fd').then((l) => l.length).catch(() => -1);
+    if ((await countFds()) < 0) return; // platform without /dev/fd — skip
+
+    const { root, projectId } = await makeProjectsRoot();
+    const FILES = 300;
+    for (let i = 0; i < FILES; i += 1) {
+      const sub = path.join(root, projectId, `dir-${i % 10}`);
+      await mkdir(sub, { recursive: true });
+      await writeFile(path.join(sub, `f-${i}.txt`), String(i));
+    }
+    const before = await countFds();
+    const sub = subscribe(root, projectId, () => {}, FAST_WATCH_OPTIONS);
+    await sub.ready;
+    try {
+      const after = await countFds();
+      expect(after - before).toBeLessThan(FILES / 10);
+    } finally {
+      await sub.unsubscribe();
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 15_000);
+});
+
+describe('project-watchers (fs.watch options)', () => {
   it('does not follow symlinks out of the watch root (production factory)', async () => {
     // Real chokidar test: create a symlink inside the project pointing to a
     // sibling directory outside the project. Writing to the external sibling

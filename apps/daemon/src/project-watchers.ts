@@ -1,5 +1,6 @@
+import { watch as fsWatch, type FSWatcher } from 'node:fs';
+import { stat } from 'node:fs/promises';
 import path from 'node:path';
-import chokidar, { type FSWatcher } from 'chokidar';
 
 import { isIgnoredProjectDirName } from './project-ignored-dirs.js';
 import { projectDir, resolveProjectDir } from './projects.js';
@@ -8,9 +9,17 @@ import { projectDir, resolveProjectDir } from './projects.js';
  * Refcounted per-project file watcher registry.
  *
  * Subscribers receive `{type, path, kind}` events when files inside the project
- * change on disk. The first subscribe lazy-creates a chokidar watcher; the last
+ * change on disk. The first subscribe lazy-creates a watcher; the last
  * unsubscribe closes it, so we never hold descriptors for projects no UI is
  * looking at.
+ *
+ * 2026-08-28: dùng `fs.watch(dir, { recursive: true })` của Node thay cho
+ * chokidar. chokidar ≥ 4 bỏ fsevents nên trên macOS nó `fs.watch` TỪNG FILE
+ * (kqueue) = 1 file descriptor / file: một tab dự án 4 300 file giữ 4 300 fd,
+ * vài tab + loạt docs-review là chạm `kern.maxfilesperproc` (61 440) → mọi
+ * `spawn` (codex, memory-llm, usage) lỗi `EBADF`, agent run failed, daemon ngã.
+ * `fs.watch` recursive đi qua FSEvents (macOS) / ReadDirectoryChangesW
+ * (Windows) / inotify theo THƯ MỤC (Linux) — không tốn fd theo file.
  */
 
 // Names we never want to surface as project file changes. Tested per-segment
@@ -23,6 +32,9 @@ export interface ProjectWatchEvent { type: 'file-changed'; path: string; kind: P
 export type ProjectWatchCallback = (evt: ProjectWatchEvent) => void;
 export interface ProjectWatcherOptions {
   ignored?: (absPath: string) => boolean;
+  /** Gộp các sự kiện của cùng một path trong `stabilityThreshold` ms rồi mới
+   *  stat + phát 1 sự kiện (agent ghi file lớn theo nhiều lần write).
+   *  `pollInterval` giữ cho tương thích chữ ký cũ; không còn poll. */
   awaitWriteFinish?: false | { stabilityThreshold: number; pollInterval: number };
   metadata?: unknown;
   _watcherFactory?: WatcherFactory;
@@ -53,64 +65,34 @@ export const DEFAULT_AWAIT_WRITE_FINISH = {
 };
 
 const registry = new Map<string, WatcherEntry>();
-const PREFERS_POLLING_IN_TESTS = process.env.NODE_ENV === 'test';
-
-function isPollingFallbackError(err: unknown): boolean {
-  const code = (err as NodeJS.ErrnoException | undefined)?.code;
-  return code === 'EMFILE' || code === 'ENOSPC';
-}
-
-function createWatcher(
-  dir: string,
-  opts: Required<Pick<ProjectWatcherOptions, 'ignored' | 'awaitWriteFinish'>>,
-  usePolling: boolean,
-): FSWatcher {
-  const watcherOptions = {
-    ignored: opts.ignored,
-    ignoreInitial: true,
-    awaitWriteFinish: opts.awaitWriteFinish,
-    persistent: true,
-    // Don't follow symlinks out of the project root. Even though the relative-
-    // path ignore predicate keeps emitted events project-scoped, an unhandled
-    // symlink would still cost descriptors and surface external FS activity.
-    followSymlinks: false,
-    usePolling,
-    ...(usePolling ? { interval: 100, binaryInterval: 300 } : {}),
-  };
-  return chokidar.watch(dir, watcherOptions);
-}
 
 function makeEntry(dir: string, opts: Required<Pick<ProjectWatcherOptions, 'ignored' | 'awaitWriteFinish'>>): WatcherEntry {
   let resolveReady: () => void;
   const ready = new Promise<void>((resolve) => { resolveReady = resolve; });
   let readyResolved = false;
   const subscribers = new Set<ProjectWatchCallback>();
-  const entry: WatcherEntry = {
-    dir,
-    watcher: createWatcher(dir, opts, PREFERS_POLLING_IN_TESTS),
-    ready,
-    subscribers,
-    closing: null,
-  };
-  let usingPollingFallback = PREFERS_POLLING_IN_TESTS;
-  let switchingToPolling = false;
-
   const resolveReadyOnce = () => {
     if (readyResolved) return;
     readyResolved = true;
     resolveReady();
   };
 
-  const broadcast = (kind: ProjectWatchKind) => (absPath: string) => {
-    const rel = path.relative(dir, absPath);
-    if (!rel || rel.startsWith('..')) return;
-    const evt: ProjectWatchEvent = { type: 'file-changed', path: rel.split(path.sep).join('/'), kind };
+  const watcher = fsWatch(dir, { recursive: true, persistent: true });
+  const entry: WatcherEntry = { dir, watcher, ready, subscribers, closing: null };
+
+  // Path (relative, '/'-separated) → files we have already reported as
+  // present. Lets a coalesced burst of rename+change on a brand-new file come
+  // out as ONE `add`, and a later write as `change`. Strings only — no fds.
+  const known = new Set<string>();
+  const pending = new Map<string, { timer: NodeJS.Timeout; lastEventType: string }>();
+  const debounceMs = opts.awaitWriteFinish ? opts.awaitWriteFinish.stabilityThreshold : 0;
+
+  const emit = (rel: string, kind: ProjectWatchKind) => {
+    const evt: ProjectWatchEvent = { type: 'file-changed', path: rel, kind };
     for (const cb of entry.subscribers) {
       try {
         cb(evt);
       } catch (err) {
-        // A buggy subscriber must not poison siblings. Log in dev so the bug
-        // doesn't go silent during local testing.
         if (process.env.NODE_ENV === 'development') {
           console.warn('[project-watchers] subscriber threw on', evt.path, err);
         }
@@ -118,56 +100,71 @@ function makeEntry(dir: string, opts: Required<Pick<ProjectWatcherOptions, 'igno
     }
   };
 
-  const attachWatcher = (watcher: FSWatcher) => {
-    watcher.once('ready', () => resolveReadyOnce());
-    watcher.on('add', broadcast('add'));
-    watcher.on('change', broadcast('change'));
-    watcher.on('unlink', broadcast('unlink'));
-    // chokidar's FSWatcher is an EventEmitter. Without an `error` listener,
-    // transient FS faults (ENOSPC, EPERM, EMFILE on saturated inotify watches)
-    // would surface as unhandled exceptions and could crash the daemon.
-    watcher.on('error', (err) => {
-      if (isPollingFallbackError(err) && !usingPollingFallback && !switchingToPolling) {
-        switchingToPolling = true;
-        const next = createWatcher(dir, opts, true);
-        usingPollingFallback = true;
-        entry.watcher = next;
-        attachWatcher(next);
-        void watcher.close().catch(() => {});
-        switchingToPolling = false;
-        return;
-      }
-      if (process.env.NODE_ENV === 'development') {
-        console.warn('[project-watchers] chokidar error in', dir, err);
-      }
-      // A watcher that fails before it reaches ready would otherwise hang every
-      // caller awaiting `sub.ready`.
-      resolveReadyOnce();
-    });
+  const settle = async (rel: string, lastEventType: string) => {
+    if (entry.closing) return;
+    const st = await stat(path.join(dir, rel)).catch(() => null);
+    if (!st) {
+      if (known.delete(rel) || lastEventType === 'rename') emit(rel, 'unlink');
+      return;
+    }
+    if (!st.isFile()) return; // directories: chokidar never bridged addDir/unlinkDir either
+    if (known.has(rel)) {
+      emit(rel, 'change');
+      return;
+    }
+    known.add(rel);
+    // A pre-existing file we have not seen yet reports `change` on macOS/Linux
+    // (eventType 'change'); a newly created one reports 'rename'.
+    emit(rel, lastEventType === 'change' ? 'change' : 'add');
   };
 
-  attachWatcher(entry.watcher);
+  const onEvent = (eventType: string, filename: string | Buffer | null) => {
+    if (!filename) return;
+    const relNative = typeof filename === 'string' ? filename : filename.toString();
+    const abs = path.join(dir, relNative);
+    if (opts.ignored(abs)) return;
+    const rel = path.relative(dir, abs).split(path.sep).join('/');
+    if (!rel || rel.startsWith('..')) return;
+    if (debounceMs <= 0) {
+      void settle(rel, eventType);
+      return;
+    }
+    const prev = pending.get(rel);
+    if (prev) clearTimeout(prev.timer);
+    const timer = setTimeout(() => {
+      const item = pending.get(rel);
+      pending.delete(rel);
+      void settle(rel, item?.lastEventType ?? eventType);
+    }, debounceMs);
+    pending.set(rel, { timer, lastEventType: eventType });
+  };
+
+  watcher.on('change', onEvent);
+  // fs.FSWatcher is an EventEmitter: without an `error` listener a transient
+  // FS fault (EPERM, ENOSPC, EMFILE…) would be an unhandled exception and
+  // take the daemon down with it.
+  watcher.on('error', (err) => {
+    if (process.env.NODE_ENV === 'development') {
+      console.warn('[project-watchers] fs.watch error in', dir, err);
+    }
+    resolveReadyOnce();
+  });
+  watcher.on('close', () => {
+    for (const item of pending.values()) clearTimeout(item.timer);
+    pending.clear();
+  });
+  // fs.watch has no initial scan, so it is live as soon as it is constructed.
+  setImmediate(resolveReadyOnce);
 
   return entry;
 }
 
 /**
- * Subscribe to file-change events for a project.
- *
- * @param {string} projectsRoot Absolute path to the projects parent directory.
- * @param {string} projectId Project id (validated by projectDir()).
- * @param {(evt: {type: 'file-changed', path: string, kind: 'add'|'change'|'unlink'}) => void} onEvent
- * @param {{ ignored?: string[], awaitWriteFinish?: object, _watcherFactory?: typeof makeEntry }} [opts]
- * @returns {{ unsubscribe: () => Promise<void>, ready: Promise<void> }}
- *   `unsubscribe` releases the subscriber and closes the watcher if it was the
- *   last; `ready` resolves once chokidar has finished its initial scan.
+ * Subscribe to file changes for a project. Returns an unsubscribe fn and a
+ * `ready` promise. The watcher is created lazily on first subscribe and closed
+ * on last unsubscribe.
  */
 export function subscribe(projectsRoot: string, projectId: string, onEvent: ProjectWatchCallback, opts: ProjectWatcherOptions = {}) {
-  // Resolve to the project's actual root: for folder-imported projects
-  // (metadata.baseDir set) we watch the user's folder so the live-reload
-  // SSE stream actually fires when their files change. The registry is
-  // keyed by the resolved directory, not the project id, so two
-  // projects pointing at the same folder share one watcher.
   const dir = opts.metadata
     ? resolveProjectDir(projectsRoot, projectId, opts.metadata)
     : projectDir(projectsRoot, projectId);
@@ -191,7 +188,7 @@ export function subscribe(projectsRoot: string, projectId: string, onEvent: Proj
     entry.subscribers.delete(onEvent);
     if (entry.subscribers.size === 0) {
       registry.delete(key);
-      if (!entry.closing) entry.closing = entry.watcher.close();
+      if (!entry.closing) entry.closing = Promise.resolve(entry.watcher.close());
       await entry.closing;
     }
   };
@@ -203,7 +200,7 @@ export function subscribe(projectsRoot: string, projectId: string, onEvent: Proj
 export async function _resetForTests(): Promise<void> {
   const entries = Array.from(registry.values());
   registry.clear();
-  await Promise.allSettled(entries.map((e) => e.watcher.close()));
+  await Promise.allSettled(entries.map((e) => Promise.resolve(e.watcher.close())));
 }
 
 /** Test-only: number of active watchers. */
@@ -211,7 +208,7 @@ export function _activeWatcherCount(): number {
   return registry.size;
 }
 
-/** Test-only: return the chokidar FSWatcher for a given project's directory. */
+/** Test-only: return the fs.FSWatcher for a given project's directory. */
 export function _internalWatcherForTests(projectsRoot: string, projectId: string): FSWatcher | undefined {
   const dir = projectDir(projectsRoot, projectId);
   return registry.get(dir)?.watcher;
