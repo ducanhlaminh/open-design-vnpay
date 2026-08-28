@@ -27,6 +27,8 @@ const uiStage = { inputPlaceholder: undefined, inputKind: undefined, acceptsDesi
 const uxStage = { inputPlaceholder: undefined, inputKind: undefined, acceptsDesignSystem: false, acceptsPlatform: true };
 /** Bước không đòi cấu hình gì (customer journey…). */
 const plainStage = { inputPlaceholder: undefined, inputKind: undefined, acceptsDesignSystem: false, acceptsPlatform: false };
+/** Bước docs-review cần "Nền tảng màn hình" (dr-flow / dr-comp / dr-mockup). */
+const screenStage = { inputPlaceholder: undefined, inputKind: undefined, acceptsDesignSystem: false, acceptsPlatform: false, acceptsScreenPlatform: true };
 
 describe('resolveStageRunConfig — chạy một bước bằng cấu hình panel phải', () => {
   it('có nguồn Confluence → chạy thẳng, payload mang đúng trang đã cấu hình', () => {
@@ -100,6 +102,34 @@ describe('resolveStageRunConfig — chạy một bước bằng cấu hình pane
     expect(d.ok).toBe(false);
     if (d.ok) throw new Error('unreachable');
     expect(d.missing).toBe('Sản phẩm cần build');
+  });
+
+  it('bước docs-review chưa chọn Nền tảng màn hình → báo thiếu "Nền tảng màn hình", KHÔNG chạy', () => {
+    // KHÔNG default, KHÔNG đoán: cấu hình rỗng lẫn cấu hình có mọi thứ khác đều
+    // bị chặn cho tới khi người dùng chọn Mobile/Web/Cả hai ở rail.
+    for (const cfg of [undefined, {}, { confluencePages: [{ id: '1', url: 'https://cf/x' }], designSystemId: null }] as const) {
+      const d = resolveStageRunConfig(screenStage, cfg as RunAllConfig | undefined);
+      expect(d.ok).toBe(false);
+      if (d.ok) throw new Error('unreachable');
+      expect(d.missing).toBe('Nền tảng màn hình');
+    }
+  });
+
+  it('đã chọn Nền tảng màn hình (mobile/web/both) → chạy thẳng, không mang giá trị theo payload', () => {
+    // Daemon đọc `metadata.runAllConfig.screenPlatform` đã lưu — web chỉ gate.
+    for (const screenPlatform of ['mobile', 'web', 'both'] as const) {
+      const d = resolveStageRunConfig(screenStage, { screenPlatform });
+      expect(d.ok).toBe(true);
+      if (!d.ok) throw new Error('unreachable');
+      expect(d.payload).toBeUndefined();
+      expect(d.platform).toBeUndefined();
+    }
+  });
+
+  it('bước KHÔNG có acceptsScreenPlatform không bị đòi Nền tảng màn hình (docs-to-ui giữ nguyên)', () => {
+    expect(resolveStageRunConfig(uxStage, { targets: ['mobile'] as never }).ok).toBe(true);
+    expect(resolveStageRunConfig(uiStage, { designSystemId: null }).ok).toBe(true);
+    expect(resolveStageRunConfig(plainStage, {}).ok).toBe(true);
   });
 
   it('bước không đòi cấu hình gì → chạy thẳng dù cấu hình rỗng', () => {

@@ -26,7 +26,7 @@ import path from 'node:path';
 
 import type { FlowchartDoc } from './flow-ux/to-flowchart.js';
 import type { FlowIndexEntry, UxReview } from './flow-ux/index.js';
-import { resolveScreenPlatform } from './screen-platform.js';
+import type { ScreenPlatformScope } from '@open-design/contracts';
 import { countLayoutKbTopics, guessArchetype, layoutRefsFor, loadLayoutKb, resolveLayoutKbDir, type ArchetypeGuess, type LayoutRefs } from './layout-kb.js';
 
 export const SCREEN_COMPONENTS_SCHEMA_VERSION = '2.1' as const;
@@ -92,11 +92,16 @@ export interface ScreenInput {
   navIn: string[];
   /** UX findings (dr-flow) that touch this screen. */
   findings: { id: string; severity: string; title: string; recommendation?: string }[];
-  /** 'mobile' | 'web' guess from the document wording — the agent decides. */
+  /** WP docs-review-screen-platform (2026-08-28): nền tảng hiệu lực của màn —
+   *  KHÔNG còn đoán từ chữ tài liệu. Phạm vi Mobile/Web (người dùng chọn ở
+   *  rightPanel) → = phạm vi; phạm vi Cả hai → = `platform` của màn (agent
+   *  ghi trong screens.json / thư mục `--app|--web`), màn thiếu → stage
+   *  fail-fast (`assertScreensHavePlatform`). Giữ tên field để consumer cũ
+   *  (mockup `data-layout`, layout-kb) không đổi. */
   platformHint: 'mobile' | 'web';
-  /** screen-variants (docs/screen-variants-spec.md §3.1): nền tảng CỦA MÀN
-   *  NÀY, suy từ chuỗi heading cha của section (WP-V1). Khi có, luôn thắng
-   *  `platformHint`; vắng = tài liệu một-nền-tảng, dùng hint như cũ. */
+  /** Nền tảng CỦA MÀN NÀY do agent quyết (screens.json v2 `platform`, thư mục
+   *  flow `--app|--web`) hoặc daemon điền theo lựa chọn người dùng (phạm vi
+   *  Mobile/Web). Khi có, luôn thắng `platformHint`. */
   platform?: 'mobile' | 'web';
   /** Khóa nhóm màn nghiệp vụ (WP-V2) — biến thể MB/IB của cùng màn chung
    *  groupKey. Vắng = màn đứng một mình (nhóm 1 phần tử ngầm định). */
@@ -140,6 +145,10 @@ export interface ScreenComponentsInputs {
   generatedAt: string;
   ds: { components: boolean; catalog: boolean; rules: boolean; examples: boolean; figmaCatalog: boolean };
   screens: ScreenInput[];
+  /** WP docs-review-screen-platform: phạm vi nền tảng người dùng chọn cho lượt
+   *  chạy này (`RunAllConfig.screenPlatform`) — để web/agent biết vì sao mọi
+   *  màn cùng `platform`. Vắng chỉ khi caller (test/tool cũ) không truyền. */
+  screenPlatform?: ScreenPlatformScope;
   /** Why the list is empty / partial. */
   note?: string;
   /** WP dr-mockup (2026-08-27): bản luồng đang dùng (từ `flows/index.json[].selection`
@@ -784,9 +793,44 @@ export function scanDocScreens(md: string): Array<{ code: string; name: string; 
   return out;
 }
 
-// WP14: export MỘT bản cho screen-extract.ts (lớp 2) dùng chung — trước đó
-// module đó giữ một bản chép cục bộ vì chạy song song WP11.
-export const MOBILE_HINT_RE = /\b(sdk|mobile|ios|android|app di động|ứng dụng di động|màn hình điện thoại|smartphone|super ?app|mini ?app|bottom sheet)\b/i;
+// ── WP docs-review-screen-platform (2026-08-28) ───────────────────────────
+// Nền tảng của màn KHÔNG còn đoán từ chữ tài liệu (MOBILE_HINT_RE / heading
+// cha đã gỡ khỏi đường chạy). Nguồn duy nhất: phạm vi người dùng chọn ở
+// rightPanel (`RunAllConfig.screenPlatform`) + `platform` agent ghi khi phạm
+// vi là Cả hai. Ba helper dưới đây là NƠI DUY NHẤT quyết định
+// `platform`/`platformHint` của một ScreenInput — mọi lớp (flow, discovery,
+// quét regex, extract lớp 2, overrides lớp 3, proposed) đi qua đây.
+
+/** Thông điệp fail-fast khi phạm vi = Cả hai mà một màn không có nền tảng. */
+export function screenPlatformMissingMsg(key: string): string {
+  return `Màn ${key} chưa có nền tảng — chọn Mobile/Web hoặc chạy lại Luồng màn hình`;
+}
+
+/** `platform` + `platformHint` hiệu lực của một màn theo phạm vi:
+ *  - `mobile` | `web`: cả hai = phạm vi (điền theo LỰA CHỌN người dùng, không
+ *    phải đoán — `platform` agent ghi lệch đã bị dr-flow chặn từ trước);
+ *  - `both`: = `platform` của màn; thiếu → throw `screenPlatformMissingMsg`;
+ *  - vắng (chỉ test/tool cũ gọi thẳng, đường chạy LUÔN truyền phạm vi): giữ
+ *    `platform` nếu có, hint rơi về 'web' — KHÔNG đọc nội dung tài liệu. */
+export function resolveInputPlatform(
+  scope: ScreenPlatformScope | undefined,
+  platform: 'mobile' | 'web' | null | undefined,
+  key: string,
+): { platform?: 'mobile' | 'web'; platformHint: 'mobile' | 'web' } {
+  if (scope === 'mobile' || scope === 'web') return { platform: scope, platformHint: scope };
+  if (platform) return { platform, platformHint: platform };
+  if (scope === 'both') throw new Error(screenPlatformMissingMsg(key));
+  return { platformHint: 'web' };
+}
+
+/** Kiểm LẠI sau khi danh sách màn đã qua mọi lớp (extract lớp 2, overrides
+ *  lớp 3, nhóm biến thể): phạm vi Cả hai → màn nào thiếu `platform` là lỗi
+ *  chặn stage (dr-comp/dr-mockup). Phạm vi đơn → không có gì để kiểm. */
+export function assertScreensHavePlatform(screens: readonly ScreenInput[], scope: ScreenPlatformScope | undefined): void {
+  if (scope !== 'both') return;
+  const missing = screens.filter((s) => !s.platform).map((s) => s.key);
+  if (missing.length) throw new Error(screenPlatformMissingMsg(missing.join(', ')));
+}
 
 // WP14: nguồn đối chiếu tất định DUY NHẤT cho "anchorText" của lớp 2
 // (screen-extract.ts, agent trích) và lớp 3 (screen-overrides.ts, override
@@ -1039,6 +1083,8 @@ export interface ResolveDocScreensInput {
   discovered: DiscoveredDoc | null;
   /** Keys already claimed by flow-origin screens (or a prior call) — never duplicated. */
   existingKeys: ReadonlySet<string>;
+  /** WP docs-review-screen-platform: phạm vi người dùng chọn (xem `resolveInputPlatform`). */
+  screenPlatform?: ScreenPlatformScope | undefined;
 }
 
 /** Chọn nguồn màn-TÀI-LIỆU cho `prepareScreenComponentInputs`: khi `discovered`
@@ -1049,7 +1095,7 @@ export interface ResolveDocScreensInput {
  *  `extractSectionMockups`). `order` trong kết quả chỉ là placeholder (0) —
  *  caller gán lại thứ tự cuối cùng khi merge vào danh sách chính. */
 export function resolveDocScreens(input: ResolveDocScreensInput): ScreenInput[] {
-  const { pages, mdBySource, discovered, existingKeys } = input;
+  const { pages, mdBySource, discovered, existingKeys, screenPlatform } = input;
   const seen = new Set(existingKeys);
   const out: ScreenInput[] = [];
 
@@ -1169,11 +1215,10 @@ export function resolveDocScreens(input: ResolveDocScreensInput): ScreenInput[] 
           ? resolvedBlocks.map((b) => ({ name: b.name, section: buildAnchorSection(md, b.line, nextAnchorEndLine(b.line)) }))
           : undefined;
 
-        // screen-variants WP-V1: platform theo chuỗi heading cha của section
-        // — khi suy được thì thắng platformHint mức tài liệu. WP
-        // screen-flow-platform-split: agent đã quyết `platform` trong
-        // screens.json → dùng thẳng, KHÔNG suy từ heading.
-        const platform = c.platform ? screenPlatformToInput(c.platform) : resolveScreenPlatform(md, section.startLine);
+        // WP docs-review-screen-platform: nền tảng = phạm vi người dùng chọn,
+        // hoặc `platform` agent ghi (screens.json) khi phạm vi Cả hai — KHÔNG
+        // suy từ heading/từ khoá tài liệu nữa.
+        const platformFields = resolveInputPlatform(screenPlatform, c.platform ? screenPlatformToInput(c.platform) : null, key);
         out.push({
           key,
           name: c.name,
@@ -1187,8 +1232,7 @@ export function resolveDocScreens(input: ResolveDocScreensInput): ScreenInput[] 
           navOut: [],
           navIn: [],
           findings: [],
-          platformHint: MOBILE_HINT_RE.test(md) ? 'mobile' : 'web',
-          ...(platform ? { platform } : {}),
+          ...platformFields,
           ...(c.groupKey ? { groupKey: c.groupKey } : {}),
           origin: 'agent',
           ...(blocks ? { blocks } : {}),
@@ -1219,16 +1263,13 @@ export function resolveDocScreens(input: ResolveDocScreensInput): ScreenInput[] 
         navOut: [],
         navIn: [],
         findings: [],
-        platformHint: MOBILE_HINT_RE.test(md) ? 'mobile' : 'web',
+        // Màn quét regex không có `platform` agent ghi → phạm vi Cả hai fail-fast.
+        ...resolveInputPlatform(screenPlatform, null, key),
         origin: 'doc',
       };
       if (section) {
         scanned.section = { heading: section.heading, startLine: section.startLine, endLine: section.endLine, excerpt: section.excerpt };
         if (section.referenceTable) scanned.referenceTable = section.referenceTable;
-        // screen-variants WP-V1: chỉ suy platform khi có section (cần
-        // startLine để leo heading cha).
-        const platform = resolveScreenPlatform(md, section.startLine);
-        if (platform) scanned.platform = platform;
       }
       out.push(scanned);
     }
@@ -1252,6 +1293,10 @@ export interface PrepareScreenInputsOptions {
    *  bố cục + ảnh wireframe Enrico) + `inputs.layoutKb`. Mặc định false —
    *  comp/_inputs.json của dr-comp KHÔNG đổi một byte. */
   layoutKb?: boolean;
+  /** WP docs-review-screen-platform: phạm vi nền tảng người dùng chọn
+   *  (`RunAllConfig.screenPlatform`). Đường chạy dr-comp/dr-mockup LUÔN truyền
+   *  (server.ts fail-fast trước khi tới đây); xem `resolveInputPlatform`. */
+  screenPlatform?: ScreenPlatformScope | undefined;
 }
 
 /** Build `comp/_inputs.json` from the flow stage's outputs + the documents.
@@ -1295,8 +1340,13 @@ export async function prepareScreenComponentInputs(
       const findings = (review?.findings ?? [])
         .filter((f) => (f.cells?.asIs ?? []).some((c) => cellScreen.get(c) === s.key))
         .map((f) => ({ id: f.id, severity: f.severity, title: f.title, ...(f.recommendation ? { recommendation: f.recommendation } : {}) }));
-      const platformHint: 'mobile' | 'web' = md && MOBILE_HINT_RE.test(md) ? 'mobile' : 'web';
       const originMetadata = parseScreenOriginMetadata(s as unknown as Record<string, unknown>);
+      // WP screen-flow-platform-split: flow đã tách theo nền tảng
+      // (`flows/SCREEN-FLOW--app|--web`, index entry mang `platform`) → màn
+      // mang đúng nền tảng agent quyết. WP docs-review-screen-platform: phạm
+      // vi Mobile/Web thắng tất cả; Cả hai mà không có → fail-fast; KHÔNG
+      // suy từ heading/từ khoá tài liệu.
+      const entryPlatform = entry.platform === 'app' || entry.platform === 'web' ? screenPlatformToInput(entry.platform) : null;
       const input: ScreenInput = {
         key: s.key,
         name: s.name,
@@ -1308,22 +1358,12 @@ export async function prepareScreenComponentInputs(
         navOut,
         navIn: [],
         findings,
-        platformHint,
+        ...resolveInputPlatform(opts.screenPlatform, entryPlatform, s.key),
         origin: 'flow',
         ...originMetadata,
       };
-      // WP screen-flow-platform-split: flow đã tách theo nền tảng
-      // (`flows/SCREEN-FLOW--app|--web`, index entry mang `platform`) → màn
-      // mang đúng nền tảng agent quyết; KHÔNG suy lại từ heading.
-      const entryPlatform = entry.platform === 'app' || entry.platform === 'web' ? screenPlatformToInput(entry.platform) : null;
-      if (entryPlatform) input.platform = entryPlatform;
       if (section) {
         input.section = { heading: section.heading, startLine: section.startLine, endLine: section.endLine, excerpt: section.excerpt };
-        // screen-variants WP-V1: platform theo heading cha của section.
-        if (md && !entryPlatform) {
-          const platform = resolveScreenPlatform(md, section.startLine);
-          if (platform) input.platform = platform;
-        }
         if (section.referenceTable) input.referenceTable = section.referenceTable;
         if (md && page) {
           const mockups = await extractSectionMockups(cwd, page.mdPath, md, section);
@@ -1356,7 +1396,7 @@ export async function prepareScreenComponentInputs(
     const md = await readMd(page.mdPath);
     if (md != null) mdBySource.set(page.mdPath, md);
   }
-  const docScreens = resolveDocScreens({ pages: opts.pages, mdBySource, discovered, existingKeys: seen });
+  const docScreens = resolveDocScreens({ pages: opts.pages, mdBySource, discovered, existingKeys: seen, screenPlatform: opts.screenPlatform });
 
   const addedDocKeys: string[] = [];
   let docOrder = flowScreenCount;
@@ -1392,6 +1432,7 @@ export async function prepareScreenComponentInputs(
       figmaCatalog: await exists(path.join(cwd, '.figma-catalog', 'components.json')),
     },
     screens,
+    ...(opts.screenPlatform ? { screenPlatform: opts.screenPlatform } : {}),
   };
   // WP dr-mockup: selection của SCREEN-FLOW (finalizeFlowUx ghi vào index entry).
   const selected = (Array.isArray(index) ? index : []).find((e) => e?.selection?.variant);

@@ -93,6 +93,11 @@ export type ScreenComponentsKickoffOptions =
       flowLine: string;
       dsLine: string;
       platformGuess: string;
+      /** WP docs-review-screen-platform: `true` khi `platformGuess` LÀ lựa chọn
+       *  của người dùng (phạm vi Mobile/Web) — kickoff nói "do người dùng chọn"
+       *  thay vì "đoán từ tài liệu… tự xác nhận lại" (chỉ còn cho phạm vi
+       *  Cả hai, nơi đây là đa số `platform` của từng màn). */
+      platformChosen?: boolean;
       screenInputsFile: string;
       outputFile: string;
     }
@@ -158,7 +163,9 @@ export function buildScreenComponentsKickoff(opts: ScreenComponentsKickoffOption
       '## Ngữ cảnh',
       `- ${opts.flowLine.trim()}`,
       `- ${opts.dsLine.trim()}`,
-      `- Nền tảng đoán từ tài liệu: \`${opts.platformGuess}\` — tự xác nhận lại theo tài liệu.`,
+      opts.platformChosen
+        ? `- Nền tảng màn hình do người dùng chọn: \`${opts.platformGuess}\` — áp cho MỌI màn, KHÔNG tự suy từ tài liệu.`
+        : `- Nền tảng đa số theo \`platform\` từng màn (phạm vi Cả hai): \`${opts.platformGuess}\` — từng màn đọc \`platform\` của chính nó trong file inputs.`,
       '',
       '## Việc cần làm',
       `- Đọc \`${opts.screenInputsFile}\` (mọi màn: tên, bước, mục tài liệu) và Design System.`,
@@ -366,6 +373,29 @@ export function buildScreenRunKickoff(opts: ScreenRunKickoffOptions): string {
  * caller (skill/source/platform/audience/ui/rerun/kb/appCtx/appDocs/
  * dsCriteria/reactDs/graph); this builder only trims and lists the non-empty
  * ones as bullets, in the same order the legacy kickoff concatenated them. */
+/** WP docs-review-screen-platform (2026-08-28): directive "Nền tảng màn hình"
+ *  cho kickoff dr-flow (skill docs-screen-flow) — cùng khuôn `platformDirective`
+ *  của stage UX. Đúng MỘT trong ba câu theo lựa chọn người dùng ở rightPanel;
+ *  daemon KHÔNG bao giờ tự suy nền tảng từ tài liệu nữa. */
+export function screenPlatformDirective(scope: import('@open-design/contracts').ScreenPlatformScope): string {
+  if (scope === 'mobile') {
+    return (
+      'Nền tảng màn hình của tính năng này do người dùng chọn: **MOBILE APP**. Ghi `platform: "app"` cho MỌI màn trong `screens.json`, chỉ MỘT thư mục `flows/SCREEN-FLOW/` (KHÔNG tạo `--app`/`--web`). ' +
+      'Mục tài liệu mô tả riêng cho IB/Website/Backoffice → đưa vào `excluded[]` với reason "ngoài phạm vi nền tảng (Mobile app)". KHÔNG tự suy nền tảng từ tài liệu.'
+    );
+  }
+  if (scope === 'web') {
+    return (
+      'Nền tảng màn hình của tính năng này do người dùng chọn: **WEBSITE**. Ghi `platform: "web"` cho MỌI màn trong `screens.json`, chỉ MỘT thư mục `flows/SCREEN-FLOW/` (KHÔNG tạo `--app`/`--web`). ' +
+      'Mục tài liệu mô tả riêng cho App/MB/ứng dụng di động → đưa vào `excluded[]` với reason "ngoài phạm vi nền tảng (Website)". KHÔNG tự suy nền tảng từ tài liệu.'
+    );
+  }
+  return (
+    'Nền tảng màn hình của tính năng này do người dùng chọn: **CẢ HAI** (mobile app + web). Áp dụng luật tài liệu ≥2 nền tảng: `flows/SCREEN-FLOW--app/` + `flows/SCREEN-FLOW--web/` (KHÔNG dùng `flows/SCREEN-FLOW/`), MỌI màn có `platform` khớp thư mục; ' +
+    'nền tảng không có nội dung trong tài liệu → thư mục flow đó có `screens.json` với `screens: []` + `excluded` ghi lý do (không cần `screen-flow.cells.xml`), KHÔNG bịa màn.'
+  );
+}
+
 export interface PipelineKickoffDirectives {
   skill?: string;
   /** Chỉ dẫn RIÊNG của một stage (input/output cụ thể) — đứng ngay sau `skill`.

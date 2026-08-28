@@ -3281,6 +3281,12 @@
   color: var(--accent-strong);
 }
 
+/* Dòng rail còn THIẾU cấu hình bắt buộc (vd "Nền tảng màn hình" của
+   docs-review chưa chọn): tô cảnh báo để người dùng thấy trước khi bấm Chạy. */
+.pl-rail-row__value--missing {
+  color: var(--red);
+}
+
 .pl-rail-row--sync .pl-rail-row__value {
   white-space: normal;
 }
@@ -3312,4 +3318,13 @@
    canvas nếu chỉ dựa vào thuộc tính. */
 .pipelines-flow[hidden] {
   display: none;
+}
+
+/* Quick result · dr-flow: rail phẳng (không cây thư mục) — mỗi luồng một dòng
+   + "Danh sách màn"; dùng lại .pl-result-rail__item, chỉ thêm khoảng cách. */
+.pl-result-rail__flat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 0;
 }

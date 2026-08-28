@@ -31,6 +31,7 @@ import type {
   PullPlan,
   RunAllConfig,
   RunPipelineResponse,
+  ScreenPlatformScope,
   TargetPlatform,
   UiTarget,
   Workflow,
@@ -56,6 +57,7 @@ import {
   RunAllClearConfirmModal,
   RunAllModal,
   RunInputModal,
+  SCREEN_PLATFORM_LABELS,
   UI_TERMINAL_STAGE_IDS,
   type RunAllFocus,
   type RunAllPayload,
@@ -339,7 +341,10 @@ export type StageRunDecision =
   | { ok: false; missing: string };
 
 export function resolveStageRunConfig(
-  p: Pick<PipelineView, 'inputPlaceholder' | 'inputKind' | 'acceptsDesignSystem' | 'acceptsPlatform'>,
+  p: Pick<
+    PipelineView,
+    'inputPlaceholder' | 'inputKind' | 'acceptsDesignSystem' | 'acceptsPlatform' | 'acceptsScreenPlatform'
+  >,
   cfg: RunAllConfig | undefined,
 ): StageRunDecision {
   if (p.inputKind === 'source') {
@@ -373,6 +378,11 @@ export function resolveStageRunConfig(
       },
     };
   }
+  // docs-review (dr-flow/dr-comp/dr-mockup): "Nền tảng màn hình" do người dùng
+  // chọn ở rail — KHÔNG mặc định, KHÔNG đoán từ tài liệu. Daemon đọc giá trị
+  // từ `metadata.runAllConfig.screenPlatform` đã lưu (như targets.json của
+  // docs-to-ui), nên ở đây chỉ CHẶN khi chưa chọn, không mang giá trị theo payload.
+  if (p.acceptsScreenPlatform && !cfg?.screenPlatform) return { ok: false, missing: 'Nền tảng màn hình' };
   if (p.acceptsDesignSystem) {
     // `null` = người dùng đã chọn "Không dùng" — đó LÀ một lựa chọn hợp lệ; chỉ
     // `undefined` mới nghĩa là chưa cấu hình bao giờ.
@@ -386,6 +396,68 @@ export function resolveStageRunConfig(
     return { ok: true, platform };
   }
   return { ok: true };
+}
+
+/** Workflow đang mở có bước cần "Nền tảng màn hình" (docs-review) không — cùng
+ *  cờ cho dòng rail, section modal và gate nút "Chạy full luồng". */
+export function hasScreenPlatformStage(
+  pipelines: readonly Pick<PipelineView, 'acceptsScreenPlatform'>[],
+): boolean {
+  return pipelines.some((p) => p.acceptsScreenPlatform === true);
+}
+
+export const SCREEN_PLATFORM_MISSING_LABEL = 'Chưa chọn';
+
+/** Nhãn dòng rail "Nền tảng màn hình": giá trị đã chọn, hoặc "Chưa chọn" —
+ *  KHÔNG có nhánh mặc định (khác `railTargetsSummary` của docs-to-ui). */
+export function screenPlatformRailLabel(scope: ScreenPlatformScope | undefined): string {
+  return scope ? SCREEN_PLATFORM_LABELS[scope] : SCREEN_PLATFORM_MISSING_LABEL;
+}
+
+/** Dựng RunAllPayload từ cấu hình đã lưu của dự án (savedRunAll ?? config) —
+ *  ĐÂY là đường chạy duy nhất: modal chỉ ghi cấu hình, nút "Chạy pipeline"
+ *  ngoài modal đọc lại đúng cấu hình đó (cũng là giá trị rail đang hiển thị)
+ *  và POST run-all. Hàm THUẦN (nhận `pipelines` của workflow đang mở) để test
+ *  không phải mount cả `PipelinesView`. */
+export function runAllPayloadFromConfig(
+  pipelines: readonly Pick<PipelineView, 'id' | 'acceptsPlatform'>[],
+  cfg: RunAllConfig | undefined,
+): RunAllPayload {
+  const hasPlatformStage = pipelines.some((p) => p.acceptsPlatform);
+  const targets = hasPlatformStage ? (cfg?.targets?.length ? cfg.targets : (['mobile'] as UiTarget[])) : undefined;
+  const uploading = cfg?.docsFromUpload === true;
+  const usingAppPool = !uploading && (cfg?.appPool?.paths?.length ?? 0) > 0;
+  const knownStageIds = new Set(pipelines.map((p) => p.id));
+  const stageIdsForRun = (cfg?.stageIds ?? []).filter((id) => knownStageIds.has(id));
+  const input =
+    uploading || usingAppPool
+      ? ''
+      : (cfg?.confluencePages ?? [])
+          .map((p) => p.url ?? p.id)
+          .filter((x): x is string => Boolean(x))
+          .join('\n');
+  return {
+    ...(input ? { input } : {}),
+    ...(!uploading && !usingAppPool && cfg?.confluencePages?.length ? { confluencePages: cfg.confluencePages } : {}),
+    ...(usingAppPool ? { appPool: cfg!.appPool! } : {}),
+    terminal: cfg?.terminal ?? 'ui-html',
+    platform: targets?.[0] ? UI_TARGETS[targets[0]].platform : (cfg?.platform ?? 'mobile'),
+    ...(targets ? { targets } : {}),
+    designSystemId: cfg?.designSystemId === undefined ? null : cfg.designSystemId,
+    ...(cfg?.designSystemByTarget ? { designSystemByTarget: cfg.designSystemByTarget } : {}),
+    skipSucceeded: cfg?.skipSucceeded ?? false,
+    // Danh sách bước người dùng tự tick — lọc còn đúng các bước workflow ĐANG
+    // mở có thật: cấu hình được lưu ở cấp project, nên id của workflow khác
+    // (đã lưu từ tab bên cạnh) không được lọt vào payload.
+    ...(stageIdsForRun.length ? { stageIds: stageIdsForRun } : {}),
+    ...(cfg?.lean ? { lean: true } : {}),
+    ...(cfg?.followLinks === false ? { followLinks: false } : {}),
+    ...(!uploading && !usingAppPool && cfg?.includeDescendants ? { includeDescendants: true } : {}),
+    ...(uploading ? { docsFromUpload: true } : {}),
+    // docs-review: gửi ĐÚNG giá trị đã lưu, KHÔNG tự điền — khác `platform`
+    // ('mobile' mặc định) ở trên, vì daemon fail-fast khi thiếu là hành vi mong muốn.
+    ...(cfg?.screenPlatform ? { screenPlatform: cfg.screenPlatform } : {}),
+  };
 }
 
 /** Which stage ids a run-all `payload` will actually execute right now —
@@ -1451,6 +1523,9 @@ export function PipelinesView() {
         ...(payload.followLinks === false ? { followLinks: false } : {}),
         ...(payload.includeDescendants ? { includeDescendants: true } : {}),
         ...(payload.docsFromUpload ? { docsFromUpload: true } : {}),
+        // docs-review: chỉ gửi khi đã chọn — daemon `runAllConfigFromBody` lưu
+        // vào metadata.runAllConfig.screenPlatform, không có default.
+        ...(payload.screenPlatform ? { screenPlatform: payload.screenPlatform } : {}),
       }),
     });
     if (!res.ok && res.status !== 202) {
@@ -1478,44 +1553,10 @@ export function PipelinesView() {
     });
   };
 
-  // Dựng RunAllPayload từ cấu hình đã lưu của dự án (savedRunAll ?? config) —
-  // ĐÂY là đường chạy duy nhất: modal chỉ ghi cấu hình, nút "Chạy pipeline"
-  // ngoài modal đọc lại đúng cấu hình đó (cũng là giá trị rail đang hiển thị) và
-  // POST run-all.
-  const buildRunAllPayloadFromConfig = (cfg: RunAllConfig | undefined): RunAllPayload => {
-    const hasPlatformStage = pipelines.some((p) => p.acceptsPlatform);
-    const targets = hasPlatformStage ? (cfg?.targets?.length ? cfg.targets : (['mobile'] as UiTarget[])) : undefined;
-    const uploading = cfg?.docsFromUpload === true;
-    const usingAppPool = !uploading && (cfg?.appPool?.paths?.length ?? 0) > 0;
-    const knownStageIds = new Set(pipelines.map((p) => p.id));
-    const stageIdsForRun = (cfg?.stageIds ?? []).filter((id) => knownStageIds.has(id));
-    const input =
-      uploading || usingAppPool
-        ? ''
-        : (cfg?.confluencePages ?? [])
-            .map((p) => p.url ?? p.id)
-            .filter((x): x is string => Boolean(x))
-            .join('\n');
-    return {
-      ...(input ? { input } : {}),
-      ...(!uploading && !usingAppPool && cfg?.confluencePages?.length ? { confluencePages: cfg.confluencePages } : {}),
-      ...(usingAppPool ? { appPool: cfg!.appPool! } : {}),
-      terminal: cfg?.terminal ?? 'ui-html',
-      platform: targets?.[0] ? UI_TARGETS[targets[0]].platform : (cfg?.platform ?? 'mobile'),
-      ...(targets ? { targets } : {}),
-      designSystemId: cfg?.designSystemId === undefined ? null : cfg.designSystemId,
-      ...(cfg?.designSystemByTarget ? { designSystemByTarget: cfg.designSystemByTarget } : {}),
-      skipSucceeded: cfg?.skipSucceeded ?? false,
-      // Danh sách bước người dùng tự tick — lọc còn đúng các bước workflow ĐANG
-      // mở có thật: cấu hình được lưu ở cấp project, nên id của workflow khác
-      // (đã lưu từ tab bên cạnh) không được lọt vào payload.
-      ...(stageIdsForRun.length ? { stageIds: stageIdsForRun } : {}),
-      ...(cfg?.lean ? { lean: true } : {}),
-      ...(cfg?.followLinks === false ? { followLinks: false } : {}),
-      ...(!uploading && !usingAppPool && cfg?.includeDescendants ? { includeDescendants: true } : {}),
-      ...(uploading ? { docsFromUpload: true } : {}),
-    };
-  };
+  // Dựng RunAllPayload từ cấu hình đã lưu — thân hàm là `runAllPayloadFromConfig`
+  // (hàm thuần, export ở đầu file) để test được không cần mount.
+  const buildRunAllPayloadFromConfig = (cfg: RunAllConfig | undefined): RunAllPayload =>
+    runAllPayloadFromConfig(pipelines, cfg);
 
   // Nút "Chạy pipeline" của toolbar — hành động CHẠY duy nhất, nằm ngoài modal:
   // dựng payload từ cấu hình đã lưu (rail đang hiển thị đúng nó) rồi POST
@@ -1545,6 +1586,18 @@ export function PipelinesView() {
     if (!canRun) {
       openRunAll();
       pushToast({ message: 'Cấu hình nguồn tài liệu trước khi chạy' });
+      return;
+    }
+    // docs-review: chưa chọn "Nền tảng màn hình" thì dr-flow/dr-comp/dr-mockup
+    // sẽ fail-fast bên daemon — chặn ngay ở đây (nút cũng đã disabled, đây là
+    // lớp phòng thủ cho đường gọi trực tiếp) và mở đúng section để chọn.
+    if (hasScreenPlatformStage(pipelines) && !cfg?.screenPlatform) {
+      openRunAll('screenPlatform');
+      pushToast({
+        message: 'Chưa chọn Nền tảng màn hình',
+        details: 'Chọn Mobile app / Website / Cả hai rồi bấm Chạy lại.',
+        code: 'error',
+      });
       return;
     }
     const payload = buildRunAllPayloadFromConfig(cfg);
@@ -1871,6 +1924,11 @@ export function PipelinesView() {
   // này không có lựa chọn đó". Cùng nguồn cờ với RunAllModal bên dưới.
   const railHasDesignSystem = pipelines.some((p) => p.acceptsDesignSystem);
   const railHasTargets = pipelines.some((p) => p.acceptsPlatform);
+  // docs-review: dòng "Nền tảng màn hình" (Mobile app / Website / Cả hai) —
+  // KHÔNG mặc định; chưa chọn thì dòng cảnh báo + nút "Chạy full luồng" khoá,
+  // vì daemon fail-fast dr-flow/dr-comp/dr-mockup khi thiếu.
+  const railHasScreenPlatform = hasScreenPlatformStage(pipelines);
+  const railScreenPlatformMissing = railHasScreenPlatform && !railCfg?.screenPlatform;
   // ds-lab (WP-lab-refs-web): dòng "Concept tham khảo" chỉ hiện khi workflow
   // có bước lab-compose — xem `hasLabRefsStage`.
   const railHasLabRefs = hasLabRefsStage(pipelines);
@@ -1908,6 +1966,24 @@ export function PipelinesView() {
           Đổi
         </button>
       </div>
+      {railHasScreenPlatform ? (
+        <div className="pl-rail-row" data-testid="rail-screen-platform">
+          <span className="pl-rail-row__label">Nền tảng màn hình</span>
+          <span
+            className={`pl-rail-row__value${railScreenPlatformMissing ? ' pl-rail-row__value--missing' : ''}`}
+            title={
+              railScreenPlatformMissing
+                ? 'Chưa chọn — Luồng màn hình / Màn hình → Component / Mockup màn sẽ không chạy cho tới khi chọn'
+                : undefined
+            }
+          >
+            {screenPlatformRailLabel(railCfg?.screenPlatform)}
+          </span>
+          <button type="button" className="pl-rail-row__change" onClick={() => openRunAll('screenPlatform')}>
+            Đổi
+          </button>
+        </div>
+      ) : null}
       {railHasDesignSystem ? (
         <div className="pl-rail-row">
           <span className="pl-rail-row__label">Design system</span>
@@ -2924,8 +3000,12 @@ export function PipelinesView() {
               className="pl-btn pl-btn--run"
               data-testid="pipeline-run-all-btn"
               onClick={() => void runAllWithSavedConfig()}
-              disabled={!projectId || pipelines.length === 0 || runAllBusy}
-              title="Chạy full luồng từ các bước đã chọn ở rail bên cạnh và XOÁ kết quả cũ của những bước đó (đã lưu vào lịch sử trước khi xoá) — đổi cấu hình trước bằng nút Đổi nếu cần khác đi"
+              disabled={!projectId || pipelines.length === 0 || runAllBusy || railScreenPlatformMissing}
+              title={
+                railScreenPlatformMissing
+                  ? 'Chưa chọn Nền tảng màn hình — bấm Đổi ở dòng "Nền tảng màn hình" bên phải trước khi chạy'
+                  : 'Chạy full luồng từ các bước đã chọn ở rail bên cạnh và XOÁ kết quả cũ của những bước đó (đã lưu vào lịch sử trước khi xoá) — đổi cấu hình trước bằng nút Đổi nếu cần khác đi'
+              }
             >
               <Icon name={runAllBusy ? 'spinner' : 'play'} size={14} />
               <span>{runAllBusy ? 'Đang khởi động…' : 'Chạy full luồng'}</span>
@@ -3421,6 +3501,9 @@ export function PipelinesView() {
             // just the Confluence source + scan toggles. Section bị ẩn cũng nằm
             // ngoài patch khi Lưu (modal không ghi đè field nó không hiện).
             hasPlatform={pipelines.some((p) => p.acceptsPlatform)}
+            // docs-review: section "Nền tảng màn hình" — cùng cờ dòng rail.
+            hasScreenPlatform={railHasScreenPlatform}
+            defaultScreenPlatform={runAllDefaults?.screenPlatform}
             hasTerminal={pipelines.some((p) => p.id === 'ui-html' || p.id === 'ui-react')}
             hasDesignSystem={pipelines.some((p) => p.acceptsDesignSystem)}
             // Ingest step nhận file tay (Docs → Review tài liệu) → modal mở thêm

@@ -31,6 +31,7 @@ import type {
   ProjectSyncStatus,
   RemoteProjectSummary,
   RunAllConfig,
+  ScreenPlatformScope,
   TargetPlatform,
   UiTarget,
   Workflow,
@@ -1335,21 +1336,67 @@ export interface RunAllPayload {
   docsFromUpload?: boolean;
   /** App Docs Pool nguồn — trang CHÍNH đã tick; daemon copy các trang này vào `<wf>/docs/`. */
   appPool?: { appId: string; paths: string[] };
+  /** docs-review: "Nền tảng màn hình" người dùng đã chọn ở rail (Mobile app /
+   *  Website / Cả hai). KHÔNG có mặc định — vắng mặt = chưa chọn, daemon
+   *  fail-fast dr-flow/dr-comp/dr-mockup; web chỉ gửi khi cấu hình đã có. */
+  screenPlatform?: ScreenPlatformScope;
 }
 
 /** Section duy nhất mà modal hiển thị khi mở từ nút "Đổi" của một dòng trên rail
  *  cấu hình — cùng modal, nhưng chỉ đúng phần người dùng bấm vào. Không truyền =
  *  modal đầy đủ (mọi section). Cả hai chế độ footer đều là "Hủy / Lưu". */
-export type RunAllFocus = 'source' | 'designSystem' | 'targets' | 'stages' | 'mode' | 'labRefs';
+export type RunAllFocus =
+  | 'source'
+  | 'designSystem'
+  | 'targets'
+  | 'screenPlatform'
+  | 'stages'
+  | 'mode'
+  | 'labRefs';
 
 const RUN_ALL_FOCUS_TITLES: Record<RunAllFocus, string> = {
   source: 'Nguồn tài liệu',
   designSystem: 'Design system',
   targets: 'Sản phẩm cần build',
+  screenPlatform: 'Nền tảng màn hình',
   stages: 'Các bước sẽ chạy',
   mode: 'Chế độ chạy',
   labRefs: 'Concept tham khảo',
 };
+
+/** Ba lựa chọn "Nền tảng màn hình" của docs-review (`RunAllConfig.screenPlatform`,
+ *  xem `ScreenPlatformScope`). Nhãn dùng chung cho card trong modal lẫn dòng
+ *  rail — một nguồn, không hai bản dịch. KHÔNG có mục nào là mặc định: người
+ *  dùng phải chọn, daemon không đoán nền tảng từ tài liệu nữa. */
+export const SCREEN_PLATFORM_OPTIONS: ReadonlyArray<{
+  value: ScreenPlatformScope;
+  label: string;
+  desc: string;
+  icon: IconName;
+}> = [
+  {
+    value: 'mobile',
+    label: 'Mobile app',
+    desc: 'Mọi màn là app điện thoại; mục IB/Web trong tài liệu bị bỏ qua.',
+    icon: 'home',
+  },
+  {
+    value: 'web',
+    label: 'Website',
+    desc: 'Mọi màn là trang web; mục App/MB trong tài liệu bị bỏ qua.',
+    icon: 'grid',
+  },
+  {
+    value: 'both',
+    label: 'Cả hai (app + web)',
+    desc: 'Tài liệu mô tả cả app lẫn web: tách 2 luồng, mỗi màn gắn nền tảng.',
+    icon: 'layers-filled',
+  },
+];
+
+export const SCREEN_PLATFORM_LABELS: Record<ScreenPlatformScope, string> = Object.fromEntries(
+  SCREEN_PLATFORM_OPTIONS.map((o) => [o.value, o.label]),
+) as Record<ScreenPlatformScope, string>;
 
 /**
  * Ba đầu ra UI-Spec của `docs-to-ui` — BA LỰA CHỌN THAY THẾ NHAU, không phải ba
@@ -1509,6 +1556,7 @@ export function RunAllModal({
   defaultTerminal,
   defaultPlatform,
   defaultTargets,
+  defaultScreenPlatform,
   defaultFollowLinks,
   defaultIncludeDescendants,
   defaultDocsFromUpload,
@@ -1518,6 +1566,7 @@ export function RunAllModal({
   stages = [],
   defaultStageIds,
   hasPlatform = true,
+  hasScreenPlatform = false,
   hasTerminal = true,
   hasDesignSystem = true,
   hasUpload = false,
@@ -1544,6 +1593,9 @@ export function RunAllModal({
   defaultPlatform?: TargetPlatform;
   /** UI targets prefilled from the last run (docs-to-ui multi-target). */
   defaultTargets?: UiTarget[];
+  /** docs-review: "Nền tảng màn hình" đã lưu (`RunAllConfig.screenPlatform`).
+   *  `undefined` = chưa chọn bao giờ → KHÔNG card nào tick sẵn. */
+  defaultScreenPlatform?: ScreenPlatformScope;
   defaultFollowLinks?: boolean;
   /** Chỉ caller ở chế độ focus truyền: modal khi đó đang SỬA giá trị đã lưu nên
    *  checkbox phải hiện đúng trạng thái cũ. Luồng chạy full để trống (không tick). */
@@ -1568,6 +1620,10 @@ export function RunAllModal({
    *  workflow with no UX/UI stages (e.g. Docs → PRD Review) hides them so the
    *  modal only shows config it actually consumes. Default true (docs-to-ui). */
   hasPlatform?: boolean;
+  /** Workflow có bước `acceptsScreenPlatform` (docs-review: dr-flow/dr-comp/
+   *  dr-mockup) — có thì modal thêm section "Nền tảng màn hình" (3 card radio,
+   *  không mặc định). Default false: chỉ docs-review mới có khái niệm này. */
+  hasScreenPlatform?: boolean;
   hasTerminal?: boolean;
   hasDesignSystem?: boolean;
   /** Bước ingest của workflow có affordance "Tải file lên" (`acceptsUpload`)
@@ -1696,6 +1752,12 @@ export function RunAllModal({
   const [targets, setTargets] = useState<UiTarget[]>(defaultTargets && defaultTargets.length ? defaultTargets : ['mobile']);
   const toggleTarget = (t: UiTarget) =>
     setTargets((prev) => (prev.includes(t) ? prev.filter((x) => x !== t) : [...prev, t]));
+  // docs-review: "Nền tảng màn hình". `undefined` = chưa chọn — cố ý KHÔNG rơi
+  // về 'mobile' như `platform`/`targets` ở trên: daemon không còn đoán, và một
+  // mặc định ngầm ở đây chính là kiểu đoán đã làm Agribank (App MB) ra 21 màn web.
+  const [screenPlatform, setScreenPlatform] = useState<ScreenPlatformScope | undefined>(
+    defaultScreenPlatform,
+  );
   const [systems, setSystems] = useState<DesignSystemSummary[] | null>(null);
   const [designSystemId, setDesignSystemId] = useState<string | null>(
     defaultDesignSystemId === undefined ? null : defaultDesignSystemId,
@@ -1838,6 +1900,8 @@ export function RunAllModal({
       ? sourceOk
       : focus === 'targets'
         ? targets.length > 0
+        : focus === 'screenPlatform'
+          ? screenPlatform !== undefined
         : focus === 'stages'
           ? // Chạy 0 bước không có nghĩa gì — Lưu một danh sách rỗng chỉ tạo ra
             // một nút "Chạy pipeline" không làm gì cả.
@@ -1886,6 +1950,10 @@ export function RunAllModal({
         };
       case 'targets':
         return { targets };
+      case 'screenPlatform':
+        // Chưa chọn thì KHÔNG gửi field (daemon giữ nguyên giá trị cũ nếu có,
+        // và tuyệt đối không được nhận một mặc định do web bịa ra).
+        return screenPlatform ? { screenPlatform } : {};
       case 'stages':
         // `terminal` đi CÙNG `stageIds` vì bước cuối giờ là một phần của section
         // này. Hai field không thừa nhau: `stageIds` chi phối lần chạy tick tay,
@@ -1919,6 +1987,7 @@ export function RunAllModal({
           // Workflow không có bước target (docs-to-prd): giữ field platform
           // legacy để lần chạy tới vẫn có giá trị, thay vì rơi về mặc định.
           ...(hasPlatform ? configPatchFor('targets') : { platform }),
+          ...(hasScreenPlatform ? configPatchFor('screenPlatform') : {}),
           ...(supportsLean ? configPatchFor('mode') : {}),
           ...(hasDesignSystem ? configPatchFor('designSystem') : {}),
           ...(hasTerminal ? { terminal } : {}),
@@ -1934,6 +2003,7 @@ export function RunAllModal({
   const focusUnavailable =
     (focus === 'designSystem' && !hasDesignSystem) ||
     (focus === 'targets' && !hasPlatform) ||
+    (focus === 'screenPlatform' && !hasScreenPlatform) ||
     // Workflow không có bước nào để chọn — gần như không xảy ra (một workflow
     // rỗng cũng không render được stepper), nhưng section này đọc dữ liệu từ
     // caller nên vẫn phải có nhánh cho "caller chưa truyền gì".
@@ -2009,6 +2079,8 @@ export function RunAllModal({
                 ? undefined
                 : focus === 'targets' || (!focus && hasPlatform && targets.length === 0)
                   ? 'Chọn ít nhất một sản phẩm cần build'
+                  : focus === 'screenPlatform'
+                    ? 'Chọn Mobile app, Website hoặc Cả hai'
                   : focus === 'stages' || (!focus && stages.length > 0 && stageIds.size === 0)
                     ? 'Tick ít nhất một bước sẽ chạy'
                   : uploading
@@ -2269,6 +2341,45 @@ export function RunAllModal({
             </span>
           </>
         )}
+      </div>
+      ) : null}
+      {hasScreenPlatform && shows('screenPlatform') ? (
+      <div className="pl-modal-field" data-testid="run-all-screen-platform">
+        <span className="pl-modal-field__label">Nền tảng màn hình</span>
+        {/* Cùng khuôn card của PlatformRunModal/TargetCards. KHÔNG card nào tick
+            sẵn khi chưa có cấu hình — chọn là việc của người dùng, không phải
+            của web hay daemon (daemon không đoán từ tài liệu nữa). */}
+        <div className={styles.cards} role="radiogroup" aria-label="Nền tảng màn hình">
+          {SCREEN_PLATFORM_OPTIONS.map((opt) => {
+            const on = screenPlatform === opt.value;
+            return (
+              <button
+                key={opt.value}
+                type="button"
+                role="radio"
+                aria-checked={on}
+                className={`${styles.card}${on ? ' ' + styles.cardSelected : ''}`}
+                onClick={() => setScreenPlatform(opt.value)}
+                disabled={busy}
+              >
+                <span className={styles.cardTop}>
+                  <Icon name={opt.icon} size={16} />
+                  {opt.label}
+                  {on ? (
+                    <span className={styles.cardCheck} aria-hidden="true">
+                      <Icon name="check" size={14} />
+                    </span>
+                  ) : null}
+                </span>
+                <span className={styles.cardDesc}>{opt.desc}</span>
+              </button>
+            );
+          })}
+        </div>
+        <span className="pl-modal-field__hint">
+          Không có mặc định: Luồng màn hình, Màn hình → Component và Mockup màn chỉ chạy khi đã
+          chọn. Hệ thống không tự suy nền tảng từ nội dung tài liệu.
+        </span>
       </div>
       ) : null}
       {hasPlatform && shows('targets') ? (
@@ -3378,6 +3489,9 @@ function usePipelineResultFiles(projectId: string, pipeline: PipelineView, workf
     active,
     hasFiles,
     outputs,
+    // Spread-có-điều-kiện để field là TUỲ CHỌN trong PipelineResultState —
+    // test dựng state tay (pipeline-result-rail.test.tsx) không phải khai.
+    ...(pipeline.id ? { pipelineId: pipeline.id } : {}),
   };
 }
 
@@ -3454,6 +3568,85 @@ function isContextPage(name: string): boolean {
 }
 function isContextLabel(label: string): boolean {
   return label === 'context' || /(^|\s\/\s|\/)context$/.test(label);
+}
+
+// ── Rail phẳng cho "Luồng màn hình" (dr-flow) ─────────────────────────────
+// Feedback 2026-08-28: Quick result của dr-flow KHÔNG dùng cây thư mục
+// (flows / SCREEN-FLOW--app / as-is.drawio …) — người dùng chỉ cần một danh
+// sách ngắn ghi rõ nghĩa: mỗi luồng một dòng ("Luồng màn hình — App/Web",
+// hoặc "Luồng màn hình" khi một nền tảng) + "Danh sách màn"
+// (screens-discovered.json). Thứ tự: App → Web → luồng khác → Danh sách màn.
+export interface DrFlowRailItem {
+  name: string;
+  label: string;
+  icon: IconName;
+  /** Nhãn phụ (badge) — nền tảng của luồng khi tài liệu tách App/Web. */
+  badge?: 'App' | 'Web';
+}
+
+export function drFlowRailItems(files: ProjectFile[]): DrFlowRailItem[] {
+  const flows: Array<DrFlowRailItem & { rank: number }> = [];
+  const screens: DrFlowRailItem[] = [];
+  for (const f of files) {
+    const lower = f.name.toLowerCase();
+    const m = lower.match(/(^|\/)flows\/([^/]+)\/as-is\.drawio$/);
+    if (m) {
+      const id = f.name.split('/').slice(-2, -1)[0] ?? m[2]!;
+      const platform = /--app$/i.test(id) ? 'App' : /--web$/i.test(id) ? 'Web' : null;
+      const stem = id.replace(/--(app|web)$/i, '');
+      const isMain = /^SCREEN-FLOW$/i.test(stem);
+      const base = isMain ? 'Luồng màn hình' : `Luồng ${stem}`;
+      flows.push({
+        name: f.name,
+        label: platform ? `${base} — ${platform}` : base,
+        icon: 'layers-filled',
+        ...(platform ? { badge: platform } : {}),
+        rank: platform === 'App' ? 0 : platform === 'Web' ? 1 : 2,
+      });
+      continue;
+    }
+    if (lower.endsWith('screens-discovered.json')) {
+      screens.push({ name: f.name, label: 'Danh sách màn', icon: 'grid' });
+    }
+  }
+  flows.sort((a, b) => a.rank - b.rank || a.label.localeCompare(b.label, 'vi'));
+  return [...flows.map(({ rank: _rank, ...it }) => it), ...screens];
+}
+
+/** Dr-flow dùng rail phẳng khi MỌI file hiển thị đều được đặt tên được
+ *  (luồng hoặc danh sách màn); có file lạ → rơi về cây chung. */
+export function useFlatDrFlowRail(pipelineId: string | undefined, files: ProjectFile[]): DrFlowRailItem[] | null {
+  if (pipelineId !== 'dr-flow') return null;
+  const items = drFlowRailItems(files);
+  return items.length === files.length && items.length > 0 ? items : null;
+}
+
+function DrFlowRail({ items }: { items: DrFlowRailItem[] }) {
+  const { activeName, onPick } = useContext(RailCtx);
+  return (
+    <div className="pl-result-rail__flat" role="list" aria-label="Luồng màn hình">
+      {items.map((it) => {
+        const isActive = it.name === activeName;
+        return (
+          <button
+            key={it.name}
+            type="button"
+            role="listitem"
+            className={`pl-result-rail__item${isActive ? ' pl-result-rail__item--active' : ''}`}
+            onClick={() => onPick(it.name)}
+            aria-current={isActive}
+            title={it.name}
+          >
+            <span className="pl-result-rail__icon" aria-hidden="true">
+              <Icon name={it.icon} size={14} />
+            </span>
+            <span className="pl-result-rail__name">{it.label}</span>
+            {it.badge ? <span className="pl-result-rail__ctx-badge">{it.badge}</span> : null}
+          </button>
+        );
+      })}
+    </div>
+  );
 }
 
 // Active-file + pick handler, shared down the tree so nodes don't thread props.
@@ -3549,6 +3742,7 @@ export function PipelineResultBody({
     visibleFiles,
     active,
     outputs,
+    pipelineId,
   } = state;
   // Rail thu gọn/mở nhớ qua localStorage, dùng chung cho mọi bước Quick result
   // (WP17b, 2026-08-20) — người dùng đối chiếu sơ đồ cần bề ngang cho viewer
@@ -3591,6 +3785,7 @@ export function PipelineResultBody({
   // pointless — there's nothing to switch between. Drop it and let the viewer
   // take the whole width. The rail only earns its keep with multiple files or
   // multiple build targets to page through.
+  const flatItems = useFlatDrFlowRail(pipelineId, visibleFiles);
   const showRail = visibleFiles.length > 1 || availableTargets.length > 1;
   if (!showRail) {
     return (
@@ -3644,9 +3839,11 @@ export function PipelineResultBody({
               </div>
             ) : null}
             <RailCtx.Provider value={{ activeName: active?.name ?? null, onPick: setActiveName }}>
-              {buildRailTree(visibleFiles).map((n, i) => (
-                <RailNodeView key={railKey(n, i)} node={n} />
-              ))}
+              {flatItems ? (
+                <DrFlowRail items={flatItems} />
+              ) : (
+                buildRailTree(visibleFiles).map((n, i) => <RailNodeView key={railKey(n, i)} node={n} />)
+              )}
             </RailCtx.Provider>
           </>
         ) : null}

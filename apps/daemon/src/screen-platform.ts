@@ -1,3 +1,9 @@
+// ⚠ WP docs-review-screen-platform (2026-08-28): module này KHÔNG còn được
+// gọi trên đường chạy pipeline — nền tảng màn do NGƯỜI DÙNG chọn ở rightPanel
+// (`RunAllConfig.screenPlatform`) hoặc AGENT ghi trong screens.json; daemon
+// không suy từ heading nữa. Giữ lại thuần (tests/screen-platform.test.ts) —
+// xoá được khi test đó rút.
+//
 // screen-variants WP-V1 (docs/screen-variants-spec.md §WP-V1) — suy `platform`
 // của MỘT MÀN từ chuỗi heading cha của section nó thuộc về, thay vì hint
 // nhị phân toàn tài liệu (MOBILE_HINT_RE trong screen-components.ts).

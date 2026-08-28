@@ -17,6 +17,15 @@ import type { AppContextManifest, FeatureContextBinding } from './app-context-ve
 export type TargetPlatform = 'mobile' | 'web';
 
 /**
+ * WP docs-review-screen-platform (2026-08-28): "Nền tảng màn hình" của workflow
+ * docs-review — do NGƯỜI DÙNG chọn ở rightPanel trước khi chạy, KHÔNG có
+ * default, daemon KHÔNG suy từ tài liệu. `both` = tài liệu mô tả cả mobile app
+ * lẫn web → dr-flow tách `SCREEN-FLOW--app/--web`. Khác `TargetPlatform`
+ * (docs-to-ui, stage UX).
+ */
+export type ScreenPlatformScope = 'mobile' | 'web' | 'both';
+
+/**
  * A UI TARGET — a distinct app the same product docs are turned into. A project
  * can build several at once (e.g. a mobile app AND a web backoffice), each with
  * its own audience and screen set, so `docs-to-ui` runs the whole post-docs
@@ -202,6 +211,12 @@ export interface PipelineView {
    */
   acceptsPlatform?: boolean;
   /**
+   * When true, this docs-review stage needs `RunAllConfig.screenPlatform`
+   * ("Nền tảng màn hình") to be chosen before it can run — no default; the
+   * daemon fails fast when it is missing. See ScreenPlatformScope.
+   */
+  acceptsScreenPlatform?: boolean;
+  /**
    * When true, this stage accepts a MANUAL file upload from the UI — a
    * secondary "Tải file lên" button next to Run. Upload stays a separate
    * affordance from both source selection and per-stage prompt guidance.
@@ -380,6 +395,10 @@ export interface RunAllConfig {
   displayName?: string;
   terminal?: WorkflowTerminal;
   platform?: TargetPlatform;
+  /** docs-review "Nền tảng màn hình" — chosen by the user, never defaulted
+   *  (see ScreenPlatformScope). Absent = not chosen yet → dr-flow/dr-comp/
+   *  dr-mockup refuse to run. */
+  screenPlatform?: ScreenPlatformScope;
   /** UI targets to build (docs-to-ui). When set with ≥1 entry, the post-docs
    *  chain runs once per target into `<workflow>/<target>/…` and `platform` is
    *  ignored (each target carries its own). Omitted/empty → single build using

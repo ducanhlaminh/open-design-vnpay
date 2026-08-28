@@ -21,6 +21,8 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
+import type { ScreenPlatformScope } from '@open-design/contracts';
+
 import type { DiscoveredDoc } from '../screen-components.js';
 import { decodeMxfile, encodeMxfile, listCells, styleGet, type MxCellInfo, type MxPage } from './mxfile.js';
 import { deriveCellsAndNames, parseScreenFlowScreensV2, toDiscoveredDocs, type ScreenPlatform, type ScreensV2 } from './screen-flow-screens.js';
@@ -428,13 +430,55 @@ export function reconcileKeysAcrossFlows(flows: Array<{ id: string; doc: Screens
  *  `SCREEN-FLOW` hoặc cặp `--app`/`--web`); validate từng cells.xml + kiểm
  *  `platform` của screens.json theo thư mục; MỌI lỗi gom lại rồi mới trả (không
  *  ghi nửa chừng); discovery = hợp các flow. */
-export async function finalizeScreenFlowXml(cwd: string): Promise<ScreenFlowXmlResult> {
+/** WP docs-review-screen-platform: `screenPlatform` = phạm vi người dùng chọn
+ *  ở rightPanel (dr-flow LUÔN truyền; vắng = tool/test cũ → luật validate
+ *  trước WP, không điền gì).
+ *  - `mobile` | `web`: CHỈ `flows/SCREEN-FLOW/` (có `--app/--web` → lỗi); màn
+ *    thiếu `platform` → daemon ĐIỀN theo lựa chọn (không phải đoán); màn khai
+ *    `platform` khác → lỗi "ngoài phạm vi".
+ *  - `both`: luật tách hiện có (bắt buộc `--app` + `--web`, `platform` khớp
+ *    thư mục, KHÔNG `flows/SCREEN-FLOW/`); flow của nền tảng không có nội
+ *    dung được phép `screens: []` (+ `excluded`) → bỏ qua kèm warning. */
+export interface FinalizeScreenFlowXmlOptions {
+  screenPlatform?: ScreenPlatformScope | undefined;
+}
+
+/** `mobile` → `app`, `web` → `web` (phạm vi đơn → giá trị `platform` screens.json). */
+export function scopeToScreenPlatform(scope: 'mobile' | 'web'): ScreenPlatform {
+  return scope === 'mobile' ? 'app' : 'web';
+}
+
+const SCOPE_LABEL: Record<ScreenPlatformScope, string> = { mobile: 'Mobile app', web: 'Website', both: 'Cả hai' };
+
+export async function finalizeScreenFlowXml(cwd: string, opts: FinalizeScreenFlowXmlOptions = {}): Promise<ScreenFlowXmlResult> {
+  const scope = opts.screenPlatform;
+  const scopePlatform: ScreenPlatform | null = scope === 'mobile' || scope === 'web' ? scopeToScreenPlatform(scope) : null;
   let ids: string[];
   try {
     ids = await listScreenFlowIds(cwd);
   } catch (error) {
     if (error instanceof ScreenFlowMixedError) return { found: true, errors: [error.message], warnings: [] };
     throw error;
+  }
+  // Phạm vi người dùng chọn ↔ bố cục thư mục: phạm vi đơn KHÔNG được có flow
+  // tách; Cả hai KHÔNG được có flow đơn.
+  if (scopePlatform && ids.some((id) => screenFlowPlatformOf(id) != null)) {
+    return {
+      found: true,
+      errors: [
+        `Nền tảng màn hình đã chọn là ${SCOPE_LABEL[scope!]} — chỉ dùng flows/${SCREEN_FLOW_ID}/, không tách ${ids.filter((id) => screenFlowPlatformOf(id) != null).join(', ')} (chọn "Cả hai" ở rightPanel nếu tài liệu có cả app lẫn web)`,
+      ],
+      warnings: [],
+    };
+  }
+  if (scope === 'both' && ids.includes(SCREEN_FLOW_ID)) {
+    return {
+      found: true,
+      errors: [
+        `Nền tảng màn hình đã chọn là Cả hai — phải tách flows/${SCREEN_FLOW_ID}--app/ + flows/${SCREEN_FLOW_ID}--web/, không dùng flows/${SCREEN_FLOW_ID}/`,
+      ],
+      warnings: [],
+    };
   }
   // Chỉ thư mục có fragment mới là "agent vừa viết"; as-is.drawio còn sót từ
   // lượt trước mà không có cells.xml → coi như không có (như trước WP).
@@ -491,6 +535,15 @@ export async function finalizeScreenFlowXml(cwd: string): Promise<ScreenFlowXmlR
     // lại file đã chuẩn hoá; cell không có trong XML / trùng → null + warning.
     // v1 (không `screens[]`) → không đụng file, không discovery.
     if (screensRaw != null) {
+      // WP docs-review-screen-platform: phạm vi Cả hai — nền tảng không có nội
+      // dung trong tài liệu → agent để `screens: []` (+ `excluded`), KHÔNG bịa
+      // màn. Flow đó bỏ qua (không index, không as-is) kèm warning.
+      const rawScreens = (screensRaw as { screens?: unknown }).screens;
+      if (scope === 'both' && platform && Array.isArray(rawScreens) && rawScreens.length === 0) {
+        const excludedCount = Array.isArray((screensRaw as { excluded?: unknown }).excluded) ? ((screensRaw as { excluded: unknown[] }).excluded).length : 0;
+        warnings.push(prefix(`flow ${platform === 'app' ? 'App' : 'Web'} không có màn (screens: [], excluded: ${excludedCount}) — tài liệu không mô tả nền tảng này, bỏ qua`));
+        continue;
+      }
       const parsed = parseScreenFlowScreensV2(screensRaw);
       if ('errors' in parsed) {
         errors.push(...parsed.errors.map(prefix));
@@ -498,6 +551,16 @@ export async function finalizeScreenFlowXml(cwd: string): Promise<ScreenFlowXmlR
       }
       if ('doc' in parsed) {
         warnings.push(...parsed.warnings.map(prefix));
+        // WP docs-review-screen-platform: phạm vi đơn — ĐIỀN `platform` theo
+        // lựa chọn người dùng cho màn thiếu; màn khai khác → lỗi ngoài phạm vi.
+        if (scopePlatform) {
+          for (const s of parsed.doc.screens) {
+            if (!s.platform) s.platform = scopePlatform;
+            else if (s.platform !== scopePlatform) {
+              errors.push(prefix(`màn "${s.key}" platform "${s.platform}" ngoài phạm vi ${SCOPE_LABEL[scope!]} (${scopePlatform}) — đưa mục đó vào excluded[] hoặc chọn "Cả hai" ở rightPanel`));
+            }
+          }
+        }
         // WP screen-flow-platform-split: kiểm `platform` theo thư mục.
         //  - flow tách: MỌI màn phải có platform == nền tảng thư mục;
         //  - flow đơn: vắng được, có thì đồng nhất MỘT giá trị (≥2 → phải tách);
@@ -515,7 +578,9 @@ export async function finalizeScreenFlowXml(cwd: string): Promise<ScreenFlowXmlR
             errors.push(prefix(`key "${s.key}" mang hậu tố --${suffix} nhưng màn thuộc nền tảng ${expect}`));
           }
         }
-        if (!platform && seenPlatforms.size > 1) {
+        // Phạm vi đơn: màn lệch đã báo "ngoài phạm vi" ở trên — không chồng
+        // thêm lời khuyên "phải tách" (sai hướng với lựa chọn người dùng).
+        if (!platform && !scopePlatform && seenPlatforms.size > 1) {
           errors.push(
             prefix(
               `flow đơn có màn thuộc ${[...seenPlatforms].map((p) => `"${p}"`).join(' và ')} — tài liệu ≥2 nền tảng phải tách thành flows/${screenFlowIdFor('app')}/ + flows/${screenFlowIdFor('web')}/ (không dùng flows/${SCREEN_FLOW_ID}/)`,

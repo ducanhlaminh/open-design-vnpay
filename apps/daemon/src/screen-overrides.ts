@@ -19,7 +19,9 @@ import type {
   ScreensOverrideEntry,
 } from '@open-design/contracts';
 
-import { findAnchorTextLines, type ScreenInput } from './screen-components.js';
+import type { ScreenPlatformScope } from '@open-design/contracts';
+
+import { findAnchorTextLines, resolveInputPlatform, type ScreenInput } from './screen-components.js';
 import { autoGroupScreens, deriveSuffixGroupKeys, PLATFORM_KEY_SUFFIX_RE, type GroupSuggestion } from './screen-groups.js';
 
 /** `comp/<key>.screen.json` sibling — manifest của LẦN CHẠY HIỆN TẠI (sau khi
@@ -38,6 +40,11 @@ export const SCREENS_OVERRIDES_REL = 'screens-overrides.json';
 function str(v: unknown): string {
   return typeof v === 'string' ? v.trim() : '';
 }
+
+/** WP docs-review-screen-platform: override `add` mang thêm `platform`
+ *  ('mobile' | 'web') — mở rộng CỤC BỘ daemon trên contract (contracts không
+ *  đổi trong WP này); reader cũ bỏ qua field lạ. */
+export type ScreensOverrideAddWithPlatform = ScreensOverrideAdd & { platform?: 'mobile' | 'web' };
 
 const ACTIONS = new Set(['add', 'rename', 'remove']);
 
@@ -87,8 +94,14 @@ export function parseScreensOverrides(raw: string): { doc: ScreensOverrides; war
         warnings.push(`overrides[${i}] (add): thiếu "source"/"code"/"name" — bỏ qua.`);
         return;
       }
-      const entry: ScreensOverrideAdd = { action: 'add', source, code, name };
+      const entry: ScreensOverrideAddWithPlatform = { action: 'add', source, code, name };
       if (str(e.anchorText)) entry.anchorText = str(e.anchorText);
+      // WP docs-review-screen-platform: nền tảng của màn thêm tay — BẮT BUỘC
+      // khi phạm vi = Cả hai (kiểm ở applyScreenOverrides); giá trị lạ → bỏ
+      // field kèm warning (không bỏ cả entry).
+      const platform = str(e.platform);
+      if (platform === 'mobile' || platform === 'web') entry.platform = platform;
+      else if (platform) warnings.push(`overrides[${i}] (add): "platform" không hợp lệ (nhận "${platform}", chỉ 'mobile' | 'web') — bỏ field.`);
       overrides.push(entry);
       return;
     }
@@ -171,14 +184,24 @@ export function applyScreenOverrides(
   screens: ScreenInput[],
   overrides: ScreensOverrides,
   mdBySource: Map<string, string>,
+  /** WP docs-review-screen-platform: phạm vi người dùng chọn. Màn thêm tay:
+   *  phạm vi đơn → `platform` = phạm vi; Cả hai → cần `ov.platform`, thiếu →
+   *  warning + bỏ override đó (không throw: các override khác vẫn áp). */
+  opts?: { screenPlatform?: ScreenPlatformScope | undefined },
 ): { screens: ScreenInput[]; warnings: string[] } {
   const warnings: string[] = [];
   let out: ScreenInput[] = screens.map((s) => ({ ...s }));
   const byKey = new Map(out.map((s) => [s.key, s]));
+  const scope = opts?.screenPlatform;
 
   for (const ov of overrides.overrides) {
     if (ov.action === 'add') {
       const key = screenKey(ov.source, ov.code);
+      const ovPlatform = (ov as ScreensOverrideAddWithPlatform).platform;
+      if (scope === 'both' && !ovPlatform && !byKey.has(key)) {
+        warnings.push(`add "${key}": màn thêm tay cần nền tảng ("platform": "mobile" | "web") khi phạm vi = Cả hai — bỏ qua.`);
+        continue;
+      }
       const md = mdBySource.get(ov.source) ?? null;
       let section: ScreenInput['section'] | undefined;
       if (ov.anchorText) {
@@ -210,10 +233,9 @@ export function applyScreenOverrides(
         navOut: [],
         navIn: [],
         findings: [],
-        // Không có tín hiệu nào để đoán mobile/web cho màn người dùng tự
-        // thêm — mặc định 'web' (đa số tài liệu nghiệp vụ đang xử lý là web;
-        // xem ScreenInput.platformHint — agent vẫn tự quyết ở bước sau).
-        platformHint: 'web',
+        // Nền tảng = phạm vi người dùng chọn (Mobile/Web) hoặc `platform`
+        // người dùng khai trong override (Cả hai — đã kiểm có ở trên).
+        ...resolveInputPlatform(scope, ovPlatform ?? null, key),
         origin: 'user',
       };
       if (section) added.section = section;

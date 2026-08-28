@@ -14,6 +14,8 @@ import type {
   PipelineStatus,
   PipelineView,
   ProjectPipelineState,
+  RunAllConfig,
+  ScreenPlatformScope,
   Workflow,
 } from '@open-design/contracts';
 
@@ -63,6 +65,16 @@ export interface PipelineDef {
    * daemon folds it into the kickoff. No choice → the skill defaults to mobile.
    */
   acceptsPlatform?: boolean;
+  /**
+   * WP docs-review-screen-platform (2026-08-28): when true, this docs-review
+   * stage needs the user's "Nền tảng màn hình" choice
+   * (`RunAllConfig.screenPlatform`: mobile | web | both) BEFORE it can run.
+   * There is NO default and the daemon never infers it from the documents any
+   * more — a missing choice fails the stage fast (single run AND run-all), see
+   * `screenPlatformScopeFor` / `SCREEN_PLATFORM_MISSING_MSG`. Set on
+   * `dr-flow`, `dr-comp`, `dr-mockup`.
+   */
+  acceptsScreenPlatform?: boolean;
   /**
    * When true, this stage accepts a MANUAL file upload from the UI (a
    * secondary "Tải file lên" button, separate from Run) instead of only ever
@@ -357,7 +369,7 @@ const PIPELINE_DEFS_BASE: readonly PipelineDef[] = [
   // `comp/_screens.json` nay có hai chủ (dr-flow + dr-comp qua `comp/`) —
   // stagesForOutput chấm cả hai, stageForOutput ưu tiên dr-flow (đứng trước).
   // `screens-overrides.json` KHÔNG nằm trong outputs → sống sót (bất biến WP14).
-  { id: 'dr-flow',          name: 'Luồng màn hình',            skillId: 'docs-screen-flow',      dependsOn: ['dr-docs'],          outputs: ['flows/', 'screens-discovered.json', 'screens-discovered.md', 'comp/_screens.json'] },
+  { id: 'dr-flow',          name: 'Luồng màn hình',            skillId: 'docs-screen-flow',      dependsOn: ['dr-docs'],          outputs: ['flows/', 'screens-discovered.json', 'screens-discovered.md', 'comp/_screens.json'], acceptsScreenPlatform: true },
   // WP dr-flow-improve (2026-08-27): "Cải thiện luồng" — bước RIÊNG chạy SAU
   // dr-flow, TRƯỚC dr-comp. Agent (skill docs-screen-flow-improve, tập con
   // lean của docs-flow-ux cũ) review `flows/SCREEN-FLOW` theo heuristics UX và
@@ -425,7 +437,7 @@ const PIPELINE_DEFS_BASE: readonly PipelineDef[] = [
   // dr-screens): `docs-review/comp/**` + `wireframes/**` không còn stage nào
   // trong workflow khai → stagesForOutput trả rỗng, không "Xong" ké, re-run
   // clear generic không đụng — fan-out tự dọn output của nó.
-  { id: 'dr-comp',          name: 'Màn hình → Component',      skillId: 'docs-screen-components',  dependsOn: ['dr-docs', 'dr-flow'], outputs: ['comp/', 'wireframes/'], usesDesignSystemCriteria: true },
+  { id: 'dr-comp',          name: 'Màn hình → Component',      skillId: 'docs-screen-components',  dependsOn: ['dr-docs', 'dr-flow'], outputs: ['comp/', 'wireframes/'], usesDesignSystemCriteria: true, acceptsScreenPlatform: true },
   // WP dr-mockup (2026-08-27): "Mockup màn" — THAY chỗ dr-comp trong workflow,
   // đứng SAU dr-flow-improve. Agent (skill docs-screen-mockup) dựng mỗi màn
   // của BẢN ĐÃ CHỌN (selection.json Nguyên bản/Cải thiện — danh sách màn
@@ -437,7 +449,7 @@ const PIPELINE_DEFS_BASE: readonly PipelineDef[] = [
   // (screen-mockups.ts: thiếu file/script/link → chặn; nav sai → xoá + warning;
   // index.json hỏng → dựng lại). KHÔNG `usesDesignSystemCriteria` — bước này
   // cô lập khỏi DS. dependsOn dr-flow → re-run dr-flow (cascade) xoá mockups/.
-  { id: 'dr-mockup',        name: 'Mockup màn',                skillId: 'docs-screen-mockup',    dependsOn: ['dr-docs', 'dr-flow'], outputs: ['mockups/'] },
+  { id: 'dr-mockup',        name: 'Mockup màn',                skillId: 'docs-screen-mockup',    dependsOn: ['dr-docs', 'dr-flow'], outputs: ['mockups/'], acceptsScreenPlatform: true },
   // dr-review dependsOn (WP dr-mockup): bỏ dr-comp — review không còn chờ dựng
   // màn theo DS; nhóm `component` của review đọc comp/ khi có, vắng thì bỏ qua.
   { id: 'dr-review',        name: 'Review tài liệu',           skillId: 'docs-spec-review',      dependsOn: ['dr-docs', 'dr-flow'], outputs: ['review/'], usesDesignSystemCriteria: true },
@@ -1416,6 +1428,43 @@ export function mergePipelineState(
 }
 
 /**
+ * The project's persisted run-all configuration (`metadata.runAllConfig`,
+ * written by `POST /api/pipelines/run-all` and `PUT .../run-config`). ONE
+ * reader for every consumer (run mode, explicit stage selection, screen
+ * platform scope, run-all preserve) so nobody re-parses the metadata shape.
+ * Undefined when the project never saved a config or the shape is not an
+ * object.
+ */
+export function savedRunAllConfig(
+  project: { metadata?: Record<string, unknown> | null } | null | undefined,
+): RunAllConfig | undefined {
+  const raw = project?.metadata?.runAllConfig;
+  return raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as RunAllConfig) : undefined;
+}
+
+export function isScreenPlatformScope(v: unknown): v is ScreenPlatformScope {
+  return v === 'mobile' || v === 'web' || v === 'both';
+}
+
+/**
+ * WP docs-review-screen-platform: the user's "Nền tảng màn hình" choice for
+ * this project (`RunAllConfig.screenPlatform`). NO default, NO detection —
+ * `undefined` means "chưa chọn" and every `acceptsScreenPlatform` stage must
+ * fail fast with `SCREEN_PLATFORM_MISSING_MSG`.
+ */
+export function screenPlatformScopeFor(
+  project: { metadata?: Record<string, unknown> | null } | null | undefined,
+): ScreenPlatformScope | undefined {
+  const v = savedRunAllConfig(project)?.screenPlatform;
+  return isScreenPlatformScope(v) ? v : undefined;
+}
+
+/** Error text (status `error` + HTTP body) when a stage needs the screen
+ *  platform and the project has not chosen one. The web maps this to the
+ *  rightPanel row "Nền tảng màn hình → Đổi". */
+export const SCREEN_PLATFORM_MISSING_MSG = 'Chưa chọn Nền tảng màn hình (rightPanel → Đổi)';
+
+/**
  * The project's run mode. `savedLean` is `RunAllConfig.lean` persisted by the
  * last run-all trigger; when it is absent (legacy: runs before the mode was
  * persisted never wrote it) the mode is INFERRED from the state shape only a
@@ -1512,6 +1561,7 @@ export function listPipelineStatus(
       ...(def.inputKind ? { inputKind: def.inputKind } : {}),
       ...(def.acceptsDesignSystem ? { acceptsDesignSystem: true } : {}),
       ...(def.acceptsPlatform ? { acceptsPlatform: true } : {}),
+      ...(def.acceptsScreenPlatform ? { acceptsScreenPlatform: true } : {}),
       ...(def.acceptsUpload ? { acceptsUpload: true } : {}),
       ...(def.outputs && def.outputs.length ? { outputs: [...def.outputs] } : {}),
       ...(run?.lastRunId ? { lastRunId: run.lastRunId } : {}),

@@ -25,16 +25,17 @@
 
 import path from 'node:path';
 
+import type { ScreenPlatformScope } from '@open-design/contracts';
+
 import {
   scanDocScreens,
   isBlockedScreenName,
-  MOBILE_HINT_RE,
   findAnchorTextLines,
   codeOfScreenKey,
+  resolveInputPlatform,
   screenPlatformToInput,
   type ScreenInput,
 } from './screen-components.js';
-import { resolveScreenPlatform } from './screen-platform.js';
 
 export const DOC_SCREENS_FILE = 'comp/_doc-screens.json';
 
@@ -303,6 +304,9 @@ export function mergeExtractedScreens(
   screens: ScreenInput[],
   accepted: ExtractAccepted[],
   mdBySource: Map<string, string>,
+  /** WP docs-review-screen-platform: phạm vi người dùng chọn — xem
+   *  `resolveInputPlatform` (Cả hai + màn thiếu `platform` → throw). */
+  opts?: { screenPlatform?: ScreenPlatformScope | undefined },
 ): MergeExtractedScreensResult {
   const existingKeys = new Set(screens.map((s) => s.key));
   const out = [...screens];
@@ -318,14 +322,10 @@ export function mergeExtractedScreens(
     const md = mdBySource.get(a.source) ?? '';
     // WP14: 'agent' nay là thành viên chính thức của ScreenInput['origin']
     // (screen-components.ts) — không còn cần cast cục bộ như WP12.
-    // screen-variants WP-V1: platform theo heading cha của section màn này
-    // (khi suy được) — không còn một hint chung cho cả tài liệu. WP
-    // screen-flow-platform-split: agent đã quyết `platform` → dùng thẳng.
-    const platform = a.platform
-      ? screenPlatformToInput(a.platform)
-      : md && a.section
-        ? resolveScreenPlatform(md, a.section.startLine)
-        : null;
+    // WP docs-review-screen-platform: nền tảng = phạm vi người dùng chọn hoặc
+    // `platform` agent ghi (screens.json) khi phạm vi Cả hai — KHÔNG suy từ
+    // heading/từ khoá tài liệu.
+    const platformFields = resolveInputPlatform(opts?.screenPlatform, a.platform ? screenPlatformToInput(a.platform) : null, key);
     const input: ScreenInput = {
       key,
       name: a.name,
@@ -337,8 +337,7 @@ export function mergeExtractedScreens(
       navOut: [],
       navIn: [],
       findings: [],
-      platformHint: MOBILE_HINT_RE.test(md) ? 'mobile' : 'web',
-      ...(platform ? { platform } : {}),
+      ...platformFields,
       ...(a.groupKey ? { groupKey: a.groupKey } : {}),
       origin: 'agent',
       ...(a.section ? { section: buildAgentSection(md, a.section.startLine, a.section.endLine) } : {}),

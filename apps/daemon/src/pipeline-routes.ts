@@ -12,6 +12,7 @@ import {
   getPipelineApp,
   getProject,
   getProjectPipelineState,
+  setProjectPipelineStatus,
   insertPipelineApp,
   insertProject,
   listPipelineApps,
@@ -37,6 +38,10 @@ import {
   listPipelineStatus,
   mergePipelineState,
   resolveRunMode,
+  SCREEN_PLATFORM_MISSING_MSG,
+  savedRunAllConfig,
+  screenPlatformScopeFor,
+  isScreenPlatformScope,
   validateRunStageSelection,
   workflowDirForPipeline,
   workflowForPipeline,
@@ -231,6 +236,11 @@ function runAllConfigFromBody(input: unknown, opts?: { withDefaults?: boolean })
     if (pf === 'mobile' || pf === 'web') out.platform = pf as TargetPlatform;
     else if (all) out.platform = 'mobile';
   }
+  // WP docs-review-screen-platform: "Nền tảng màn hình" của docs-review
+  // (mobile | web | both). KHÔNG có default — kể cả dưới run-all
+  // (`all=true`, khác `platform`): người dùng chưa chọn thì field VẮNG và các
+  // stage `acceptsScreenPlatform` fail-fast. Giá trị lạ → bỏ qua (không ghi).
+  if (isScreenPlatformScope(body.screenPlatform)) out.screenPlatform = body.screenPlatform;
   if (has('targets')) {
     const targets = Array.isArray(body.targets) ? (body.targets as unknown[]).filter(isUiTarget) : [];
     if (targets.length > 0 || !all) out.targets = targets;
@@ -303,9 +313,7 @@ function runModeFor(
   state: ProjectPipelineState,
   pipelineIds: readonly string[],
 ): PipelineRunMode {
-  const raw = project?.metadata?.runAllConfig;
-  const saved =
-    raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as RunAllConfig).lean : undefined;
+  const saved = savedRunAllConfig(project)?.lean;
   return resolveRunMode(typeof saved === 'boolean' ? saved : undefined, state, pipelineIds);
 }
 
@@ -323,9 +331,7 @@ function explicitStageSelectionFor(
   project: { metadata?: Record<string, unknown> } | null | undefined,
   wf: { pipelineIds: readonly string[] },
 ): string[] | undefined {
-  const raw = project?.metadata?.runAllConfig;
-  const stageIds =
-    raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as RunAllConfig).stageIds : undefined;
+  const stageIds = savedRunAllConfig(project)?.stageIds;
   if (!Array.isArray(stageIds) || stageIds.length === 0) return undefined;
   const known = new Set(wf.pipelineIds);
   const filtered = stageIds.filter((id) => known.has(id));
@@ -1813,19 +1819,22 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
       // (runAllConfigFromBody đọc thẳng `body.appPool`, không tự điền default
       // dưới `withDefaults`) — PRESERVE nó từ config đã lưu khi request này
       // không gửi key `appPool`.
-      const savedRunAllConfig =
-        project.metadata?.runAllConfig && typeof project.metadata.runAllConfig === 'object' && !Array.isArray(project.metadata.runAllConfig)
-          ? (project.metadata.runAllConfig as RunAllConfig)
-          : undefined;
+      const savedConfig = savedRunAllConfig(project);
+      // WP docs-review-screen-platform: `screenPlatform` là cấu hình KHÔNG có
+      // default (runAllConfigFromBody không điền dưới `withDefaults`) — cùng
+      // bài học appPool: request không nhắc tới thì GIỮ giá trị đã lưu, không
+      // để full-replace xoá lựa chọn người dùng đã chọn ở rightPanel.
+      const preservedScreenPlatform = nextRunAllConfig.screenPlatform ?? savedConfig?.screenPlatform;
       updateProject(db, projectId, {
         metadata: {
           ...(project.metadata ?? {}),
           // Cùng builder với `PUT .../run-config` để hai đường ghi không lệch shape.
           runAllConfig: {
             ...nextRunAllConfig,
-            ...(nextRunAllConfig.appPool === undefined && savedRunAllConfig?.appPool !== undefined
-              ? { appPool: savedRunAllConfig.appPool }
+            ...(nextRunAllConfig.appPool === undefined && savedConfig?.appPool !== undefined
+              ? { appPool: savedConfig.appPool }
               : {}),
+            ...(isScreenPlatformScope(preservedScreenPlatform) ? { screenPlatform: preservedScreenPlatform } : {}),
           },
         },
       });
@@ -1837,7 +1846,7 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
       // minh nếu request có; sau đó tới appPool của request; cuối cùng là
       // appPool đã lưu (nút "Chạy pipeline" đọc cấu hình đã lưu là đường chạy
       // chính, có khi request không lặp lại key này).
-      const effectiveAppPool = nextRunAllConfig.appPool ?? savedRunAllConfig?.appPool ?? null;
+      const effectiveAppPool = nextRunAllConfig.appPool ?? savedConfig?.appPool ?? null;
       const runSource: PipelineRunSource | undefined =
         source ??
         (effectiveAppPool?.appId && effectiveAppPool.paths?.length
@@ -1909,6 +1918,16 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
         return res.status(409).json({
           error: `pipeline "${def.id}" is not active yet; finish its prerequisites first`,
         });
+      }
+      // WP docs-review-screen-platform: stage cần "Nền tảng màn hình" mà
+      // project chưa chọn → fail-fast NGAY Ở ROUTE (409 + status failed để
+      // card hiện "Xem lỗi"), không tạo conversation. runPipeline kiểm lại
+      // cùng luật cho đường run-all/CLI (không qua route này).
+      if (def.acceptsScreenPlatform && !screenPlatformScopeFor(project)) {
+        // KHÔNG đổi status stage sang failed: stage chưa hề chạy, và mọi lần
+        // chuyển 'failed' đều kích hoạt error-reports gửi báo cáo lên studio
+        // (đã thấy 1 báo cáo rác cho tra-gop khi thử 409). 409 + toast ở web là đủ.
+        return res.status(409).json({ error: SCREEN_PLATFORM_MISSING_MSG, code: 'SCREEN_PLATFORM_MISSING' });
       }
       const input = typeof req.body?.input === 'string' ? req.body.input : undefined;
       let source: PipelineRunSource | undefined;

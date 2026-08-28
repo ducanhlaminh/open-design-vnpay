@@ -13,7 +13,9 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
-import { MOBILE_HINT_RE } from './screen-components.js';
+import type { ScreenPlatformScope } from '@open-design/contracts';
+
+import { resolveInputPlatform, screenPlatformToInput } from './screen-components.js';
 import { validateDocScreenExtract, mergeExtractedScreens } from './screen-extract.js';
 import { applyScreenGrouping, buildScreensManifest, SCREENS_MANIFEST_FILE } from './screen-overrides.js';
 
@@ -38,7 +40,11 @@ export interface PersistScreenDiscoveryOptions {
    *  `origin: 'flow'`, `provenance: 'proposed'`, section rỗng. Ghi kèm vào
    *  screens-discovered.json dưới field `proposed` (parseScreensDiscovered
    *  bỏ qua field lạ). */
-  proposed?: Array<{ key: string; name: string; source?: string; why?: string }>;
+  proposed?: Array<{ key: string; name: string; source?: string; why?: string; platform?: 'app' | 'web' }>;
+  /** WP docs-review-screen-platform: phạm vi người dùng chọn — quyết
+   *  `platform`/`platformHint` của mọi màn trong manifest (xem
+   *  `resolveInputPlatform`). Cả hai + màn thiếu `platform` → `ok:false`. */
+  screenPlatform?: ScreenPlatformScope | undefined;
 }
 
 export type PersistScreenDiscoveryResult =
@@ -91,7 +97,12 @@ export async function persistScreenDiscovery(opts: PersistScreenDiscoveryOptions
   // mergeExtractedScreens (bắt đầu từ mảng rỗng) + buildScreensManifest, đúng
   // cặp hàm dr-comp lớp 2/3 đã dùng — để comp/_screens.json (route GET
   // /docs-review/screens + ScreenListManager) đọc được ngay, không đợi dr-comp.
-  const { screens: mergedScreens } = mergeExtractedScreens([], accepted, mdBySource);
+  let mergedScreens: ReturnType<typeof mergeExtractedScreens>['screens'];
+  try {
+    mergedScreens = mergeExtractedScreens([], accepted, mdBySource, { screenPlatform: opts.screenPlatform }).screens;
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error), rejected: rejectedReasons };
+  }
   // Màn đề xuất (bản cải thiện) — sau màn tài liệu, không có section/anchor;
   // key trùng màn đã nhận thì màn tài liệu thắng (không nhân đôi).
   const seenKeys = new Set(mergedScreens.map((s) => s.key));
@@ -99,7 +110,16 @@ export async function persistScreenDiscovery(opts: PersistScreenDiscoveryOptions
   for (const p of proposed) {
     if (seenKeys.has(p.key)) continue;
     seenKeys.add(p.key);
-    const md = p.source ? mdBySource.get(p.source) : undefined;
+    // Màn đề xuất (bản Cải thiện) không có anchor tài liệu: nền tảng = phạm
+    // vi người dùng chọn, hoặc nền tảng của flow tách (`--app|--web`) khi Cả
+    // hai; thiếu cả hai → manifest KHÔNG chặn (chỉ kiểm kê), dr-comp/dr-mockup
+    // mới fail-fast qua `assertScreensHavePlatform`.
+    let platformFields: { platform?: 'mobile' | 'web'; platformHint: 'mobile' | 'web' };
+    try {
+      platformFields = resolveInputPlatform(opts.screenPlatform, p.platform ? screenPlatformToInput(p.platform) : null, p.key);
+    } catch {
+      platformFields = { platformHint: 'web' };
+    }
     mergedScreens.push({
       key: p.key,
       name: p.name,
@@ -111,7 +131,7 @@ export async function persistScreenDiscovery(opts: PersistScreenDiscoveryOptions
       navOut: [],
       navIn: [],
       findings: [],
-      platformHint: md && MOBILE_HINT_RE.test(md) ? 'mobile' : 'web',
+      ...platformFields,
       origin: 'flow',
       provenance: 'proposed',
     });

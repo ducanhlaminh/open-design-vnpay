@@ -69,17 +69,25 @@ KHÔNG đánh giá UX, KHÔNG sửa sơ đồ gốc, KHÔNG viết `patch.json`/
 - Không bịa màn/bước tài liệu không mô tả; điểm mơ hồ ghi vào `note` của
   `screens.json`.
 
-## Nền tảng (App / Web) — quyết định TRƯỚC khi viết output
+## Nền tảng (App / Web) — do kickoff KHAI, không tự suy
 
-Nền tảng chỉ có **hai giá trị: `app` | `web`**. **Bạn quyết định** màn thuộc
-nền tảng nào **từ cách tài liệu viết**. Gợi ý (chỉ là hint, vẫn bạn quyết):
-- **MB / Mobile Banking / App / ứng dụng di động → `app`.**
-- **IB = Internet Banking = chạy trên TRÌNH DUYỆT → thông thường là `web`**
-  (KHÔNG xếp IB vào `app` chỉ vì cùng ngân hàng/cùng tên màn với MB).
-- **BO / back-office / CMS / portal / web admin → thường `web`.**
-MB/IB/BO/CMS/portal chỉ là GỢI Ý ngữ cảnh — không có tool/luật heading nào gán
-hộ; daemon CHỈ kiểm giá trị và sự khớp với thư mục. BO tính vào `web` hay `app`
-tuỳ tài liệu — bạn quyết.
+Nền tảng chỉ có **hai giá trị: `app` | `web`**. **Phạm vi nền tảng của tính
+năng do NGƯỜI DÙNG chọn trước khi chạy** và kickoff khai đúng một trong ba:
+**Mobile app / Website / Cả hai**. Bạn KHÔNG tự suy phạm vi từ tài liệu:
+- **Mobile app** → MỌI màn `platform: "app"`, đúng một thư mục
+  `flows/SCREEN-FLOW/`; mục tài liệu chỉ dành cho IB/Website/Backoffice →
+  `excluded[]` với reason `"ngoài phạm vi nền tảng (Mobile app)"`.
+- **Website** → đối xứng: MỌI màn `platform: "web"`, một thư mục
+  `flows/SCREEN-FLOW/`; mục chỉ dành cho App/MB → `excluded[]` reason
+  `"ngoài phạm vi nền tảng (Website)"`.
+- **Cả hai** → luật tách ở dưới (`--app` + `--web`); trong phạm vi này bạn
+  quyết TỪNG màn thuộc nền tảng nào từ cách tài liệu viết. Gợi ý (chỉ là hint):
+  MB / Mobile Banking / App / ứng dụng di động → `app`; IB = Internet Banking
+  (trình duyệt) → thường `web` (KHÔNG xếp IB vào `app` chỉ vì cùng tên màn với
+  MB); BO / back-office / CMS / portal / web admin → thường `web`.
+Daemon CHỈ kiểm giá trị và sự khớp với phạm vi/thư mục (phạm vi Mobile/Web:
+màn thiếu `platform` được điền theo lựa chọn người dùng, màn khai lệch → lỗi
+chặn; có thư mục `--app/--web` khi phạm vi đơn → lỗi).
 
 Ví dụ cụ thể: tài liệu có mục "2.2 Màn hình MB" và "2.3 Màn hình IB", cả hai
 đều mô tả màn "Quản lý yêu cầu của tôi" (ảnh khác nhau) → đó là HAI biến thể
@@ -98,13 +106,16 @@ lại nếu phát hiện trùng số giữa hai flow, nhưng **biến thể cùn
 PHẢI đặt hậu tố** — hai entry trùng key mà không hậu tố (hoặc có `code` thật
 trùng nhau) là lỗi chặn.
 
-- Tài liệu **một nền tảng** → đúng một thư mục `flows/SCREEN-FLOW/` như trước
-  (`platform` có thể bỏ trống; nếu ghi thì MỌI màn cùng một giá trị).
-- Tài liệu **≥ 2 nền tảng** → viết **hai bộ tự đủ**:
+- Phạm vi **Mobile app** hoặc **Website** → đúng một thư mục `flows/SCREEN-FLOW/`
+  như trước, MỌI màn cùng một `platform` (= phạm vi kickoff khai).
+- Phạm vi **Cả hai** → viết **hai bộ tự đủ**:
   `flows/SCREEN-FLOW--app/` + `flows/SCREEN-FLOW--web/`, MỖI thư mục có
   `screen-flow.cells.xml` + `screens.json` **chỉ chứa màn của nền tảng đó**,
   MỌI màn có `platform` khớp thư mục (`--app` ↔ `"app"`, `--web` ↔ `"web"`).
   **KHÔNG tạo `flows/SCREEN-FLOW/`** khi đã tách — daemon chặn `SCREEN_FLOW_MIXED`.
+  Nền tảng mà tài liệu KHÔNG mô tả → thư mục đó chỉ có `screens.json` với
+  `screens: []` + `excluded[]` ghi lý do (không cần `screen-flow.cells.xml`);
+  **KHÔNG bịa màn** để lấp chỗ trống.
   Mỗi flow có luồng riêng, node Bắt đầu/kết cục riêng, id cell không trùng
   giữa hai file (tiền tố `od-app-…` / `od-web-…` cho dễ soát).
 
@@ -254,9 +265,11 @@ Luật field:
   Node hệ thống/kết cục/bắt đầu → không có entry.
 - `screens[].source` tuỳ chọn (mặc định = `source` cấp file) — dùng khi tài
   liệu nhiều trang. `why` tuỳ chọn, một câu khi ranh giới không hiển nhiên.
-- `platform` = `"app"` | `"web"` — **BẮT BUỘC** với mọi màn khi tài liệu có
-  ≥ 2 nền tảng (và phải khớp thư mục flow); tài liệu một nền tảng có thể bỏ.
-  Giá trị khác (`"ib"`, `"mobile"`, `"bo"`…) → daemon chặn.
+- `platform` = `"app"` | `"web"` — ghi cho MỌI màn theo phạm vi kickoff khai:
+  Mobile app → `"app"`, Website → `"web"` (mọi màn cùng giá trị; thiếu thì
+  daemon điền theo lựa chọn người dùng, khai lệch → chặn); Cả hai → BẮT BUỘC
+  từng màn và phải khớp thư mục flow. Giá trị khác (`"ib"`, `"mobile"`,
+  `"bo"`…) → daemon chặn.
 
 ### Ba loại mục trong tài liệu
 
@@ -304,11 +317,15 @@ Không bịa màn/nhóm tài liệu không khai.
 3. Không node đè nhau (soát toạ độ theo bảng 200×60 + khoảng cách ≥ 60).
 4. Mọi `cell` có thật trong XML; không hai màn cùng `cell`; `key` đúng luật
    prefix; mọi `anchorText` chép nguyên văn một dòng DUY NHẤT trong trang.
-4b. Nền tảng: đếm màn **theo từng flow** (số node màn của `SCREEN-FLOW--app`
-   = số entry có `cell` trong `SCREEN-FLOW--app/screens.json`, tương tự
-   `--web`); tài liệu ≥ 2 nền tảng → không màn nào thiếu `platform`, không
-   màn nào nằm sai thư mục, KHÔNG có `flows/SCREEN-FLOW/`; cặp biến thể có
-   đúng hậu tố `--app`/`--web` và cùng `code`.
+4b. Nền tảng đúng phạm vi kickoff khai: Mobile app / Website → một thư mục
+   `flows/SCREEN-FLOW/`, MỌI màn cùng `platform` (= phạm vi), mục ngoài phạm
+   vi nằm trong `excluded[]` với reason "ngoài phạm vi nền tảng (…)", KHÔNG
+   có `--app/--web`. Cả hai → đếm màn **theo từng flow** (số node màn của
+   `SCREEN-FLOW--app` = số entry có `cell` trong `SCREEN-FLOW--app/screens.json`,
+   tương tự `--web`); không màn nào thiếu `platform`, không màn nào nằm sai
+   thư mục, KHÔNG có `flows/SCREEN-FLOW/`; cặp biến thể có đúng hậu tố
+   `--app`/`--web` và cùng `code`; nền tảng không có nội dung → `screens: []`
+   + `excluded`, không bịa.
 5. Có khối chú thích `od-legend-*` đúng template, đặt cột phải, không đè node
    thật.
 6. KHÔNG ghi: `cells`/`names`, `screens-discovered.*`, `comp/`, `patch.json`,

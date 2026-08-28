@@ -1418,26 +1418,24 @@ async function seedFakeLayoutKb(root: string): Promise<void> {
 /** Bỏ field phụ thuộc thời gian để so byte. */
 const stableJson = (raw: string) => raw.replace(/"generatedAt": "[^"]+"/, '"generatedAt": "T"');
 
-/** WP layout-kb-web: PAGE_MD không có từ khoá mobile → platformHint 'web'. Biến
- *  thể có hint để test màn MOBILE (refs Enrico như trước). */
-async function seedFlowRunMobile(): Promise<void> {
+// WP docs-review-screen-platform (2026-08-28): nền tảng KHÔNG còn đoán từ từ
+// khoá tài liệu — màn MOBILE ở đây là do `screenPlatform: 'mobile'` (lựa chọn
+// người dùng ở rightPanel) truyền vào; tài liệu giữ nguyên PAGE_MD.
+test('prepareScreenComponentInputs: layoutKb:true + KB giả, phạm vi MOBILE → archetype + layoutRefs Enrico đúng, inputs.layoutKb có dir/topics/webTopics', async () => {
   await seedFlowRun();
-  await writeFile(join(cwd, 'docs-feature', '2.1-PRD-Mua-SIM.md'), `${PAGE_MD}\n\nNền tảng: mobile (SDK).\n`, 'utf8');
-}
-
-test('prepareScreenComponentInputs: layoutKb:true + KB giả, màn MOBILE → archetype + layoutRefs Enrico đúng, inputs.layoutKb có dir/topics/webTopics', async () => {
-  await seedFlowRunMobile();
   const kbDir = await mkdtemp(join(tmpdir(), 'od-layout-kb-'));
   const saved = process.env.LAYOUT_KB_DIR;
   process.env.LAYOUT_KB_DIR = kbDir;
   try {
     await seedFakeLayoutKb(kbDir);
     const pages = [{ mdPath: 'docs-feature/2.1-PRD-Mua-SIM.md', page: '2.1 PRD Mua SIM' }];
-    const inputs = await prepareScreenComponentInputs(cwd, { pages, outFile: 'mockups/_inputs.json', excludeRemovedByProposal: true, layoutKb: true });
+    const inputs = await prepareScreenComponentInputs(cwd, { pages, outFile: 'mockups/_inputs.json', excludeRemovedByProposal: true, layoutKb: true, screenPlatform: 'mobile' });
     assert.deepEqual(inputs.layoutKb, { dir: kbDir, source: 'enrico', builtAt: '2026-08-27T00:00:00.000Z', topics: 2, webTopics: 0 });
+    assert.equal(inputs.screenPlatform, 'mobile');
     const s1 = inputs.screens.find((s) => s.key === KEY1)!;
     const s2 = inputs.screens.find((s) => s.key === KEY2)!;
     assert.equal(s1.platformHint, 'mobile');
+    assert.equal(s1.platform, 'mobile');
     // "Chọn quốc gia" / "Chọn gói cước" → picker (topics list, search, menu → KB có list + search).
     assert.deepEqual(s1.archetype, { id: 'picker', confidence: 'high' });
     assert.deepEqual(s2.archetype, { id: 'picker', confidence: 'high' });
@@ -1460,8 +1458,9 @@ test('prepareScreenComponentInputs: layoutKb:true + KB giả, màn MOBILE → ar
 });
 
 // WP layout-kb-web: màn WEB + KB v1 (không topic web) → không layoutRefs (không
-// lấy sketch mobile), note nói dùng catalogue; archetype vẫn có.
-test('prepareScreenComponentInputs: layoutKb:true, màn WEB + KB chỉ có topic mobile → không layoutRefs + note "KB chưa có topic web"', async () => {
+// lấy sketch mobile), note nói dùng catalogue; archetype vẫn có. Màn WEB do
+// phạm vi người dùng chọn (`screenPlatform: 'web'`), không phải đoán.
+test('prepareScreenComponentInputs: layoutKb:true, phạm vi WEB + KB chỉ có topic mobile → không layoutRefs + note "KB chưa có topic web"', async () => {
   await seedFlowRun();
   const kbDir = await mkdtemp(join(tmpdir(), 'od-layout-kb-'));
   const saved = process.env.LAYOUT_KB_DIR;
@@ -1469,7 +1468,7 @@ test('prepareScreenComponentInputs: layoutKb:true, màn WEB + KB chỉ có topic
   try {
     await seedFakeLayoutKb(kbDir);
     const pages = [{ mdPath: 'docs-feature/2.1-PRD-Mua-SIM.md', page: '2.1 PRD Mua SIM' }];
-    const inputs = await prepareScreenComponentInputs(cwd, { pages, outFile: 'mockups/_inputs.json', excludeRemovedByProposal: true, layoutKb: true });
+    const inputs = await prepareScreenComponentInputs(cwd, { pages, outFile: 'mockups/_inputs.json', excludeRemovedByProposal: true, layoutKb: true, screenPlatform: 'web' });
     assert.deepEqual(inputs.layoutKb, { dir: kbDir, source: 'enrico', builtAt: '2026-08-27T00:00:00.000Z', topics: 2, webTopics: 0 });
     assert.match(inputs.note ?? '', /KB chưa có topic web/);
     for (const s of inputs.screens) {

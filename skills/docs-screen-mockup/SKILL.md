@@ -150,7 +150,9 @@ Với mỗi màn, chốt 4 việc và ghi vào `index.json` (`pattern`, `notes`)
   KHÔNG `<link>`, KHÔNG `<script>`, KHÔNG `<img src="http…">`, KHÔNG `@import`,
   KHÔNG `url(http…)`, KHÔNG font ngoài. File ≤ 200 KB.
 - `<body data-screen="<KEY>" data-layout="mobile|web" data-pattern="<id>">` —
-  `data-layout` theo `platform` (thiếu thì `platformHint`). Khung mobile:
+  `data-layout` theo `platform` của màn trong `_inputs.json` — daemon đã điền
+  theo cấu hình người dùng (`screenPlatform` cấp file: mobile / web / both);
+  KHÔNG tự suy nền tảng từ tài liệu. Khung mobile:
   `.mk-mobile` (390px). Khung web có **2 loại, agent chọn theo nội dung tài
   liệu** (ảnh BA thắng): (a) **web quản trị BO/CMS** — người vận hành quản lý /
   tra cứu / duyệt / cấu hình, menu trái nhiều mục, bảng dữ liệu → `.mk-web-shell`

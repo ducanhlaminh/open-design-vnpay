@@ -618,6 +618,7 @@ import {
   buildScreenComponentsKickoff,
   buildScreenLinkRecoveryKickoff,
   buildScreenRunKickoff,
+  screenPlatformDirective,
 } from './pipeline-kickoffs.js';
 import { validateComponentRecovery, validateFlowRecovery, validateReviewRecovery, validateScreenFlowRecoveryArtifacts } from './pipeline-recovery.js';
 import { registerChatRoutes } from './chat-routes.js';
@@ -627,7 +628,7 @@ import { registerDesignSystemSyncRoutes } from './design-system-sync-routes.js';
 import { isCriteriaGenerationJobActive, registerDesignSystemCriteriaWorkspaceRoutes } from './design-system-criteria-workspace.js';
 import { registerRoutineRoutes, routineDbRowToContract } from './routine-routes.js';
 import { registerPipelineRoutes } from './pipeline-routes.js';
-import { DEFAULT_WORKFLOW_ID, deriveStateFromLocalFiles, getPipelineDef, getWorkflow, isDocumentInputStage, isExportArtifact, isHistoryArtifact, isSyncExcluded, isTargetScopedWfDir, mergePipelineState, pickRunTarget, relClearedByRegen, relClearedByRunAllLaunch, selectRunStages, stageForOutput, strandedQueuedStages, stagesForOutput, stageRegenSet, upstreamStages, wfDirForStage, workflowDirForPipeline } from './pipelines.js';
+import { DEFAULT_WORKFLOW_ID, deriveStateFromLocalFiles, getPipelineDef, getWorkflow, isDocumentInputStage, isExportArtifact, isHistoryArtifact, isSyncExcluded, isTargetScopedWfDir, mergePipelineState, pickRunTarget, relClearedByRegen, relClearedByRunAllLaunch, SCREEN_PLATFORM_MISSING_MSG, screenPlatformScopeFor, selectRunStages, stageForOutput, strandedQueuedStages, stagesForOutput, stageRegenSet, upstreamStages, wfDirForStage, workflowDirForPipeline } from './pipelines.js';
 import { generateProjectExports } from './pipeline-exports.js';
 import {
   historyKeepCount,
@@ -723,6 +724,7 @@ import {
   DOCS_COMPONENT_FAILURE_NOTE,
 } from './docs-components.js';
 import {
+  assertScreensHavePlatform,
   prepareScreenComponentInputs,
   parseRoleMap,
   normalizeRoleMap,
@@ -9873,6 +9875,9 @@ export async function startServer({
     cwd: string,
     fallbackTitle: string,
     flowId?: string,
+    /** WP docs-review-screen-platform: phạm vi người dùng chọn — manifest
+     *  comp/_screens.json ghi `platform` theo đó (xem persistScreenDiscovery). */
+    screenPlatform?: import('@open-design/contracts').ScreenPlatformScope,
   ): Promise<{
     entry: FlowIndexEntry | null;
     entries: FlowIndexEntry[];
@@ -9895,7 +9900,7 @@ export async function startServer({
     if (entries.length === 0) return { entry, entries, warnings, screens };
     try {
       const flowDocs: Array<{ id: string; doc: import('./flow-ux/screen-flow-screens.js').ScreensV2 }> = [];
-      const proposed: Array<{ key: string; name: string; source?: string; why?: string }> = [];
+      const proposed: Array<{ key: string; name: string; source?: string; why?: string; platform?: 'app' | 'web' }> = [];
       for (const en of entries) {
         const raw = await fs.promises
           .readFile(path.join(cwd, 'flows', en.id, 'screens.json'), 'utf8')
@@ -9908,7 +9913,7 @@ export async function startServer({
           proposed.push(
             ...((await readScreensImproved(cwd, en.id))?.screens ?? [])
               .filter((sc) => sc.provenance === 'proposed')
-              .map((sc) => ({ key: sc.key, name: sc.name, ...(sc.source ? { source: sc.source } : {}), ...(sc.why ? { why: sc.why } : {}) })),
+              .map((sc) => ({ key: sc.key, name: sc.name, ...(sc.source ? { source: sc.source } : {}), ...(sc.why ? { why: sc.why } : {}), ...(en.platform ? { platform: en.platform } : {}) })),
           );
         }
       }
@@ -9921,6 +9926,7 @@ export async function startServer({
           doc: discovery,
           md: renderDiscoveredMd(discovery, featureTitle, { proposed, flowIds: flowDocs.map((f) => f.id) }),
           proposed,
+          ...(screenPlatform ? { screenPlatform } : {}),
         });
         if (!persisted.ok) warnings.push(`discovery: ${persisted.error}`);
         else if (persisted.rejected.length) warnings.push(`discovery: ${persisted.rejected.length} màn bị loại — ${persisted.rejected.join(' | ')}`);
@@ -9973,7 +9979,7 @@ export async function startServer({
       if ('error' in fid) return res.status(400).json({ error: fid.error, flowIds: fid.flowIds });
       const saved = await saveScreenFlowEdit(cwd, xml, fid.flowId);
       if (!saved.ok) return res.status(400).json({ error: saved.errors.join('; '), warnings: saved.warnings });
-      const derived = await refreshScreenFlowDerived(cwd, getProject(db, req.params.projectId)?.name ?? req.params.projectId, fid.flowId);
+      const derived = await refreshScreenFlowDerived(cwd, getProject(db, req.params.projectId)?.name ?? req.params.projectId, fid.flowId, screenPlatformScopeFor(getProject(db, req.params.projectId)));
       res.json({
         ok: true,
         flowId: fid.flowId,
@@ -10040,7 +10046,7 @@ export async function startServer({
         if (!hasProposal) return res.status(400).json({ error: 'chưa có bản cải thiện (proposed.drawio) — chạy bước "Cải thiện luồng" trước' });
       }
       await writeScreenFlowSelection(cwd, { variant, source: 'user' }, fid.flowId);
-      const derived = await refreshScreenFlowDerived(cwd, getProject(db, req.params.projectId)?.name ?? req.params.projectId, fid.flowId);
+      const derived = await refreshScreenFlowDerived(cwd, getProject(db, req.params.projectId)?.name ?? req.params.projectId, fid.flowId, screenPlatformScopeFor(getProject(db, req.params.projectId)));
       // WP dr-mockup: bước sau của workflow nay là dr-mockup (mockups/index.json);
       // comp/index.json vẫn tính (dr-comp chạy tay).
       const downstreamStale = (await Promise.all([
@@ -17035,6 +17041,9 @@ export async function startServer({
     projectId: string,
     wfDir: string | null,
     resetScope?: 'stage' | 'downstream',
+    /** WP docs-review-screen-platform: phạm vi người dùng chọn — runPipeline đã
+     *  fail-fast khi thiếu, nên ở đây luôn có giá trị trên đường chạy thật. */
+    screenPlatform?: import('@open-design/contracts').ScreenPlatformScope,
   ): { projectId: string; completion: Promise<'succeeded' | 'failed' | 'idle'> } => {
     const cancelKey = `${projectId}::${pipelineId}`;
     const activeRuns = new Set<{ id: string }>();
@@ -17659,7 +17668,7 @@ export async function startServer({
         //            màn map component nhất quán;
         //   lượt theo màn (song song) — comp/<KEY>.screen.json +
         //            wireframes/<KEY>.html.
-        const inputs = await prepareScreenComponentInputs(cwd, { pages });
+        const inputs = await prepareScreenComponentInputs(cwd, { pages, screenPlatform });
         let screenInputs = inputs.screens;
         console.log(
           `[docs-comp] lớp 1 (flows/ + quét tài liệu tất định): ${screenInputs.length} màn hình · danh mục: ${catalogText != null ? `${catalog.size} component` : 'KHÔNG có criteria/components.md'}`,
@@ -17825,7 +17834,7 @@ export async function startServer({
             );
           } else {
             docScreenExtractTask.status = 'succeeded';
-            const merged = mergeExtractedScreens(screenInputs, extractedAccepted, extractMdBySource);
+            const merged = mergeExtractedScreens(screenInputs, extractedAccepted, extractMdBySource, { screenPlatform });
             screenInputs = merged.screens;
             if (extractedRejected.length > 0) {
               console.warn(`[docs-comp] lượt trích màn: +${merged.added.length} màn, loại ${extractedRejected.length} —`, extractedRejected);
@@ -17866,7 +17875,7 @@ export async function startServer({
             const md = await fs.promises.readFile(path.join(cwd, page.mdPath), 'utf8').catch(() => null);
             if (md != null) overridesMdBySource.set(page.mdPath, md);
           }
-          const applied = applyScreenOverrides(screenInputs, overridesDoc, overridesMdBySource);
+          const applied = applyScreenOverrides(screenInputs, overridesDoc, overridesMdBySource, { screenPlatform });
           screenInputs = applied.screens;
           const allWarnings = [...parseWarnings, ...applied.warnings];
           if (allWarnings.length > 0) {
@@ -17895,6 +17904,11 @@ export async function startServer({
             await persistInputs();
           }
         }
+
+        // WP docs-review-screen-platform: phạm vi Cả hai — sau khi danh sách
+        // màn đã chốt qua mọi lớp, màn nào còn thiếu `platform` là lỗi chặn
+        // (outer catch → failed + thông điệp), KHÔNG đoán hộ.
+        assertScreensHavePlatform(screenInputs, screenPlatform);
 
         // WP24a (review follow-up): màn do lớp 2 (EXTRACT) / lớp 3 (override
         // 'add') thêm vào KHÔNG đi qua prepareScreenComponentInputs nên chưa
@@ -18072,20 +18086,24 @@ export async function startServer({
         setProjectPipelineStatus(db, projectId, pipelineId, { status: 'running', lastConversationId: roleMapConvId });
         persistTasks();
 
-        // screen-variants WP-V1: platform theo TỪNG màn (fallback hint mức
-        // tài liệu) — platformGuess chỉ còn là mặc định cho lượt role-map,
-        // từng màn đọc `platform` của chính nó trong _inputs.json.
+        // WP docs-review-screen-platform: nền tảng lượt role-map = LỰA CHỌN
+        // người dùng (Mobile/Web); phạm vi Cả hai → đa số `platform` từng màn
+        // (từng màn vẫn đọc `platform` của chính nó trong _inputs.json).
+        const platformChosen = screenPlatform === 'mobile' || screenPlatform === 'web';
         const platformCounts = screenInputs.reduce<Record<string, number>>((acc, s) => {
           const p = s.platform ?? s.platformHint;
           return { ...acc, [p]: (acc[p] ?? 0) + 1 };
         }, {});
-        const platformGuess = (platformCounts.mobile ?? 0) > (platformCounts.web ?? 0) ? 'mobile' : 'web';
+        const platformGuess = platformChosen
+          ? (screenPlatform as 'mobile' | 'web')
+          : (platformCounts.mobile ?? 0) > (platformCounts.web ?? 0) ? 'mobile' : 'web';
         const roleMapKickoff = buildScreenComponentsKickoff({
           mode: 'role-map',
           projectId,
           flowLine,
           dsLine,
           platformGuess,
+          platformChosen,
           screenInputsFile: SCREEN_INPUTS_FILE,
           outputFile: ROLE_MAP_FILE,
         });
@@ -22759,6 +22777,7 @@ export async function startServer({
           pages,
           doc: discoveredDoc,
           readMd: async (rel) => mdBySource.get(rel) ?? null,
+          ...(screenPlatformScopeFor(project) ? { screenPlatform: screenPlatformScopeFor(project) } : {}),
         });
         if (persisted.rejected.length > 0) {
           console.warn(`[dr-screens] ${persisted.rejected.length} màn bị loại khi validate: ${persisted.rejected.join(' | ')}`);
@@ -22802,6 +22821,21 @@ export async function startServer({
     if (!def) throw new Error(`Unknown pipeline ${pipelineId}`);
     const project = getProject(db, projectId);
     if (!project) throw new Error(`Project ${projectId} not found`);
+
+    // WP docs-review-screen-platform (2026-08-28): stage cần "Nền tảng màn
+    // hình" (dr-flow/dr-comp/dr-mockup) đọc lựa chọn người dùng đã lưu ở
+    // `metadata.runAllConfig.screenPlatform`. KHÔNG default, KHÔNG suy từ tài
+    // liệu: thiếu → status failed + throw TRƯỚC khi tạo conversation/run —
+    // chạy lẻ (route đã 409 cùng thông điệp), run-all (dừng chuỗi tại đây),
+    // CLI đều qua chỗ này.
+    let screenPlatform: import('@open-design/contracts').ScreenPlatformScope | undefined;
+    if (def.acceptsScreenPlatform) {
+      screenPlatform = screenPlatformScopeFor(project);
+      if (!screenPlatform) {
+        setProjectPipelineStatus(db, projectId, pipelineId, { status: 'failed', error: SCREEN_PLATFORM_MISSING_MSG });
+        throw new Error(SCREEN_PLATFORM_MISSING_MSG);
+      }
+    }
 
     // Multi-target single-stage run (routes/CLI name a target — or the project
     // has exactly one configured): scope it exactly like run-all would. Without
@@ -23050,7 +23084,7 @@ export async function startServer({
     // (dựng theo DS tạm dừng) nên wfDirForStage trả null — chạy TAY vẫn phải
     // làm việc trong docs-review/ (cùng fallback dr-screens/dr-confirm dùng).
     if (def.skillId === 'docs-screen-components') {
-      return runDocsComponentAuditFanout(pipelineId, projectId, wfDir ?? 'docs-review', resetScope);
+      return runDocsComponentAuditFanout(pipelineId, projectId, wfDir ?? 'docs-review', resetScope, screenPlatform);
     }
 
     // Docs → Phát hiện màn hình (dr-screens, WP2/screen-discovery 2026-08-25)
@@ -23256,6 +23290,12 @@ export async function startServer({
       : effectivePlatform === 'mobile'
         ? 'Nền tảng đích của lượt chạy này: MOBILE — mọi màn trong UX spec PHẢI đặt `layout: "mobile"`. App render trong viewport điện thoại CỐ ĐỊNH: không có hành vi responsive/thích ứng, không có `responsive_notes`.'
         : '';
+    // WP docs-review-screen-platform: dr-flow (skill docs-screen-flow) nhận
+    // directive "Nền tảng màn hình" theo lựa chọn người dùng (cùng khuôn với
+    // platformDirective của UX; stage này không acceptsPlatform nên hai directive
+    // không bao giờ cùng có mặt).
+    const screenPlatformKickoff =
+      def.skillId === 'docs-screen-flow' && screenPlatform ? screenPlatformDirective(screenPlatform) : '';
     // Audience (multi-target runs only), paired with the platform directive: two
     // WEB targets differ ONLY here, and the docs folder is shared across every
     // target — so the agent is told both who it is building for and to leave the
@@ -23465,10 +23505,15 @@ export async function startServer({
         outFile: MOCKUP_INPUTS_FILE,
         excludeRemovedByProposal: true,
         layoutKb: true,
+        screenPlatform,
       });
       if (preview.screens.length === 0) {
         throw new Error(preview.note ?? 'Chưa có màn hình nào — chạy bước "Luồng màn hình" trước.');
       }
+      // WP docs-review-screen-platform: phạm vi Cả hai — màn thiếu `platform`
+      // (kể cả màn agent bổ sung / người dùng thêm) → fail-fast trước khi tạo
+      // conversation, KHÔNG đoán.
+      assertScreensHavePlatform(preview.screens, screenPlatform);
       const screenLines = preview.screens.map((sc) => {
         const bits = [
           `\`${sc.key}\` — ${sc.name}`,
@@ -23497,7 +23542,7 @@ export async function startServer({
         skill: skillDirective,
         stage: stageDirective,
         source: sourceDirective,
-        platform: platformDirective,
+        platform: platformDirective || screenPlatformKickoff,
         audience: audienceDirective,
         ui: uiDirective,
         rerun: rerunDirective,
@@ -23661,6 +23706,7 @@ export async function startServer({
           outFile: MOCKUP_INPUTS_FILE,
           excludeRemovedByProposal: true,
           layoutKb: true,
+          screenPlatform,
         });
         console.log(`[screen-mockup] ${projectId}: prepared ${inputs.screens.length} màn (bản ${inputs.selection?.variant ?? 'original'})`);
         console.log(`[screen-mockup] layout-kb: ${inputs.layoutKb?.dir ?? 'none'}`);
@@ -23724,7 +23770,7 @@ export async function startServer({
         if (next === 'succeeded' && def.skillId === 'docs-screen-flow' && pipelineCwd) {
           const runCwd = wfDir ? path.join(pipelineCwd, wfDir) : pipelineCwd;
           try {
-            const sf = await finalizeScreenFlowXml(runCwd);
+            const sf = await finalizeScreenFlowXml(runCwd, { screenPlatform });
             if (!sf.found) {
               throw new Error(`agent không ghi flows/${SCREEN_FLOW_ID}/${SCREEN_FLOW_CELLS_FILE} — không có luồng màn hình nào để hiển thị`);
             }
@@ -23756,6 +23802,7 @@ export async function startServer({
                   pages: await listDocPages(runCwd),
                   doc: sf.discovery,
                   md: renderDiscoveredMd(sf.discovery, featureTitle, { flowIds: sf.flowIds }),
+                  ...(screenPlatform ? { screenPlatform } : {}),
                 });
                 if (persisted.ok) {
                   const declared = sf.discovery.pages.reduce((n, p) => n + p.screens.length, 0);
@@ -23802,7 +23849,7 @@ export async function startServer({
             const all = await finalizeScreenFlowImproveAll(runCwd, { viaRunAll: opts.viaRunAll === true });
             const allWarnings = [...all.warnings];
             if (all.results.some((r) => r.hasProposal && r.selection?.variant === 'improved')) {
-              const derived = await refreshScreenFlowDerived(runCwd, project.name || projectId);
+              const derived = await refreshScreenFlowDerived(runCwd, project.name || projectId, undefined, screenPlatformScopeFor(project));
               allWarnings.push(...derived.warnings.filter((w) => !allWarnings.includes(w)));
             }
             for (const r of all.results) {
@@ -24481,7 +24528,13 @@ export async function startServer({
         designSystemOverride?: string,
       ): Promise<'succeeded' | 'failed' | 'idle'> => {
         const def = getPipelineDef(id)!;
-        const start = await runPipeline(projectId, id, {
+        // WP docs-review-screen-platform: runPipeline có thể THROW trước khi
+        // tạo run (fail-fast "Chưa chọn Nền tảng màn hình" — status đã ghi
+        // failed) → coi như stage failed để chuỗi dừng ĐÚNG TẠI ĐÂY, không
+        // chạy tiếp downstream và không rơi vào catch chung phía dưới.
+        let start: Awaited<ReturnType<typeof runPipeline>>;
+        try {
+          start = await runPipeline(projectId, id, {
           input: isDocumentInputStage(def) ? opts.input : undefined,
           source: isDocumentInputStage(def) ? opts.source : undefined,
           designSystemId: def.acceptsDesignSystem
@@ -24508,7 +24561,11 @@ export async function startServer({
           // WP dr-flow-improve: run-all mặc định chọn bản "Cải thiện" (chỉ
           // dr-flow-improve đọc cờ này).
           viaRunAll: true,
-        });
+          });
+        } catch (error) {
+          console.warn(`[pipelines] run-all for ${projectId}: stage "${id}" không khởi động được —`, error instanceof Error ? error.message : error);
+          return 'failed';
+        }
         return start.completion;
       };
       try {

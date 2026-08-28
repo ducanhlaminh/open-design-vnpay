@@ -57,24 +57,27 @@ const LINE = {
   bo2Bold: 74, // **Màn hình chi tiết yêu cầu hỗ trợ - GDV tiếp nhận yêu cầu**
 };
 
-/** Dựng `ExtractAccepted[]` từ chính nội dung fixture — 1 màn "flow" (platform
- *  không suy được) + 4 màn MB + 4 màn IB + 2 màn BO, đúng như agent lớp 2
+/** Dựng `ExtractAccepted[]` từ chính nội dung fixture — 1 màn "flow" (agent
+ *  không khai platform) + 4 màn MB + 4 màn IB + 2 màn BO, đúng như agent lớp 2
  *  (screen-extract.ts) sẽ khai sau khi `validateDocScreenExtract` đã đối
  *  chiếu anchor thật (ở đây dựng thẳng accepted vì phạm vi T10 chỉ chạy chuỗi
- *  TỪ mergeExtractedScreens trở đi, không lặp lại test của validate*). */
+ *  TỪ mergeExtractedScreens trở đi, không lặp lại test của validate*).
+ *  WP docs-review-screen-platform (2026-08-28): daemon KHÔNG còn suy platform
+ *  từ heading cha — `platform` là quyết định của AGENT (`app` | `web`), ở đây
+ *  khai thẳng trên accepted đúng như screens.json v2 của flow tách. */
 function buildCrAccepted(): ExtractAccepted[] {
   return [
     { source: SOURCE, code: 'FLOW1', name: 'Hỗ trợ trực tuyến', line: LINE.flow1Bold, section: { startLine: LINE.flow1Bold, endLine: 33 } },
-    { source: SOURCE, code: 'MB1', name: 'Màn hình quản lý yêu cầu của tôi', line: LINE.mb1Bold, section: { startLine: LINE.mb1Bold, endLine: 40 } },
-    { source: SOURCE, code: 'MB2', name: 'Màn hình tạo yêu cầu hỗ trợ trực tuyến', line: LINE.mb2Bold, section: { startLine: LINE.mb2Bold, endLine: 42 } },
-    { source: SOURCE, code: 'MB3', name: 'Màn hình kết quả giao dịch', line: LINE.mb3Bold, section: { startLine: LINE.mb3Bold, endLine: 44 } },
-    { source: SOURCE, code: 'MB4', name: 'Màn hình danh sách lý do', line: LINE.mb4Bold, section: { startLine: LINE.mb4Bold, endLine: 47 } },
-    { source: SOURCE, code: 'IB1', name: 'Màn hình quản lý yêu cầu của tôi', line: LINE.ib1Bold, section: { startLine: LINE.ib1Bold, endLine: 53 } },
-    { source: SOURCE, code: 'IB2', name: 'Màn hình tạo yêu cầu hỗ trợ trực tuyến', line: LINE.ib2Bold, section: { startLine: LINE.ib2Bold, endLine: 55 } },
-    { source: SOURCE, code: 'IB3', name: 'Màn hình kết quả giao dịch', line: LINE.ib3Bold, section: { startLine: LINE.ib3Bold, endLine: 57 } },
-    { source: SOURCE, code: 'IB4', name: 'Popup danh sách lý do hỗ trợ', line: LINE.ib4Bold, section: { startLine: LINE.ib4Bold, endLine: 60 } },
-    { source: SOURCE, code: 'BO1', name: 'Màn hình quản lý yêu cầu hỗ trợ', line: LINE.bo1Bold, section: { startLine: LINE.bo1Bold, endLine: 73 } },
-    { source: SOURCE, code: 'BO2', name: 'Màn hình chi tiết yêu cầu hỗ trợ - GDV tiếp nhận yêu cầu', line: LINE.bo2Bold, section: { startLine: LINE.bo2Bold, endLine: 85 } },
+    { source: SOURCE, code: 'MB1', name: 'Màn hình quản lý yêu cầu của tôi', line: LINE.mb1Bold, section: { startLine: LINE.mb1Bold, endLine: 40 }, platform: 'app' },
+    { source: SOURCE, code: 'MB2', name: 'Màn hình tạo yêu cầu hỗ trợ trực tuyến', line: LINE.mb2Bold, section: { startLine: LINE.mb2Bold, endLine: 42 }, platform: 'app' },
+    { source: SOURCE, code: 'MB3', name: 'Màn hình kết quả giao dịch', line: LINE.mb3Bold, section: { startLine: LINE.mb3Bold, endLine: 44 }, platform: 'app' },
+    { source: SOURCE, code: 'MB4', name: 'Màn hình danh sách lý do', line: LINE.mb4Bold, section: { startLine: LINE.mb4Bold, endLine: 47 }, platform: 'app' },
+    { source: SOURCE, code: 'IB1', name: 'Màn hình quản lý yêu cầu của tôi', line: LINE.ib1Bold, section: { startLine: LINE.ib1Bold, endLine: 53 }, platform: 'web' },
+    { source: SOURCE, code: 'IB2', name: 'Màn hình tạo yêu cầu hỗ trợ trực tuyến', line: LINE.ib2Bold, section: { startLine: LINE.ib2Bold, endLine: 55 }, platform: 'web' },
+    { source: SOURCE, code: 'IB3', name: 'Màn hình kết quả giao dịch', line: LINE.ib3Bold, section: { startLine: LINE.ib3Bold, endLine: 57 }, platform: 'web' },
+    { source: SOURCE, code: 'IB4', name: 'Popup danh sách lý do hỗ trợ', line: LINE.ib4Bold, section: { startLine: LINE.ib4Bold, endLine: 60 }, platform: 'web' },
+    { source: SOURCE, code: 'BO1', name: 'Màn hình quản lý yêu cầu hỗ trợ', line: LINE.bo1Bold, section: { startLine: LINE.bo1Bold, endLine: 73 }, platform: 'web' },
+    { source: SOURCE, code: 'BO2', name: 'Màn hình chi tiết yêu cầu hỗ trợ - GDV tiếp nhận yêu cầu', line: LINE.bo2Bold, section: { startLine: LINE.bo2Bold, endLine: 85 }, platform: 'web' },
   ];
 }
 
@@ -98,7 +101,7 @@ function byKey(screens: ScreenInput[], key: string): ScreenInput {
 // ── Bước 1: mergeExtractedScreens ───────────────────────────────────────────
 
 describe('T10 e2e: mergeExtractedScreens trên fixture đa nền tảng', () => {
-  test('màn dưới bảng MB (§2.2) nhận platform "mobile"', async () => {
+  test('màn dưới bảng MB (§2.2, agent khai platform "app") nhận platform "mobile"', async () => {
     const screens = await buildMergedCrScreens();
     for (const code of ['MB1', 'MB2', 'MB3', 'MB4']) {
       const s = byKey(screens, `cr__${code}`);
@@ -106,7 +109,7 @@ describe('T10 e2e: mergeExtractedScreens trên fixture đa nền tảng', () => 
     }
   });
 
-  test('màn dưới bảng IB (§2.3) và mục BO (§2.4) nhận platform "web"', async () => {
+  test('màn dưới bảng IB (§2.3) và mục BO (§2.4, agent khai "web") nhận platform "web"', async () => {
     const screens = await buildMergedCrScreens();
     for (const code of ['IB1', 'IB2', 'IB3', 'IB4', 'BO1', 'BO2']) {
       const s = byKey(screens, `cr__${code}`);
@@ -114,7 +117,7 @@ describe('T10 e2e: mergeExtractedScreens trên fixture đa nền tảng', () => 
     }
   });
 
-  test('màn dưới §2.1 (không heading nào khớp từ khóa platform) KHÔNG có field platform (spread chỉ thêm khi non-null)', async () => {
+  test('màn dưới §2.1 (agent không khai platform, phạm vi vắng) KHÔNG có field platform — daemon không suy từ heading', async () => {
     const screens = await buildMergedCrScreens();
     const flow1 = byKey(screens, 'cr__FLOW1');
     assert.equal(flow1.platform, undefined);
