@@ -104,6 +104,36 @@ describe('PushAllModal · App Context tree', () => {
     finish();
   });
 
+  it('báo số file Confluence không cần tải lên khi kết quả push có manifested', async () => {
+    let finish!: () => void;
+    render(
+      <PushAllModal
+        projects={[]}
+        apps={[{ id: 'app-wiki', name: 'App Wiki', features: [] }]}
+        workflows={workflows}
+        initialAppIds={['app-wiki']}
+        syncReady
+        onReconnect={() => {}}
+        onClose={() => {}}
+        onConfirm={(_selection, _stages, _stagesByFeature, onProgress) => {
+          onProgress?.({
+            operationId: 'push-wiki', planId: 'plan-wiki', state: 'succeeded', phase: 'finalizing',
+            progress: { completedItems: 5, totalItems: 5, percent: 100 }, createdAt: '', updatedAt: '', expiresAt: '',
+            result: { planId: 'plan-wiki', applied: 2, skipped: 0, unchanged: 0, softHiddenOriginFeatureIds: [], stale: [], manifested: 3 },
+          });
+          return new Promise<void>((resolve) => { finish = resolve; });
+        }}
+      />,
+    );
+
+    const share = screen.getByRole('button', { name: 'Chia sẻ dự án' }) as HTMLButtonElement;
+    await waitFor(() => expect(share.disabled).toBe(false));
+    fireEvent.click(share);
+    expect((await screen.findByTestId('pipeline-push-manifested')).textContent)
+      .toBe('3 file tài liệu Confluence không cần tải lên (máy pull sẽ lấy từ wiki)');
+    finish();
+  });
+
   it('hiện cảnh báo và mở lại thao tác khi Push bị timeout', async () => {
     render(
       <PushAllModal

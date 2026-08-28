@@ -5,6 +5,7 @@
 import { randomUUID } from 'node:crypto';
 import type {
   ProjectSyncChange,
+  ProjectSyncConfluenceSource,
   ProjectSyncDirection,
   ProjectSyncEntry,
   ProjectSyncEntryKind,
@@ -25,6 +26,8 @@ export interface ProjectSyncSnapshotFile {
   stage?: string;
   contextVersion?: string;
   version?: string | null;
+  /** Bytes live on Confluence (see `confluence-blobs.ts`); media has no copy. */
+  confluence?: ProjectSyncConfluenceSource;
 }
 
 export interface StoredProjectSyncPlan {
@@ -128,6 +131,14 @@ export function planProjectSync(input: {
     else summary[change] += 1;
     const source = input.direction === 'push' ? local : origin;
     const metadata = source ?? local ?? origin;
+    // The local ledger wins when both sides know the file: it reflects the
+    // bytes actually on this machine (re-imported pool > older origin ledger).
+    const confluence = local?.confluence ?? origin?.confluence;
+    if (confluence) {
+      summary.confluence ??= { files: 0, bytes: 0 };
+      summary.confluence.files += 1;
+      summary.confluence.bytes += local?.size || origin?.size || 0;
+    }
     return {
       path,
       kind: source?.kind ?? local?.kind ?? origin?.kind ?? 'output',
@@ -138,6 +149,7 @@ export function planProjectSync(input: {
       ...(metadata?.featureId ? { featureId: metadata.featureId } : {}),
       ...(metadata?.stage ? { stage: metadata.stage } : {}),
       ...(metadata?.contextVersion ? { contextVersion: metadata.contextVersion } : {}),
+      ...(confluence ? { confluence } : {}),
     };
   });
   const planId = `project_sync_${randomUUID()}`;

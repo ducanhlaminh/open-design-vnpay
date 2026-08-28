@@ -125,6 +125,15 @@ function FileLeaf({ entry, direction, resolution, onResolutionChange }: {
         <Icon name={entry.kind === 'output' ? 'file-code' : 'file'} size={14} />
         <span className={styles.filePath} title={entry.path}>{fileName}</span>
         {entry.contextVersion ? <span className={styles.version}>v{entry.contextVersion.replace(/^v/i, '')}</span> : null}
+        {entry.confluence ? (
+          <span
+            className={styles.wikiChip}
+            title={`${entry.confluence.attachment} v${entry.confluence.attachmentVersion}`}
+            aria-label={`Tải từ Confluence: ${entry.confluence.attachment} v${entry.confluence.attachmentVersion}`}
+          >
+            wiki
+          </span>
+        ) : null}
         <SyncStateBadge state={entry.change} />
       </div>
       <ResolutionControl entry={entry} direction={direction} value={resolution} onChange={onResolutionChange} />

@@ -86,6 +86,17 @@ export interface ProjectSyncSide {
   version?: string | null;
 }
 
+/** Provenance of a raw Confluence attachment recorded in the sibling
+ * `attachments/_sources.json` ledger. Push skips the bytes for such an entry;
+ * Pull re-downloads them from the wiki pinned to `attachmentVersion`. */
+export interface ProjectSyncConfluenceSource {
+  base: string;
+  pageId: string;
+  spaceKey: string;
+  attachment: string;
+  attachmentVersion: number;
+}
+
 export interface ProjectSyncEntry {
   /** Stable path within the sync tree, including a feature-id prefix for App scopes. */
   path: string;
@@ -100,6 +111,8 @@ export interface ProjectSyncEntry {
   /** Owning workflow stage for output filtering; absent for Context/control files. */
   stage?: string;
   contextVersion?: string;
+  /** Present when the bytes live on Confluence rather than in media. */
+  confluence?: ProjectSyncConfluenceSource;
 }
 
 export interface ProjectSyncSummary {
@@ -108,6 +121,9 @@ export interface ProjectSyncSummary {
   unchanged: number;
   changed: number;
   deleted: number;
+  /** Every entry (any change state) whose bytes come from Confluence; `bytes`
+   * uses `local.size ?? origin.size`. Omitted when there is no such entry. */
+  confluence?: { files: number; bytes: number };
 }
 
 /** UI-facing aggregate. Consumers must use this instead of inferring an App or
@@ -190,6 +206,50 @@ export interface ProjectSyncApplyResult {
   softHiddenOriginFeatureIds: string[];
   /** Entries not written because the remote/local baseline drifted after PLAN. */
   stale: Array<{ path: string; reason: string }>;
+  /** Push: Confluence-backed entries whose bytes were deliberately not uploaded. */
+  manifested?: number;
+  /** Pull: outcome of the Confluence re-download phase. `drifted` files were
+   * written from the latest wiki version because the pinned one no longer
+   * matches; `missing` files were not written at all. Neither is `stale`. */
+  confluence?: ProjectSyncConfluencePullOutcome;
+}
+
+export interface ProjectSyncConfluencePullOutcome {
+  fetched: number;
+  drifted: Array<{ path: string; reason: string }>;
+  missing: Array<{ path: string; reason: string }>;
+}
+
+export type ProjectSyncConfluenceTokenState = 'ok' | 'missing' | 'invalid' | 'unreachable';
+
+/** Exactly one of the two ids. */
+export interface ProjectSyncConfluencePreflightRequest {
+  planId?: string;
+  batchPlanId?: string;
+}
+
+/** Answers "can THIS machine pull the Confluence-backed files of a plan?"
+ * before APPLY. The web blocks the Pull button while `ok` is false. */
+export interface ProjectSyncConfluencePreflight {
+  /** False ⇒ the plan has no Confluence entry; every other field is empty/ok. */
+  required: boolean;
+  files: number;
+  bytes: number;
+  /** Base recorded in the origin ledger. */
+  base: string | null;
+  /** Base configured on this machine (CONFLUENCE_URL). */
+  credsBase: string | null;
+  baseMatches: boolean;
+  token: ProjectSyncConfluenceTokenState;
+  displayName?: string;
+  spaces: Array<{ key: string; samplePageId: string; ok: boolean; status: number | null; files: number }>;
+  /** `required === false || (baseMatches && token === 'ok' && spaces.every(ok))` */
+  ok: boolean;
+}
+
+export interface ProjectSyncConfluencePreflightResponse {
+  ok: true;
+  data: ProjectSyncConfluencePreflight;
 }
 
 /** Long-running APPLY lifecycle. The legacy synchronous APPLY response remains

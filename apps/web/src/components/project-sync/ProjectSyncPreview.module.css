@@ -109,6 +109,16 @@
 .treeCount { flex: none; color: var(--text-faint); font-size: 12px; font-variant-numeric: tabular-nums; }
 .filePath { flex: 1 1 210px; font-family: var(--mono); font-size: 12px; color: var(--text-muted); }
 .version { flex: none; color: var(--text-soft); font-family: var(--mono); font-size: 11px; }
+.wikiChip { flex: none; padding: 1px 6px; border: 1px solid var(--blue-border); border-radius: 999px; background: var(--blue-bg); color: var(--blue); font-size: 10.5px; font-weight: 650; line-height: 1.4; letter-spacing: .02em; }
+.confluence { display: grid; gap: 8px; padding: 10px 12px; border: 1px solid var(--amber-border, var(--border)); border-radius: var(--radius-sm); background: var(--amber-bg); color: var(--text); font-size: 12.5px; line-height: 1.45; }
+.confluence[data-ok] { border-color: var(--green-border); background: var(--green-bg); }
+.confluence[data-checking] { border-color: var(--border-soft); background: var(--bg-subtle); }
+.confluenceHead { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.confluenceTitle { display: inline-flex; align-items: center; gap: 6px; color: var(--text-strong); font-size: 12.5px; font-weight: 680; }
+.confluenceLines { display: grid; gap: 3px; margin: 0; padding: 0; list-style: none; }
+.confluenceLines > li { color: var(--text-muted); }
+.confluenceLines > li[data-bad] { color: var(--red); font-weight: 600; }
+.notice ul { margin: 0; padding-left: 16px; }
 .resolution { display: flex; flex-wrap: wrap; gap: 8px; margin: -2px 8px 7px 52px; padding: 0; border: 0; color: var(--text-muted); font-size: 11px; }
 .resolution label { display: inline-flex; align-items: center; gap: 3px; cursor: pointer; white-space: nowrap; }
 .resolution input { appearance: auto; width: 13px; height: 13px; margin: 0; padding: 0; accent-color: var(--selected); }

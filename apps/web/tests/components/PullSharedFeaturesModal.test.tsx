@@ -14,6 +14,7 @@ vi.mock('../../src/providers/project-sync', () => ({
   getProjectSyncFeaturePullBatchOperation: vi.fn(),
   listProjectSyncOrigins: vi.fn(),
   planProjectSyncFeaturePullBatch: vi.fn(),
+  preflightProjectSyncConfluence: vi.fn(),
   retryProjectSyncFeaturePullBatchOperation: vi.fn(),
   waitForProjectSyncOperation: vi.fn(async (initial, getOperation, options) => {
     options?.onUpdate?.(initial);
@@ -37,6 +38,7 @@ import {
   getProjectSyncFeaturePullBatchOperation,
   listProjectSyncOrigins,
   planProjectSyncFeaturePullBatch,
+  preflightProjectSyncConfluence,
   retryProjectSyncFeaturePullBatchOperation,
   waitForProjectSyncOperation,
 } from '../../src/providers/project-sync';
@@ -44,6 +46,7 @@ import { PullSharedFeaturesModal } from '../../src/components/pipelines/PullShar
 
 const listMock = vi.mocked(listProjectSyncOrigins);
 const planMock = vi.mocked(planProjectSyncFeaturePullBatch);
+const preflightMock = vi.mocked(preflightProjectSyncConfluence);
 const createMock = vi.mocked(createProjectSyncFeaturePullBatchOperation);
 const pollMock = vi.mocked(getProjectSyncFeaturePullBatchOperation);
 const retryMock = vi.mocked(retryProjectSyncFeaturePullBatchOperation);
@@ -118,6 +121,82 @@ describe('PullSharedFeaturesModal', () => {
     const summary = screen.getByLabelText('Tóm tắt nội dung sẽ lấy');
     expect(summary.textContent).toContain('2 tạo mới');
     expect(summary.textContent).toContain('2 thay đổi');
+    // No wiki-backed entry in the plan → no preflight round-trip.
+    expect(preflightMock).not.toHaveBeenCalled();
+    expect(screen.queryByLabelText('Tài liệu Confluence')).toBeNull();
+  });
+
+  it('runs the Confluence preflight for the batch plan and blocks the pull until it passes', async () => {
+    listMock.mockResolvedValue(origins);
+    const wiki = { base: 'https://wiki.example.vn', pageId: '123', spaceKey: 'SMB', attachment: 'a.png', attachmentVersion: 2 };
+    const wikiPlan: ProjectSyncFeaturePullBatchPlan = {
+      ...plan,
+      planId: 'batch-wiki',
+      features: plan.features.map((feature, index) => index === 0
+        ? { ...feature, summary: { ...feature.summary, confluence: { files: 3, bytes: 3 * 1024 * 1024 } } }
+        // Older daemon without summary.confluence: totals fall back to the entries.
+        : { ...feature, entries: feature.entries.map((entry) => ({ ...entry, origin: { checksum: 'x', size: 512 }, confluence: wiki })) }),
+    };
+    planMock.mockResolvedValue(wikiPlan);
+    const preflight = {
+      required: true, files: 5, bytes: 3 * 1024 * 1024 + 1024, base: wiki.base, credsBase: wiki.base, baseMatches: true,
+      token: 'ok' as const, displayName: 'Nguyễn Văn A', spaces: [{ key: 'SMB', samplePageId: '123', ok: true, status: 200, files: 5 }], ok: true,
+    };
+    preflightMock
+      .mockResolvedValueOnce({ ...preflight, token: 'invalid', displayName: undefined, spaces: [], ok: false })
+      .mockResolvedValueOnce(preflight);
+    render(
+      <PullSharedFeaturesModal
+        localAppId="local-app" remoteAppOriginId="remote-app" preselectedOriginIds={['f-a', 'f-b']}
+        onClose={() => {}} onCompleted={() => {}}
+      />,
+    );
+    await screen.findByText('Feature A');
+    fireEvent.click(screen.getByRole('button', { name: 'Xem trước' }));
+    await screen.findByText('4 mục');
+
+    await waitFor(() => expect(preflightMock).toHaveBeenCalledWith({ batchPlanId: 'batch-wiki' }));
+    expect(await screen.findByText('PAT không hợp lệ hoặc hết hạn')).toBeTruthy();
+    expect(screen.getByText('5 file (3.0 MB) sẽ tải từ https://wiki.example.vn')).toBeTruthy();
+    const start = screen.getByRole('button', { name: 'Lấy 2 tính năng' }) as HTMLButtonElement;
+    expect(start.disabled).toBe(true);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Kiểm tra lại' }));
+    expect(await screen.findByText('PAT hợp lệ · Nguyễn Văn A')).toBeTruthy();
+    expect(preflightMock).toHaveBeenCalledTimes(2);
+    await waitFor(() => expect(start.disabled).toBe(false));
+  });
+
+  it('keeps the dialog open and names the Feature whose wiki files went missing', async () => {
+    listMock.mockResolvedValue(origins);
+    planMock.mockResolvedValue(plan);
+    const finished = result();
+    const first = finished.items[0];
+    if (first?.state === 'succeeded') {
+      first.result = { ...first.result, confluence: { fetched: 1, drifted: [], missing: [{ path: 'f-a/attachments/a.png', reason: 'HTTP 404' }] } };
+    }
+    createMock.mockResolvedValue(operation({
+      state: 'succeeded', phase: 'finalizing', progress: { completedItems: 4, totalItems: 4, percent: 100 }, result: finished,
+    }));
+    const onClose = vi.fn();
+    const onCompleted = vi.fn();
+    render(
+      <PullSharedFeaturesModal
+        localAppId="local-app" remoteAppOriginId="remote-app" preselectedOriginIds={['f-a', 'f-b']}
+        onClose={onClose} onCompleted={onCompleted}
+      />,
+    );
+    await screen.findByText('Feature A');
+    fireEvent.click(screen.getByRole('button', { name: 'Xem trước' }));
+    await screen.findByText('4 mục');
+    fireEvent.click(screen.getByRole('button', { name: 'Lấy 2 tính năng' }));
+
+    const warnings = await screen.findByTestId('feature-pull-confluence-warnings');
+    expect(warnings.textContent).toContain('Feature A: 1 file Confluence không tải được (không ghi vào máy): f-a/attachments/a.png (HTTP 404)');
+    await waitFor(() => expect(onCompleted).toHaveBeenCalledTimes(1));
+    expect(onClose).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Hoàn tất' }));
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
   it('keeps the picker mounted while showing determinate progress and reports completion once', async () => {

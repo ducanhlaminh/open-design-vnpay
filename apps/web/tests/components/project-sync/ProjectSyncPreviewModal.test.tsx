@@ -15,19 +15,44 @@ function completedOperation(result: unknown) {
   return { operationId: 'op-a', planId: 'plan-a', state: 'succeeded', phase: 'finalizing', progress: { completedItems: 1, totalItems: 1, percent: 100 }, result, createdAt: '', updatedAt: '', expiresAt: '' };
 }
 
-function mockApi(apply = { data: { planId: 'plan-a', applied: 1, skipped: 0, unchanged: 1, softHiddenOriginFeatureIds: [], stale: [] } }) {
-  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+const defaultApply = { data: { planId: 'plan-a', applied: 1, skipped: 0, unchanged: 1, softHiddenOriginFeatureIds: [], stale: [] } };
+
+function mockApi(apply: { data: Record<string, unknown> } | { error: unknown } = defaultApply, activePlan: unknown = plan, preflights: unknown[] = []) {
+  const queue = [...preflights];
+  const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
     if (url.startsWith('/api/project-sync/status')) return new Response(JSON.stringify({ data: { results: [status] } }));
     if (url.startsWith('/api/project-sync/origins')) return new Response(JSON.stringify({ data: { origins: [status.origin] } }));
-    if (url === '/api/project-sync/plan') return new Response(JSON.stringify({ data: plan }));
-    if (url === '/api/project-sync/operations') return new Response(JSON.stringify({ data: completedOperation(apply.data) }));
+    if (url === '/api/project-sync/plan') return new Response(JSON.stringify({ data: activePlan }));
+    if (url === '/api/project-sync/confluence-preflight') {
+      return new Response(JSON.stringify({ ok: true, data: queue.length > 1 ? queue.shift() : queue[0] }));
+    }
+    if (url === '/api/project-sync/operations' && 'data' in apply) return new Response(JSON.stringify({ data: completedOperation(apply.data) }));
     return new Response(JSON.stringify(apply), { status: 'error' in apply ? 409 : 200 });
-  }));
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  return fetchMock;
+}
+
+const preflightCalls = (fetchMock: ReturnType<typeof vi.fn>) =>
+  fetchMock.mock.calls.filter((call) => String(call[0]) === '/api/project-sync/confluence-preflight');
+
+const wikiEntry = {
+  path: 'features/feature-a/output/a.png', kind: 'output', change: 'new', origin: { checksum: 'abc', size: 1024 }, resolution: 'pull', featureId: 'feature-a',
+  confluence: { base: 'https://wiki.example.vn', pageId: '123', spaceKey: 'SMB', attachment: 'a.png', attachmentVersion: 3 },
+};
+const wikiPlan = { ...plan, planId: 'plan-c', entries: [...plan.entries, wikiEntry], summary: { ...status.summary, created: 1, confluence: { files: 1, bytes: 1024 } } };
+
+function preflightOf(overrides: Record<string, unknown> = {}) {
+  return {
+    required: true, files: 1, bytes: 1024, base: 'https://wiki.example.vn', credsBase: 'https://wiki.example.vn', baseMatches: true,
+    token: 'ok', displayName: 'Nguyễn Văn A', spaces: [{ key: 'SMB', samplePageId: '123', ok: true, status: 200, files: 1 }], ok: true, ...overrides,
+  };
 }
 
 describe('ProjectSyncPreviewModal', () => {
   it('renders the complete App plan without feature deselection and submits pull choices', async () => {
-    mockApi();
+    const fetchMock = mockApi();
     const onApplied = vi.fn();
     render(<ProjectSyncPreviewModal scope={{ kind: 'app', projectId: 'app-a' }} subjectName="Thanh toán" onClose={() => {}} onApplied={onApplied} />);
     await waitFor(() => expect(screen.queryByText('Thanh toán')).not.toBeNull());
@@ -40,6 +65,67 @@ describe('ProjectSyncPreviewModal', () => {
     fireEvent.click(screen.getByLabelText('Tệp có xung đột giữa bản trên máy và kho chung: features/feature-a/output/ui.html', { exact: false }));
     fireEvent.click(screen.getByRole('button', { name: 'Lấy dự án về máy' }));
     await waitFor(() => expect(onApplied).toHaveBeenCalled());
+    // No Confluence-backed entry → the preflight endpoint is never touched.
+    expect(preflightCalls(fetchMock)).toHaveLength(0);
+    expect(screen.queryByLabelText('Tài liệu Confluence')).toBeNull();
+  });
+
+  it('runs the Confluence preflight for a wiki-backed plan and blocks Pull until it passes', async () => {
+    const fetchMock = mockApi(defaultApply, wikiPlan, [
+      preflightOf({ token: 'missing', displayName: undefined, spaces: [], ok: false }),
+      preflightOf(),
+    ]);
+    render(<ProjectSyncPreviewModal scope={{ kind: 'app', projectId: 'app-a' }} subjectName="Thanh toán" onClose={() => {}} />);
+    expect(await screen.findByText('Chưa có PAT Confluence — Settings → Integrations → Confluence')).toBeTruthy();
+    expect(preflightCalls(fetchMock)).toHaveLength(1);
+    expect(JSON.parse(String(preflightCalls(fetchMock)[0]?.[1]?.body))).toEqual({ planId: 'plan-c' });
+    expect(screen.getByText('1 file (1 KB) sẽ tải từ https://wiki.example.vn')).toBeTruthy();
+    const pull = screen.getByRole('button', { name: 'Lấy dự án về máy' }) as HTMLButtonElement;
+    expect(pull.disabled).toBe(true);
+
+    fireEvent.click(screen.getByRole('button', { name: /Kết quả/ }));
+    expect(screen.getByTitle('a.png v3').textContent).toBe('wiki');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Kiểm tra lại' }));
+    expect(await screen.findByText('PAT hợp lệ · Nguyễn Văn A')).toBeTruthy();
+    expect(screen.getByText('Space SMB: có quyền ✓')).toBeTruthy();
+    expect(preflightCalls(fetchMock)).toHaveLength(2);
+    await waitFor(() => expect(pull.disabled).toBe(false));
+  });
+
+  it('explains a missing space right and a mismatched wiki base', async () => {
+    mockApi(defaultApply, wikiPlan, [preflightOf({
+      credsBase: 'https://wiki.other.vn', baseMatches: false,
+      spaces: [{ key: 'SMB', samplePageId: '123', ok: false, status: 404, files: 1 }], ok: false,
+    })]);
+    render(<ProjectSyncPreviewModal scope={{ kind: 'app', projectId: 'app-a' }} subjectName="Thanh toán" onClose={() => {}} />);
+    expect(await screen.findByText('Space SMB: không có quyền (HTTP 404) — cần được cấp quyền space')).toBeTruthy();
+    expect(screen.getByText('Máy này trỏ https://wiki.other.vn, dữ liệu cần https://wiki.example.vn')).toBeTruthy();
+    expect((screen.getByRole('button', { name: 'Lấy dự án về máy' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('keeps the dialog open and lists wiki files that drifted or went missing after apply', async () => {
+    mockApi({ data: {
+      ...defaultApply.data, planId: 'plan-c', applied: 2,
+      confluence: {
+        fetched: 0,
+        drifted: [{ path: 'features/feature-a/output/b.png', reason: 'sha256 lệch bản pin v2' }],
+        missing: [{ path: 'features/feature-a/output/a.png', reason: 'HTTP 404' }],
+      },
+    } }, wikiPlan, [preflightOf()]);
+    const onClose = vi.fn();
+    const onApplied = vi.fn();
+    render(<ProjectSyncPreviewModal scope={{ kind: 'app', projectId: 'app-a' }} subjectName="Thanh toán" onClose={onClose} onApplied={onApplied} />);
+    const pull = await screen.findByRole('button', { name: 'Lấy dự án về máy' }) as HTMLButtonElement;
+    await waitFor(() => expect(pull.disabled).toBe(false));
+    fireEvent.click(pull);
+    await waitFor(() => expect(onApplied).toHaveBeenCalled());
+    const warnings = await screen.findByTestId('project-sync-confluence-warnings');
+    expect(warnings.textContent).toContain('1 file Confluence không tải được (không ghi vào máy): features/feature-a/output/a.png (HTTP 404)');
+    expect(warnings.textContent).toContain('1 file Confluence đã đổi trên wiki so với bản đã review, đã lấy bản mới nhất: features/feature-a/output/b.png (sha256 lệch bản pin v2)');
+    expect(onClose).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Đóng' }));
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
   it('shows PLAN_EXPIRED recovery and returns focus to reload', async () => {

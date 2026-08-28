@@ -12,12 +12,47 @@ import {
   getProjectSyncFeaturePullBatchOperation,
   listProjectSyncOrigins,
   planProjectSyncFeaturePullBatch,
+  preflightProjectSyncConfluence,
   retryProjectSyncFeaturePullBatchOperation,
   waitForProjectSyncOperation,
 } from '../../providers/project-sync';
 import { Icon } from '../Icon';
+import {
+  ConfluencePreflightPanel,
+  confluencePreflightBlocksPull,
+  describeConfluencePullOutcome,
+  type ConfluencePreflightState,
+} from '../project-sync/ConfluencePreflightPanel';
 import { PlModal } from './PlModal';
 import styles from './PullSharedFeaturesModal.module.css';
+
+/** Wiki-backed file totals across the selected Features. Falls back to the
+ *  entries when a plan item carries no `summary.confluence`. */
+function confluenceTotalsOf(plan: ProjectSyncFeaturePullBatchPlan): { files: number; bytes: number } {
+  let files = 0;
+  let bytes = 0;
+  for (const feature of plan.features) {
+    if (feature.summary.confluence) {
+      files += feature.summary.confluence.files;
+      bytes += feature.summary.confluence.bytes;
+      continue;
+    }
+    for (const entry of feature.entries) {
+      if (!entry.confluence) continue;
+      files += 1;
+      bytes += entry.local?.size ?? entry.origin?.size ?? 0;
+    }
+  }
+  return { files, bytes };
+}
+
+function confluenceWarningsOf(result: ProjectSyncFeaturePullBatchResult, origins: readonly ProjectSyncOrigin[] | null): string[] {
+  return result.items.flatMap((item) => {
+    if (item.state !== 'succeeded') return [];
+    const name = origins?.find((origin) => origin.originId === item.originId)?.name ?? item.localId;
+    return describeConfluencePullOutcome(item.result.confluence, name);
+  });
+}
 
 const PHASE_LABEL: Record<ProjectSyncOperationPhase, string> = {
   validating: 'Đang kiểm tra',
@@ -57,7 +92,29 @@ export function PullSharedFeaturesModal({
   const [operation, setOperation] = useState<ProjectSyncFeaturePullBatchOperation | null>(null);
   const [loadingPlan, setLoadingPlan] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [preflight, setPreflight] = useState<ConfluencePreflightState>({ status: 'idle' });
   const completionReported = useRef(false);
+  const preflightGeneration = useRef(0);
+
+  const resetPreflight = useCallback(() => {
+    preflightGeneration.current += 1;
+    setPreflight({ status: 'idle' });
+  }, []);
+
+  const runPreflight = useCallback(async (batchPlanId: string) => {
+    const generation = ++preflightGeneration.current;
+    setPreflight({ status: 'loading' });
+    try {
+      const next = await preflightProjectSyncConfluence({ batchPlanId });
+      if (generation !== preflightGeneration.current) return;
+      setPreflight({ status: 'ready', preflight: next });
+    } catch (cause) {
+      if (generation !== preflightGeneration.current) return;
+      setPreflight({ status: 'error', message: errorMessage(cause, 'Không thể kiểm tra quyền truy cập Confluence.') });
+    }
+  }, []);
+
+  useEffect(() => () => { preflightGeneration.current += 1; }, []);
 
   useEffect(() => {
     let alive = true;
@@ -91,13 +148,21 @@ export function PullSharedFeaturesModal({
     ? operation.error?.message ?? 'Tiến trình lấy tính năng thất bại.'
     : null);
 
+  const confluenceWarnings = useMemo(
+    () => (terminalResult ? confluenceWarningsOf(terminalResult, origins) : []),
+    [origins, terminalResult],
+  );
+
   useEffect(() => {
     if (!operation || operation.state !== 'succeeded' || !operation.result) return;
     if (operation.result.state !== 'succeeded' || completionReported.current) return;
     completionReported.current = true;
     onCompleted(operation.result);
+    // Keep the dialog open when wiki files drifted or went missing so the
+    // user sees which ones; the footer "Hoàn tất" button closes it.
+    if (confluenceWarningsOf(operation.result, origins).length > 0) return;
     onClose();
-  }, [onClose, onCompleted, operation]);
+  }, [onClose, onCompleted, operation, origins]);
 
   useEffect(() => {
     if (!operationActive(operation) || !operation) return;
@@ -139,7 +204,8 @@ export function PullSharedFeaturesModal({
     });
     setPlan(null);
     setError(null);
-  }, [busy, operation?.state]);
+    resetPreflight();
+  }, [busy, operation?.state, resetPreflight]);
 
   const createPlan = async () => {
     if (selectedIds.length === 0) return;
@@ -152,6 +218,8 @@ export function PullSharedFeaturesModal({
         originFeatureIds: selectedIds,
       });
       setPlan(next);
+      if (confluenceTotalsOf(next).files > 0) void runPreflight(next.planId);
+      else resetPreflight();
     } catch (cause) {
       setError(errorMessage(cause, 'Không thể lập kế hoạch lấy tính năng.'));
     } finally {
@@ -192,6 +260,8 @@ export function PullSharedFeaturesModal({
   }, [onClose, onCompleted, terminalResult]);
 
   const progress = operation?.progress;
+  const confluenceTotals = plan ? confluenceTotalsOf(plan) : { files: 0, bytes: 0 };
+  const pullBlockedByConfluence = confluencePreflightBlocksPull(confluenceTotals.files > 0, preflight);
   const footer = terminalResult ? (
     <>
       <span className={styles.footerSummary}>
@@ -215,7 +285,13 @@ export function PullSharedFeaturesModal({
           {loadingPlan ? <Icon name="spinner" size={14} /> : null} Xem trước
         </button>
       ) : (
-        <button type="button" className="pl-btn pl-btn--primary" disabled={busy} onClick={() => void start()}>
+        <button
+          type="button"
+          className="pl-btn pl-btn--primary"
+          disabled={busy || pullBlockedByConfluence}
+          title={pullBlockedByConfluence && !busy ? 'Cần PAT và quyền truy cập Confluence để tải tài liệu wiki về máy.' : undefined}
+          onClick={() => void start()}
+        >
           {operationActive(operation) ? <Icon name="spinner" size={14} /> : <Icon name="download" size={14} />}
           Lấy {plan.features.length} tính năng
         </button>
@@ -227,6 +303,12 @@ export function PullSharedFeaturesModal({
     <PlModal title="Lấy tính năng về máy" icon="download" size="lg" onClose={close} busy={busy} footer={footer}>
       <div className={styles.modal}>
         {displayedError ? <div className={styles.error} role="alert"><Icon name="info" size={15} /><span>{displayedError}</span></div> : null}
+        {confluenceWarnings.length > 0 ? (
+          <div className={styles.notice} role="alert" data-testid="feature-pull-confluence-warnings">
+            <Icon name="info" size={15} />
+            <ul>{confluenceWarnings.map((line) => <li key={line}>{line}</li>)}</ul>
+          </div>
+        ) : null}
 
         {progress ? (
           <section className={styles.progress} aria-label="Tiến độ lấy tính năng">
@@ -298,6 +380,16 @@ export function PullSharedFeaturesModal({
               <span><b>{plan.features.reduce((n, item) => n + item.summary.deleted, 0)}</b> đã xóa</span>
             </div>
           </section>
+        ) : null}
+
+        {plan && confluenceTotals.files > 0 && !terminalResult ? (
+          <ConfluencePreflightPanel
+            files={confluenceTotals.files}
+            bytes={confluenceTotals.bytes}
+            state={preflight}
+            disabled={busy}
+            onRecheck={() => void runPreflight(plan.planId)}
+          />
         ) : null}
 
       </div>

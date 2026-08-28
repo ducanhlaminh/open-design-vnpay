@@ -11,6 +11,9 @@ import {
   ERR_PROJECT_SYNC_PLAN_EXPIRED,
   type ProjectSyncApplyRequest,
   type ProjectSyncApplyResult,
+  type ProjectSyncConfluencePreflightRequest,
+  type ProjectSyncConfluencePullOutcome,
+  type ProjectSyncConfluenceSource,
   type ProjectSyncDirection,
   type ProjectSyncEntryKind,
   type ProjectSyncFeaturePullBatchOperation,
@@ -53,6 +56,63 @@ import { commitHistory } from './project-history.js';
 import { historyActor } from './history-actor.js';
 import { digestProjectSyncSides, evaluateProjectSyncStatus } from './project-sync-status.js';
 import { ProjectSyncStateStore } from './project-sync-state.js';
+import { resolveConfluenceCreds } from './bas/bas-client.js';
+import { readConfluenceSourcesLedger, type ConfluenceSourcesLedger } from './confluence-sources.js';
+import {
+  attachmentDirOf,
+  confluencePreflight,
+  fetchConfluenceBlob,
+  isAttachmentsLedgerPath,
+  mapLimit,
+  parseConfluenceLedgerBuffer,
+  resolveLocalConfluenceSources,
+  synthesizeOriginConfluenceEntries,
+} from './confluence-blobs.js';
+
+/** Raw Confluence attachments are re-downloaded from the wiki, 4 at a time. */
+const CONFLUENCE_PULL_CONCURRENCY = 4;
+const CONFLUENCE_CREDS_MISSING = 'Chưa cấu hình PAT Confluence';
+type ConfluenceCreds = { base: string; token: string };
+
+/** Origin ledgers of one media folder → synthetic entries for files whose
+ * bytes are NOT on media. Ledgers are tiny, so sequential downloads are fine. */
+async function originConfluenceEntries(
+  media: Pick<MediaClient, 'downloadFile'>,
+  originId: string,
+  remoteRels: readonly string[],
+  include: (rel: string) => boolean = () => true,
+): Promise<Array<{ rel: string; checksum: string; size: number; confluence: ProjectSyncConfluenceSource }>> {
+  const ledgers: Array<{ dirRel: string; ledger: ConfluenceSourcesLedger }> = [];
+  for (const rel of remoteRels) {
+    if (!isAttachmentsLedgerPath(rel) || !include(rel)) continue;
+    const content = await media.downloadFile(originId, rel).catch(() => null);
+    const ledger = content ? parseConfluenceLedgerBuffer(content) : null;
+    if (ledger) ledgers.push({ dirRel: path.posix.dirname(rel), ledger });
+  }
+  if (ledgers.length === 0) return [];
+  return synthesizeOriginConfluenceEntries(ledgers, new Set(remoteRels)).filter((entry) => include(entry.rel));
+}
+
+const emptyConfluenceOutcome = (): ProjectSyncConfluencePullOutcome => ({ fetched: 0, drifted: [], missing: [] });
+
+/** Pull one Confluence-backed file into `target`. `missing` writes nothing. */
+async function pullConfluenceBlob(
+  creds: ConfluenceCreds | null,
+  entryPath: string,
+  source: ProjectSyncConfluenceSource,
+  expectedSha256: string,
+  target: string,
+  outcome: ProjectSyncConfluencePullOutcome,
+): Promise<boolean> {
+  if (!creds) { outcome.missing.push({ path: entryPath, reason: CONFLUENCE_CREDS_MISSING }); return false; }
+  const fetched = await fetchConfluenceBlob(creds, source, expectedSha256);
+  if (fetched.kind === 'missing') { outcome.missing.push({ path: entryPath, reason: fetched.reason }); return false; }
+  await fs.mkdir(path.dirname(target), { recursive: true });
+  await fs.writeFile(target, fetched.bytes);
+  outcome.fetched += 1;
+  if (fetched.kind === 'drifted') outcome.drifted.push({ path: entryPath, reason: `sha256 khác bản pin v${source.attachmentVersion || '?'} — đã ghi bản mới nhất trên wiki` });
+  return true;
+}
 
 export interface RegisterProjectSyncRoutesDeps extends RouteDeps<'db' | 'http' | 'paths'> {}
 
@@ -213,9 +273,9 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
     localId: string;
     name: string;
     mode: 'create' | 'update';
-    featureFiles: Array<{ rel: string; checksum: string }>;
+    featureFiles: Array<{ rel: string; checksum: string; confluence?: ProjectSyncConfluenceSource }>;
     contextVersion: string | null;
-    contextFiles: Array<{ rel: string; checksum: string }>;
+    contextFiles: Array<{ rel: string; checksum: string; confluence?: ProjectSyncConfluenceSource }>;
   };
   type StoredBatch = { plan: ProjectSyncFeaturePullBatchPlan; features: BatchExecutionFeature[]; expiresAt: number };
   const featurePullPlans = new Map<string, StoredBatch>();
@@ -230,8 +290,13 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
     timer.unref();
   };
   const execution = new Map<string, { units: Unit[]; direction: ProjectSyncDirection; scope: ProjectSyncScope; localContentByPath: Map<string, Buffer>; expiresAt: number }>();
-  const appliedResults = new Map<string, { expiresAt: number; result: { planId: string; applied: number; skipped: number; unchanged: number; softHiddenOriginFeatureIds: string[]; stale: Array<{ path: string; reason: string }> } }>();
+  const appliedResults = new Map<string, { expiresAt: number; result: ProjectSyncApplyResult }>();
   const projects = (): LocalProject[] => listProjects(db) as LocalProject[];
+  // PAT + base of THIS machine; null means every Confluence-backed Pull entry
+  // ends up `missing` (the web preflight blocks the button before that).
+  const confluenceCreds = async (): Promise<ConfluenceCreds | null> => {
+    try { return await resolveConfluenceCreds(ctx.paths.RUNTIME_DATA_DIR); } catch { return null; }
+  };
 
   const remoteOrigins = async (): Promise<DiagnosticOrigin[]> => {
     const media = new MediaClient(mediaConfigFromEnv());
@@ -352,6 +417,7 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
         return rel === `${versionRoot}/manifest.json` || rel.startsWith(`${versionRoot}/files/`);
       };
       const localRels = new Set<string>();
+      const unitLocalFiles: Array<{ rel: string; file: ProjectSyncSnapshotFile }> = [];
       if (unit.localId) {
         for (const file of await walkFiles(path.join(ctx.paths.PROJECTS_DIR, unit.localId))) {
           if (isControl(file.rel)) continue;
@@ -384,18 +450,37 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
           localRels.add(file.rel);
           localContentByPath.set(entryPath, content);
           const stage = !unit.isApp ? stageForOutput(file.rel)?.id : undefined;
-          localFiles.push({ path: entryPath, checksum: checksum(content), size: content.length, kind: kindOf(file.rel, unit.isApp), ...(unit.featureId ? { featureId: unit.featureId } : {}), ...(stage ? { stage } : {}), ...(unit.contextVersion ? { contextVersion: unit.contextVersion } : {}) });
+          const snapshotFile: ProjectSyncSnapshotFile = { path: entryPath, checksum: checksum(content), size: content.length, kind: kindOf(file.rel, unit.isApp), ...(unit.featureId ? { featureId: unit.featureId } : {}), ...(stage ? { stage } : {}), ...(unit.contextVersion ? { contextVersion: unit.contextVersion } : {}) };
+          localFiles.push(snapshotFile);
+          unitLocalFiles.push({ rel: file.rel, file: snapshotFile });
+        }
+        // A raw wiki attachment listed (same sha) in its sibling ledger is
+        // Confluence-backed; the ledger file itself stays a plain byte file.
+        const sources = await resolveLocalConfluenceSources(path.join(ctx.paths.PROJECTS_DIR, unit.localId), unitLocalFiles.map(({ rel, file }) => ({ rel, checksum: file.checksum })));
+        for (const { rel, file } of unitLocalFiles) {
+          const source = sources.get(rel);
+          if (source) file.confluence = source;
         }
       }
+      const remoteRels: string[] = [];
+      const includeRemote = (rel: string): boolean => Boolean(rel) && !isControl(rel) && includeLatestAppContext(rel)
+        && (!unit.contextVersion || rel.startsWith(`context/versions/${unit.contextVersion}/`));
       for (const file of remoteFiles) {
         const rel = typeof file.path === 'string' ? file.path : '';
-        if (!rel || isControl(rel)) continue;
-        if (!includeLatestAppContext(rel)) continue;
-        if (unit.contextVersion && !rel.startsWith(`context/versions/${unit.contextVersion}/`)) continue;
+        if (rel) remoteRels.push(rel);
+        if (!includeRemote(rel)) continue;
         const stage = !unit.isApp
           ? (typeof (file as { stage?: unknown }).stage === 'string' ? (file as { stage: string }).stage : stageForOutput(rel)?.id)
           : undefined;
         originFiles.push({ path: `${unit.prefix}/${rel}`, checksum: typeof file.checksum === 'string' ? file.checksum : '', size: 0, kind: kindOf(rel, unit.isApp), ...(unit.featureId ? { featureId: unit.featureId } : {}), ...(stage ? { stage } : {}), ...(unit.contextVersion ? { contextVersion: unit.contextVersion } : {}) });
+      }
+      // Origin ledgers stand in for the attachment bytes that were never
+      // uploaded: the diff sees them as ordinary origin files.
+      if (unit.originId) {
+        for (const synthetic of await originConfluenceEntries(media, unit.originId, remoteRels, includeRemote)) {
+          const stage = !unit.isApp ? stageForOutput(synthetic.rel)?.id : undefined;
+          originFiles.push({ path: `${unit.prefix}/${synthetic.rel}`, checksum: synthetic.checksum, size: synthetic.size, kind: kindOf(synthetic.rel, unit.isApp), ...(unit.featureId ? { featureId: unit.featureId } : {}), ...(stage ? { stage } : {}), ...(unit.contextVersion ? { contextVersion: unit.contextVersion } : {}), confluence: synthetic.confluence });
+        }
       }
       if (unit.localId && !unit.contextVersion) {
         const controlRel = unit.isApp ? 'app.json' : 'project.json';
@@ -616,8 +701,18 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
       localFiles.push({ path: `feature/${file.rel}`, checksum: checksum(file.content), size: file.content.length, kind: kindOf(file.rel, false), featureId: originId, ...(stage ? { stage } : {}) });
     }
     const originFiles: ProjectSyncSnapshotFile[] = [];
-    const featureFiles: Array<{ rel: string; checksum: string }> = [];
-    for (const file of await media.listFiles(originId)) {
+    const featureFiles: BatchExecutionFeature['featureFiles'] = [];
+    const remoteFeatureFiles = await media.listFiles(originId);
+    const remoteRels = remoteFeatureFiles.map((file) => (typeof file.path === 'string' ? file.path : '')).filter(Boolean);
+    // Confluence-backed files: the ledger sha IS the origin checksum — nothing
+    // to download at PLAN time, and APPLY verifies against that same sha.
+    for (const synthetic of await originConfluenceEntries(media, originId, remoteRels, (rel) => !isControl(rel))) {
+      if (!safeRelativePath(synthetic.rel)) throw new Error(`Unsafe remote Feature path: ${synthetic.rel}`);
+      const stage = stageForOutput(synthetic.rel)?.id;
+      featureFiles.push({ rel: synthetic.rel, checksum: synthetic.checksum, confluence: synthetic.confluence });
+      originFiles.push({ path: `feature/${synthetic.rel}`, checksum: synthetic.checksum, size: synthetic.size, kind: kindOf(synthetic.rel, false), featureId: originId, ...(stage ? { stage } : {}), confluence: synthetic.confluence });
+    }
+    for (const file of remoteFeatureFiles) {
       const rel = typeof file.path === 'string' ? file.path : '';
       if (!rel || isControl(rel)) continue;
       if (!safeRelativePath(rel)) throw new Error(`Unsafe remote Feature path: ${rel}`);
@@ -642,12 +737,23 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
   };
 
   const boundContextSnapshot = async (originAppId: string, localAppId: string, contextVersion: string | null, featureId: string) => {
-    const empty = { localFiles: [] as ProjectSyncSnapshotFile[], originFiles: [] as ProjectSyncSnapshotFile[], contextFiles: [] as Array<{ rel: string; checksum: string }> };
+    const empty = { localFiles: [] as ProjectSyncSnapshotFile[], originFiles: [] as ProjectSyncSnapshotFile[], contextFiles: [] as BatchExecutionFeature['contextFiles'] };
     if (!contextVersion || !/^v[1-9]\d*$/.test(contextVersion)) return empty;
     const media = new MediaClient(mediaConfigFromEnv());
     const root = `context/versions/${contextVersion}`;
-    const remote = (await media.listFiles(originAppId)).filter((file) => typeof file.path === 'string' && (file.path === `${root}/manifest.json` || file.path.startsWith(`${root}/files/`)));
+    const allRemote = await media.listFiles(originAppId);
+    const inVersion = (rel: string) => rel === `${root}/manifest.json` || rel.startsWith(`${root}/files/`);
+    const remote = allRemote.filter((file) => typeof file.path === 'string' && inVersion(file.path));
     if (!remote.some((file) => file.path === `${root}/manifest.json`)) throw new Error(`Bound Context ${contextVersion} is missing from origin App ${originAppId}`);
+    const remoteRels = allRemote.map((file) => (typeof file.path === 'string' ? file.path : '')).filter(Boolean);
+    for (const synthetic of await originConfluenceEntries(media, originAppId, remoteRels, inVersion)) {
+      if (!safeRelativePath(synthetic.rel)) throw new Error(`Unsafe bound Context path: ${synthetic.rel}`);
+      const entryPath = `bound-context/${featureId}/${synthetic.rel}`;
+      empty.originFiles.push({ path: entryPath, checksum: synthetic.checksum, size: synthetic.size, kind: 'context', featureId, contextVersion, confluence: synthetic.confluence });
+      empty.contextFiles.push({ rel: synthetic.rel, checksum: synthetic.checksum, confluence: synthetic.confluence });
+      const local = await fs.readFile(path.join(ctx.paths.PROJECTS_DIR, localAppId, synthetic.rel)).catch(() => null);
+      if (local) empty.localFiles.push({ path: entryPath, checksum: checksum(local), size: local.length, kind: 'context', featureId, contextVersion });
+    }
     for (const file of remote) {
       const rel = file.path as string;
       if (!safeRelativePath(rel)) throw new Error(`Unsafe bound Context path: ${rel}`);
@@ -824,6 +930,7 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
     operation.phase = 'validating';
     saveFeaturePullOperation(operation);
     const media = new MediaClient(mediaConfigFromEnv());
+    const creds = await confluenceCreds();
     let completed = 0;
     const items: ProjectSyncFeaturePullBatchResult['items'] = [];
     const updateProgress = (phase: 'validating' | 'transferring' | 'finalizing', currentFeatureId?: string | null, currentPath?: string | null): void => {
@@ -862,6 +969,10 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
           await fs.cp(destination, stageFeature, { recursive: true });
         } else await fs.mkdir(stageFeature, { recursive: true });
         updateProgress('transferring', feature.originId, null);
+        // Confluence-backed files are pulled from the wiki after the media
+        // files, CONFLUENCE_PULL_CONCURRENCY at a time (media stays sequential).
+        const confluenceTasks: Array<{ entryPath: string; source: ProjectSyncConfluenceSource; checksum: string; target: string }> = [];
+        const confluenceOutcome = emptyConfluenceOutcome();
         for (const entry of actionable) {
           updateProgress('transferring', feature.originId, entry.path);
           if (entry.path.startsWith('feature/')) {
@@ -874,6 +985,10 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
             }
             const expected = feature.featureFiles.find((file) => file.rel === rel);
             if (!expected) throw new Error(`Remote Feature file disappeared: ${rel}`);
+            if (expected.confluence) {
+              confluenceTasks.push({ entryPath: entry.path, source: expected.confluence, checksum: expected.checksum, target: path.join(stageFeature, rel) });
+              continue;
+            }
             const content = await media.downloadFile(feature.originId, rel);
             if (checksum(content) !== expected.checksum) throw new Error(`Remote Feature changed after PLAN: ${rel}`);
             const target = path.join(stageFeature, rel);
@@ -883,6 +998,10 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
             const rel = entry.path.slice(`bound-context/${feature.originId}/`.length);
             const expected = feature.contextFiles.find((file) => file.rel === rel);
             if (!expected) throw new Error(`Bound Context file disappeared: ${rel}`);
+            if (expected.confluence) {
+              confluenceTasks.push({ entryPath: entry.path, source: expected.confluence, checksum: expected.checksum, target: path.join(stageContext, rel) });
+              continue;
+            }
             const content = await media.downloadFile(stored.plan.originAppId, rel);
             if (checksum(content) !== expected.checksum) throw new Error(`Bound Context changed after PLAN: ${rel}`);
             const target = path.join(stageContext, rel);
@@ -892,6 +1011,11 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
           completed += 1;
           updateProgress('transferring', feature.originId, entry.path);
         }
+        await mapLimit(confluenceTasks, CONFLUENCE_PULL_CONCURRENCY, async (task) => {
+          await pullConfluenceBlob(creds, task.entryPath, task.source, task.checksum, task.target, confluenceOutcome);
+          completed += 1;
+          updateProgress('transferring', feature.originId, task.entryPath);
+        });
         // Local project control always points at local ownership while the
         // explicit mapping below retains remote identity.
         const localControl = {
@@ -963,7 +1087,7 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
           syncState.markIncomplete(featureScope, identity, undefined, feature.contextVersion);
         }
         const unchanged = planned.entries.filter((entry) => entry.change === 'unchanged').length;
-        items.push({ originId: feature.originId, localId: feature.localId, state: 'succeeded', result: { planId: stored.plan.planId, applied: actionable.length, skipped: planned.entries.length - actionable.length - unchanged, unchanged, softHiddenOriginFeatureIds: [], stale: [] } });
+        items.push({ originId: feature.originId, localId: feature.localId, state: 'succeeded', result: { planId: stored.plan.planId, applied: actionable.length - confluenceOutcome.missing.length, skipped: planned.entries.length - actionable.length - unchanged, unchanged, softHiddenOriginFeatureIds: [], stale: [], ...(confluenceTasks.length > 0 ? { confluence: confluenceOutcome } : {}) } });
       } catch (error) {
         syncState.markIncomplete(
           { kind: 'feature', projectId: feature.localId, appId: stored.plan.localAppId },
@@ -1068,8 +1192,12 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
     const media = new MediaClient(mediaConfigFromEnv());
     const unitFor = (entryPath: string) => exec.units.find((unit) => entryPath === unit.prefix || entryPath.startsWith(`${unit.prefix}/`));
     const relFor = (entryPath: string, unit: Unit) => entryPath.slice(unit.prefix.length + 1);
-    let applied = 0; let skipped = 0; let unchanged = 0;
+    let applied = 0; let skipped = 0; let unchanged = 0; let manifested = 0;
     const softHiddenOriginFeatureIds: string[] = []; const stale: Array<{ path: string; reason: string }> = [];
+    // Pull phase 2: Confluence-backed entries, fetched from the wiki in
+    // parallel after every media entry has been handled sequentially.
+    const confluenceTasks: Array<{ entry: typeof stored.plan.entries[number]; source: ProjectSyncConfluenceSource; dest: string }> = [];
+    const confluenceOutcome = emptyConfluenceOutcome();
     // App Push removes an origin-only Feature as one lifecycle operation, not
     // once for every file in its folder. The current files and history remain
     // intact so an administrator can audit or restore the hidden Feature.
@@ -1106,6 +1234,7 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
     for (const entry of stored.plan.entries) {
       const resolution = body.resolutions?.[entry.path] ?? entry.resolution;
       const actionable = entry.change !== 'unchanged' && resolution !== 'skip';
+      let deferred = false;
       if (actionable) report?.('transferring', completedItems, entry.path, entry.featureId ?? null);
       try {
         if (entry.change === 'unchanged') { unchanged += 1; continue; }
@@ -1120,7 +1249,21 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
                 // The unit-level lifecycle write above owns this removal. Never
                 // delete or rewrite its individual current/history files.
                 continue;
+              } else if (entry.confluence && !entry.local) {
+                // A ledger-synthesized origin entry has no media file to remove;
+                // the next ledger upload drops it from every origin listing.
+                applied += 1;
               } else if (!isHistory(rel)) { const files = await media.listFiles(unit.originId); const found = files.find((file) => file.path === rel) as { id?: string } | undefined; if (found?.id) await media.deleteFile(found.id); applied += 1; }
+            } else if (entry.confluence) {
+              // Bytes stay on Confluence: the ledger (uploaded as a plain file)
+              // is the manifest. A stale media copy from a pre-ledger push is
+              // removed so the origin listing stops shadowing the ledger.
+              if (entry.change === 'changed' && entry.origin && !isHistory(rel)) {
+                const files = await media.listFiles(unit.originId);
+                const found = files.find((file) => file.path === rel) as { id?: string } | undefined;
+                if (found?.id) await media.deleteFile(found.id);
+              }
+              manifested += 1;
             } else if (unit.localId) {
               const content = exec.localContentByPath.get(entry.path)
                 ?? await fs.readFile(path.join(ctx.paths.PROJECTS_DIR, unit.localId, rel));
@@ -1137,7 +1280,10 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
               });
             }
             if (entry.change === 'deleted') { if (!isHistory(rel)) await fs.rm(dest, { force: true }); applied += 1; }
-            else {
+            else if (entry.confluence && entry.origin) {
+              confluenceTasks.push({ entry, source: entry.confluence, dest });
+              deferred = true;
+            } else {
               const content = await media.downloadFile(unit.originId, rel);
               if (unit.featureId && rel === 'project.json') {
                 const remote = JSON.parse(content.toString('utf8')) as Record<string, unknown>;
@@ -1173,11 +1319,21 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
           } else skipped += 1;
         } catch (error) { stale.push({ path: entry.path, reason: (error as Error).message }); }
       } finally {
-        if (actionable) {
+        if (actionable && !deferred) {
           completedItems += 1;
           report?.('transferring', completedItems, entry.path, entry.featureId ?? null);
         }
       }
+    }
+    if (confluenceTasks.length > 0) {
+      const creds = await confluenceCreds();
+      await mapLimit(confluenceTasks, CONFLUENCE_PULL_CONCURRENCY, async ({ entry, source, dest }) => {
+        try {
+          if (await pullConfluenceBlob(creds, entry.path, source, entry.origin!.checksum, dest, confluenceOutcome)) applied += 1;
+        } catch (error) { stale.push({ path: entry.path, reason: (error as Error).message }); }
+        completedItems += 1;
+        report?.('transferring', completedItems, entry.path, entry.featureId ?? null);
+      });
     }
     report?.('finalizing', completedItems);
     if (stale.length === 0) {
@@ -1261,11 +1417,45 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
     } else if (stored.plan.direction === 'pull') {
       syncState.markIncomplete(exec.scope, baselineIdentity);
     }
-    const result = { planId: stored.plan.planId, applied, skipped, unchanged, softHiddenOriginFeatureIds, stale };
+    const result: ProjectSyncApplyResult = {
+      planId: stored.plan.planId, applied, skipped, unchanged, softHiddenOriginFeatureIds, stale,
+      ...(manifested > 0 ? { manifested } : {}),
+      ...(confluenceTasks.length > 0 ? { confluence: confluenceOutcome } : {}),
+    };
     appliedResults.set(stored.plan.planId, { expiresAt: Date.now() + PROJECT_SYNC_PLAN_TTL_MS, result });
     res.json({ ok: true, data: result });
   };
   app.post('/api/project-sync/apply', applyHandler);
+
+  // Web calls this after a Pull PLAN: can THIS machine re-download the plan's
+  // Confluence-backed files? Blocks the Pull button on PAT/base/space problems.
+  app.post('/api/project-sync/confluence-preflight', async (req, res) => {
+    const body = (req.body ?? {}) as ProjectSyncConfluencePreflightRequest;
+    const planId = typeof body.planId === 'string' ? body.planId : '';
+    const batchPlanId = typeof body.batchPlanId === 'string' ? body.batchPlanId : '';
+    if ((planId ? 1 : 0) + (batchPlanId ? 1 : 0) !== 1) return sendApiError(res, 400, 'BAD_REQUEST', 'exactly one of planId or batchPlanId is required');
+    let entries: Array<{ confluence?: ProjectSyncConfluenceSource; resolution: string; local?: { size: number }; origin?: { size: number } }> | null = null;
+    if (planId) {
+      const now = Date.now();
+      for (const [id, pending] of execution) if (pending.expiresAt <= now) execution.delete(id);
+      const stored = plans.get(planId);
+      entries = stored && execution.has(planId) ? stored.plan.entries : null;
+    } else {
+      sweepFeaturePull();
+      const stored = featurePullPlans.get(batchPlanId);
+      entries = stored ? stored.plan.features.flatMap((feature) => feature.entries) : null;
+    }
+    if (!entries) return sendApiError(res, 404, ERR_PROJECT_SYNC_PLAN_EXPIRED, 'plan expired — re-plan and retry');
+    const selected = entries.filter((entry) => entry.confluence && entry.resolution !== 'skip');
+    try {
+      const data = await confluencePreflight(
+        await confluenceCreds(),
+        selected.map((entry) => entry.confluence!),
+        selected.map((entry) => entry.local?.size ?? entry.origin?.size ?? 0),
+      );
+      res.json({ ok: true, data });
+    } catch (error) { sendApiError(res, 502, 'PROJECT_SYNC_CONFLUENCE_PREFLIGHT_FAILED', (error as Error).message); }
+  });
 
   app.post('/api/project-sync/operations', (req, res) => {
     const body = (req.body ?? {}) as Partial<ProjectSyncApplyRequest>;

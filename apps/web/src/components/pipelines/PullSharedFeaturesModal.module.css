@@ -1,6 +1,9 @@
 .modal { display: grid; gap: 14px; min-height: 260px; }
 .error { display: flex; align-items: flex-start; gap: 8px; padding: 10px 11px; border: 1px solid var(--red-border); border-radius: var(--radius-sm); color: var(--red); background: var(--red-bg); font-size: 12.5px; line-height: 1.45; }
 .error > svg { flex: none; margin-top: 1px; }
+.notice { display: flex; align-items: flex-start; gap: 8px; padding: 10px 11px; border: 1px solid var(--amber-border, var(--border)); border-radius: var(--radius-sm); color: var(--amber); background: var(--amber-bg); font-size: 12.5px; line-height: 1.45; }
+.notice > svg { flex: none; margin-top: 1px; }
+.notice ul { margin: 0; padding-left: 16px; }
 .picker, .preview, .progress { overflow: hidden; border: 1px solid var(--border-soft); border-radius: var(--radius-sm); background: var(--bg-subtle); }
 .sectionHead, .progressHead { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 11px 13px; color: var(--text); font-size: 13px; }
 .sectionHead > span, .progressHead > span { color: var(--text-muted); font-variant-numeric: tabular-nums; }

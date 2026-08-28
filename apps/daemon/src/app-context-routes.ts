@@ -37,6 +37,9 @@ import {
   readAppContextManifest,
 } from './app-context-version.js';
 import { MediaClient, mediaConfigFromEnv, type LocalSyncFile } from './kg-sync/media-client.js';
+import { resolveConfluenceCreds } from './bas/bas-client.js';
+import { CONFLUENCE_SOURCES_FILE, type ConfluenceSourcesLedger } from './confluence-sources.js';
+import { attachmentDirOf, fetchConfluenceBlob, parseConfluenceLedgerBuffer } from './confluence-blobs.js';
 import { ensureProjectRegistered } from './kg-sync/identity-registry.js';
 import { studioConfigOf } from './kg-sync/push-dest.js';
 import type { RouteDeps } from './server-context.js';
@@ -302,8 +305,32 @@ export function registerAppContextRoutes(app: Express, deps: RegisterAppContextR
         return res.json({ ok: true, data });
       }
       const contents = new Map<string, Buffer>();
+      // Raw Confluence attachments are not on media: their sibling ledger
+      // (`attachments/_sources.json`, one download per dir) says where on the
+      // wiki to fetch them. Digest mismatches surface from installAppContextVersion.
+      const ledgerByDir = new Map<string, ConfluenceSourcesLedger | null>();
+      let creds: Awaited<ReturnType<typeof resolveConfluenceCreds>> | undefined;
       for (const file of manifest.files) {
-        contents.set(file.path, await media.downloadFile(remoteAppId, `context/versions/${version}/files/${file.path}`));
+        const remotePath = `context/versions/${version}/files/${file.path}`;
+        try {
+          contents.set(file.path, await media.downloadFile(remoteAppId, remotePath));
+          continue;
+        } catch (error) {
+          const dir = attachmentDirOf(file.path);
+          if (!dir) throw error;
+          if (!ledgerByDir.has(dir)) {
+            const raw = await media.downloadFile(remoteAppId, `context/versions/${version}/files/${dir}/${CONFLUENCE_SOURCES_FILE}`).catch(() => null);
+            ledgerByDir.set(dir, raw ? parseConfluenceLedgerBuffer(raw) : null);
+          }
+          const ledger = ledgerByDir.get(dir) ?? null;
+          const item = ledger?.items.find((candidate) => candidate.name === path.posix.basename(file.path)) ?? null;
+          if (!ledger || !item) throw error;
+          if (creds === undefined) creds = await resolveConfluenceCreds(paths.RUNTIME_DATA_DIR).catch(() => null);
+          const source = { base: ledger.base, pageId: item.pageId, spaceKey: item.spaceKey, attachment: item.attachment, attachmentVersion: item.attachmentVersion };
+          const fetched = creds ? await fetchConfluenceBlob(creds, source, file.digest) : { kind: 'missing' as const, reason: 'Chưa cấu hình PAT Confluence' };
+          if (fetched.kind === 'missing') throw new Error(`Attachment Confluence không tải được: ${file.path} (${fetched.reason})`);
+          contents.set(file.path, fetched.bytes);
+        }
       }
       await installAppContextVersion({ projectsDir: paths.PROJECTS_DIR, appId, manifest, files: contents });
       await materializeAppContextVersion({ projectsDir: paths.PROJECTS_DIR, appId, contextVersion: manifest.contextVersion });

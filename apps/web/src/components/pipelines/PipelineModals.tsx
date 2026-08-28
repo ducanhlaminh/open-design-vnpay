@@ -4901,6 +4901,11 @@ export function PushAllModal({
           percent={operation?.progress.percent}
         />
       ) : null}
+      {(operation?.result?.manifested ?? 0) > 0 ? (
+        <p className="pl-pullall__hint" role="status" data-testid="pipeline-push-manifested">
+          {operation?.result?.manifested} file tài liệu Confluence không cần tải lên (máy pull sẽ lấy từ wiki)
+        </p>
+      ) : null}
       {!syncReady ? (
         <div className="pl-modal-error" role="alert">
           <span>{SYNC_COPY.reconnectHint}</span>{' '}

@@ -58,4 +58,20 @@ describe('project sync plan engine', () => {
       '--resolution', 'bad-value',
     ])).toEqual({ 'docs/a.md': 'pull', 'ui/output.html': 'skip' });
   });
+
+  it('carries Confluence provenance onto entries (local ledger wins) and totals it in the summary', () => {
+    const confluence = { base: 'https://wiki.test', pageId: '1', spaceKey: 'SMB', attachment: 'a.png', attachmentVersion: 2 };
+    const originSource = { ...confluence, attachmentVersion: 1 };
+    const { plan } = planProjectSync({
+      direction: 'push', scope, origin,
+      local: [{ ...file('attachments/a.png', 'aa'), size: 10, confluence }, { ...file('attachments/new.png', 'nn'), size: 5, confluence }, file('plain.md', 'pp')],
+      originFiles: [{ ...file('attachments/a.png', 'aa'), size: 0, confluence: originSource }, { ...file('attachments/gone.png', 'gg'), size: 7, confluence: originSource }],
+    });
+    expect(plan.entries.find((entry) => entry.path === 'attachments/a.png')).toMatchObject({ change: 'unchanged', confluence });
+    expect(plan.entries.find((entry) => entry.path === 'attachments/new.png')).toMatchObject({ change: 'new', confluence });
+    expect(plan.entries.find((entry) => entry.path === 'attachments/gone.png')).toMatchObject({ change: 'deleted', confluence: originSource });
+    expect(plan.entries.find((entry) => entry.path === 'plain.md')?.confluence).toBeUndefined();
+    expect(plan.summary).toEqual({ created: 2, unchanged: 1, changed: 0, deleted: 1, confluence: { files: 3, bytes: 22 } });
+    expect(planProjectSync({ direction: 'push', scope, origin, local: [file('plain.md', 'pp')], originFiles: [] }).plan.summary.confluence).toBeUndefined();
+  });
 });

@@ -15,6 +15,7 @@ import {
   listProjectSyncOrigins,
   planProjectSync,
   planProjectSyncFeaturePullBatch,
+  preflightProjectSyncConfluence,
   retryProjectSyncFeaturePullBatchOperation,
   waitForProjectSyncOperation,
 } from '../../src/providers/project-sync';
@@ -120,6 +121,31 @@ describe('project-sync provider', () => {
       localAppId: 'app-1', originAppId: 'remote-app', originFeatureIds: ['f-1', 'f-2'],
     });
     expect(JSON.parse(String(fetchMock.mock.calls[3]?.[1]?.body))).toEqual({ operationId: 'op/1' });
+  });
+
+  it('posts the Confluence preflight for a plan or a batch plan and unwraps the result', async () => {
+    const preflight = {
+      required: true, files: 2, bytes: 2048, base: 'https://wiki.example.vn', credsBase: 'https://wiki.example.vn', baseMatches: true,
+      token: 'ok', displayName: 'Nguyễn Văn A', spaces: [{ key: 'SMB', samplePageId: '123', ok: true, status: 200, files: 2 }], ok: true,
+    };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(response({ ok: true, data: preflight }))
+      .mockResolvedValueOnce(response({ ok: true, data: { ...preflight, required: false, files: 0 } }))
+      .mockResolvedValueOnce(response({ ok: false, error: { code: 'PLAN_EXPIRED', message: 'expired' } }, { status: 404 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(preflightProjectSyncConfluence({ planId: 'p1' })).resolves.toEqual(preflight);
+    await preflightProjectSyncConfluence({ batchPlanId: 'batch-1' });
+    await expect(preflightProjectSyncConfluence({ planId: 'gone' })).rejects.toBeInstanceOf(ProjectSyncPlanExpiredError);
+
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      '/api/project-sync/confluence-preflight',
+      '/api/project-sync/confluence-preflight',
+      '/api/project-sync/confluence-preflight',
+    ]);
+    expect(fetchMock.mock.calls[0]?.[1]?.method).toBe('POST');
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({ planId: 'p1' });
+    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toEqual({ batchPlanId: 'batch-1' });
   });
 
   it('polls an operation to completion and reports every progress snapshot', async () => {

@@ -14,7 +14,20 @@ const state = vi.hoisted(() => ({
   downloads: [] as string[],
   failAppUpsert: false,
   history: [] as Array<{ cwd: string; kind: string; input?: string }>,
+  confluenceCreds: null as { base: string; token: string } | null,
+  confluenceFetch: null as null | ((url: string) => Response | Promise<Response>),
+  confluenceRequests: [] as string[],
 }));
+
+vi.mock('../src/bas/bas-client.js', () => ({
+  resolveConfluenceCreds: async () => state.confluenceCreds,
+}));
+const realFetch = globalThis.fetch;
+globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+  const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+  if (state.confluenceFetch && url.startsWith('https://wiki.test')) { state.confluenceRequests.push(url); return state.confluenceFetch(url); }
+  return realFetch(input, init);
+}) as typeof fetch;
 
 vi.mock('../src/db.js', () => ({
   listProjects: () => state.projects,
@@ -110,7 +123,7 @@ async function pollFeaturePullOperation(table: Map<string, Handler>, operationId
 }
 
 describe('project-sync route contract', () => {
-  beforeEach(() => { state.projects = []; state.origins = []; state.mediaFiles = {}; state.uploads = []; state.appUpserts = []; state.pipelineApps = []; state.failDownloads = new Set(); state.downloads = []; state.failAppUpsert = false; state.history = []; });
+  beforeEach(() => { state.projects = []; state.origins = []; state.mediaFiles = {}; state.uploads = []; state.appUpserts = []; state.pipelineApps = []; state.failDownloads = new Set(); state.downloads = []; state.failAppUpsert = false; state.history = []; state.confluenceCreds = null; state.confluenceFetch = null; state.confluenceRequests = []; });
 
   it('filters origins to visible rows and supports the Feature App filter', async () => {
     state.origins = [
@@ -819,5 +832,257 @@ describe('project-sync route contract', () => {
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }
+  });
+  describe('Confluence-backed attachments (ledger manifest)', () => {
+    const sha = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
+    const WIKI = 'https://wiki.test';
+    const ledgerItem = (name: string, content: string, pageId = '100', spaceKey = 'SMB') => ({ name, sha256: sha(content), size: content.length, pageId, spaceKey, attachment: name, attachmentVersion: 3, fetchedAt: 1 });
+    const ledgerJson = (items: unknown[]) => JSON.stringify({ version: 1, base: WIKI, items }, null, 2);
+    const mappedFeature = () => {
+      state.projects = [{
+        id: 'local-feature', name: 'Checkout',
+        metadata: { studioConfig: { appId: 'local-app', projectSyncMapping: { schemaVersion: 1, localId: 'local-feature', originId: 'feature--f', originAppId: 'app--x', mappedAt: 'now' } } },
+      }];
+      state.origins = [
+        { projectId: 'app--x', name: 'X', isApp: true, inMedia: true, visibility: 'visible' },
+        { projectId: 'feature--f', name: 'Checkout', isApp: false, appId: 'app--x', inMedia: true, visibility: 'visible' },
+      ];
+    };
+    const mediaRow = (path: string, content: string) => ({ path, content, checksum: sha(content) });
+    /** Pinned URL carries `version=`; the fallback URL does not. */
+    const wikiServer = (byName: Record<string, { pinned?: string | number; latest?: string | number }>) => (url: string) => {
+      const name = decodeURIComponent(new URL(url).pathname.split('/').pop()!);
+      const pinned = url.includes('version=');
+      const reply = byName[name]?.[pinned ? 'pinned' : 'latest'];
+      if (reply === undefined) return new Response('', { status: 404 });
+      return typeof reply === 'number' ? new Response('', { status: reply }) : new Response(reply, { status: 200 });
+    };
+
+    it('pushes the ledger but not the ledger-listed attachment bytes, then re-plans as unchanged', async () => {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), 'od-confluence-push-'));
+      try {
+        mappedFeature();
+        const control = JSON.stringify({ name: 'Checkout', appId: 'app--x' });
+        state.mediaFiles = { 'app--x': [], 'feature--f': [mediaRow('project.json', control)] };
+        const dir = path.join(root, 'local-feature', 'docs-review', 'docs-feature', 'attachments');
+        await fs.mkdir(dir, { recursive: true });
+        await fs.writeFile(path.join(root, 'local-feature', 'project.json'), control);
+        await fs.writeFile(path.join(dir, 'a.png'), 'AAA');
+        await fs.writeFile(path.join(dir, 'b.png'), 'BBB');
+        await fs.writeFile(path.join(dir, 'stale.png'), 'NEW');
+        await fs.writeFile(path.join(dir, '_sources.json'), ledgerJson([ledgerItem('a.png', 'AAA'), ledgerItem('stale.png', 'OLD')]));
+        const table = handlers(root);
+        const planned = await call(table.get('POST /api/project-sync/plan')!, { direction: 'push', scope: { kind: 'feature', projectId: 'local-feature', appId: 'local-app' } });
+        expect(planned.status).toBe(200);
+        const entry = (rel: string) => planned.body.data.entries.find((row: any) => row.path === `feature/docs-review/docs-feature/attachments/${rel}`);
+        expect(entry('a.png')).toMatchObject({ change: 'new', confluence: { base: WIKI, pageId: '100', spaceKey: 'SMB', attachment: 'a.png', attachmentVersion: 3 } });
+        expect(entry('b.png').confluence).toBeUndefined();
+        expect(entry('stale.png').confluence).toBeUndefined(); // sha no longer matches the ledger → plain bytes
+        expect(entry('_sources.json').confluence).toBeUndefined();
+        expect(planned.body.data.summary.confluence).toEqual({ files: 1, bytes: 3 });
+        const applied = await call(table.get('POST /api/project-sync/apply')!, { planId: planned.body.data.planId });
+        expect(applied.status).toBe(200);
+        expect(applied.body.data).toMatchObject({ stale: [], manifested: 1, applied: 4 }); // project.json (normalized) + ledger + b + stale
+        expect(applied.body.data.confluence).toBeUndefined();
+        const uploaded = state.uploads.filter((item) => item.projectId === 'feature--f').map((item) => item.path).sort();
+        expect(uploaded).toEqual(['docs-review/docs-feature/attachments/_sources.json', 'docs-review/docs-feature/attachments/b.png', 'docs-review/docs-feature/attachments/stale.png', 'project.json']);
+
+        // Origin now lists the ledger (never a.png): the diff must see a.png as unchanged.
+        state.mediaFiles['feature--f'] = [mediaRow('project.json', control), ...state.uploads.filter((item) => item.projectId === 'feature--f').map((item) => mediaRow(item.path, item.content.toString('utf8')))];
+        state.uploads = [];
+        const replanned = await call(table.get('POST /api/project-sync/plan')!, { direction: 'push', scope: { kind: 'feature', projectId: 'local-feature', appId: 'local-app' } });
+        expect(replanned.body.data.entries.find((row: any) => row.path === 'feature/docs-review/docs-feature/attachments/a.png')).toMatchObject({ change: 'unchanged', confluence: { attachment: 'a.png' } });
+        expect(replanned.body.data.summary).toEqual({ created: 0, unchanged: 5, changed: 0, deleted: 0, confluence: { files: 1, bytes: 3 } });
+        // (The fake store only learns about uploads via state.mediaFiles above, so the
+        // post-apply baseline digest predates them; assert the file-level diff instead.)
+        const status = await call(table.get('POST /api/project-sync/status')!, { scopes: [{ kind: 'feature', projectId: 'local-feature', appId: 'local-app' }] });
+        expect(status.body.data.results[0].state).toBe('unchanged');
+        expect(status.body.data.results[0].entries.filter((row: any) => row.change !== 'unchanged')).toEqual([]);
+      } finally {
+        await fs.rm(root, { recursive: true, force: true });
+      }
+    });
+
+    it('pulls ledger-listed attachments from the wiki (pinned → latest → drifted/missing) without blocking the mapping', async () => {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), 'od-confluence-pull-'));
+      try {
+        mappedFeature();
+        const control = JSON.stringify({ name: 'Checkout', appId: 'app--x' });
+        const ledger = ledgerJson([ledgerItem('a.png', 'AAA'), ledgerItem('c.png', 'CCC'), ledgerItem('d.png', 'DDD'), ledgerItem('e.png', 'EEE', '200', 'OPS')]);
+        state.mediaFiles = { 'app--x': [], 'feature--f': [mediaRow('project.json', control), mediaRow('docs/attachments/_sources.json', ledger)] };
+        await fs.mkdir(path.join(root, 'local-feature'), { recursive: true });
+        await fs.writeFile(path.join(root, 'local-feature', 'project.json'), control);
+        const table = handlers(root);
+        const planned = await call(table.get('POST /api/project-sync/plan')!, { direction: 'pull', scope: { kind: 'feature', projectId: 'local-feature', appId: 'local-app' } });
+        expect(planned.status).toBe(200);
+        const attachmentEntries = planned.body.data.entries.filter((row: any) => row.confluence);
+        expect(attachmentEntries.map((row: any) => [row.path, row.change, row.origin.size])).toEqual([
+          ['feature/docs/attachments/a.png', 'new', 3], ['feature/docs/attachments/c.png', 'new', 3], ['feature/docs/attachments/d.png', 'new', 3], ['feature/docs/attachments/e.png', 'new', 3],
+        ]);
+        expect(planned.body.data.summary.confluence).toEqual({ files: 4, bytes: 12 });
+        expect(state.downloads.filter((value) => value.startsWith('feature--f:docs/attachments/') && !value.endsWith('_sources.json'))).toEqual([]);
+
+        state.confluenceCreds = { base: WIKI, token: 'pat' };
+        state.confluenceFetch = wikiServer({
+          'a.png': { pinned: 'AAA' },
+          'c.png': { pinned: 'XXX', latest: 'CCC' },
+          'd.png': { pinned: 'XXX', latest: 'YYY' },
+          'e.png': { pinned: 404, latest: 404 },
+        });
+        const applied = await call(table.get('POST /api/project-sync/apply')!, { planId: planned.body.data.planId });
+        expect(applied.status).toBe(200);
+        expect(applied.body.data.stale).toEqual([]);
+        expect(applied.body.data.confluence).toEqual({
+          fetched: 3,
+          drifted: [{ path: 'feature/docs/attachments/d.png', reason: expect.stringContaining('v3') }],
+          missing: [{ path: 'feature/docs/attachments/e.png', reason: 'HTTP 404' }],
+        });
+        expect(applied.body.data.applied).toBe(5); // 3 attachments + the ledger file + project.json
+        expect(state.confluenceRequests.every((url) => url.startsWith(`${WIKI}/download/attachments/`))).toBe(true);
+        const attachments = path.join(root, 'local-feature', 'docs', 'attachments');
+        expect(await fs.readFile(path.join(attachments, 'a.png'), 'utf8')).toBe('AAA');
+        expect(await fs.readFile(path.join(attachments, 'c.png'), 'utf8')).toBe('CCC');
+        expect(await fs.readFile(path.join(attachments, 'd.png'), 'utf8')).toBe('YYY');
+        expect(await fs.stat(path.join(attachments, 'e.png')).catch(() => null)).toBeNull();
+        expect(await fs.readFile(path.join(attachments, '_sources.json'), 'utf8')).toBe(ledger);
+        // The (partial) wiki outcome never counts as stale → the mapping still persists.
+        expect(state.projects[0].metadata.studioConfig.projectSyncMapping).toMatchObject({ originId: 'feature--f' });
+        expect(state.uploads).toEqual([]);
+      } finally {
+        await fs.rm(root, { recursive: true, force: true });
+      }
+    });
+
+    it('marks every wiki file missing (never stale) when this machine has no PAT', async () => {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), 'od-confluence-pull-nopat-'));
+      try {
+        mappedFeature();
+        const control = JSON.stringify({ name: 'Checkout', appId: 'app--x' });
+        state.mediaFiles = { 'app--x': [], 'feature--f': [mediaRow('project.json', control), mediaRow('docs/attachments/_sources.json', ledgerJson([ledgerItem('a.png', 'AAA')]))] };
+        await fs.mkdir(path.join(root, 'local-feature'), { recursive: true });
+        await fs.writeFile(path.join(root, 'local-feature', 'project.json'), control);
+        const table = handlers(root);
+        const planned = await call(table.get('POST /api/project-sync/plan')!, { direction: 'pull', scope: { kind: 'feature', projectId: 'local-feature', appId: 'local-app' } });
+        const applied = await call(table.get('POST /api/project-sync/apply')!, { planId: planned.body.data.planId });
+        expect(applied.body.data).toMatchObject({ stale: [], confluence: { fetched: 0, drifted: [], missing: [{ path: 'feature/docs/attachments/a.png', reason: 'Chưa cấu hình PAT Confluence' }] } });
+        expect(state.confluenceRequests).toEqual([]);
+      } finally {
+        await fs.rm(root, { recursive: true, force: true });
+      }
+    });
+
+    it('preflights PAT, base, and per-space access for a Pull plan', async () => {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), 'od-confluence-preflight-'));
+      try {
+        mappedFeature();
+        const control = JSON.stringify({ name: 'Checkout', appId: 'app--x' });
+        state.mediaFiles = { 'app--x': [], 'feature--f': [mediaRow('project.json', control), mediaRow('docs/attachments/_sources.json', ledgerJson([ledgerItem('a.png', 'AAA'), ledgerItem('b.png', 'BBB'), ledgerItem('e.png', 'EEE', '200', 'OPS')]))] };
+        await fs.mkdir(path.join(root, 'local-feature'), { recursive: true });
+        await fs.writeFile(path.join(root, 'local-feature', 'project.json'), control);
+        const table = handlers(root);
+        const preflight = table.get('POST /api/project-sync/confluence-preflight')!;
+        expect((await call(preflight, {})).status).toBe(400);
+        expect((await call(preflight, { planId: 'a', batchPlanId: 'b' })).status).toBe(400);
+        const expired = await call(preflight, { planId: 'gone' });
+        expect(expired.status).toBe(404); expect(expired.body.error.code).toBe('PLAN_EXPIRED');
+
+        const planned = await call(table.get('POST /api/project-sync/plan')!, { direction: 'pull', scope: { kind: 'feature', projectId: 'local-feature', appId: 'local-app' } });
+        const planId = planned.body.data.planId;
+        const missing = await call(preflight, { planId });
+        expect(missing.status).toBe(200);
+        expect(missing.body.data).toMatchObject({ required: true, files: 3, bytes: 9, base: WIKI, credsBase: null, baseMatches: false, token: 'missing', ok: false });
+        expect(missing.body.data.spaces).toEqual([
+          { key: 'SMB', samplePageId: '100', ok: false, status: null, files: 2 },
+          { key: 'OPS', samplePageId: '200', ok: false, status: null, files: 1 },
+        ]);
+
+        state.confluenceCreds = { base: WIKI, token: 'pat' };
+        state.confluenceFetch = () => new Response('', { status: 401 });
+        expect((await call(preflight, { planId })).body.data).toMatchObject({ token: 'invalid', baseMatches: true, ok: false });
+
+        state.confluenceFetch = (url) => url.endsWith('/rest/api/user/current')
+          ? new Response(JSON.stringify({ displayName: 'Anh' }), { status: 200 })
+          : new Response('', { status: url.endsWith('/rest/api/content/200') ? 404 : 200 });
+        const partial = await call(preflight, { planId });
+        expect(partial.body.data).toMatchObject({ token: 'ok', displayName: 'Anh', ok: false });
+        expect(partial.body.data.spaces).toEqual([
+          { key: 'SMB', samplePageId: '100', ok: true, status: 200, files: 2 },
+          { key: 'OPS', samplePageId: '200', ok: false, status: 404, files: 1 },
+        ]);
+
+        state.confluenceFetch = () => new Response('{}', { status: 200 });
+        expect((await call(preflight, { planId })).body.data).toMatchObject({ token: 'ok', ok: true });
+
+        state.confluenceCreds = { base: 'https://other.test', token: 'pat' };
+        expect((await call(preflight, { planId })).body.data).toMatchObject({ baseMatches: false, credsBase: 'https://other.test', ok: false });
+
+        // A plan without Confluence entries is trivially ok — and resolutions=skip drop entries.
+        state.mediaFiles['feature--f'] = [mediaRow('project.json', control)];
+        const plain = await call(table.get('POST /api/project-sync/plan')!, { direction: 'pull', scope: { kind: 'feature', projectId: 'local-feature', appId: 'local-app' } });
+        expect((await call(preflight, { planId: plain.body.data.planId })).body.data).toMatchObject({ required: false, files: 0, ok: true });
+      } finally {
+        await fs.rm(root, { recursive: true, force: true });
+      }
+    });
+
+    it('pulls a Feature batch whose Feature and bound Context attachments live on the wiki', async () => {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), 'od-confluence-batch-'));
+      try {
+        state.pipelineApps = [{ id: 'local-app', name: 'Local App' }];
+        state.origins = [
+          { projectId: 'shared-app', name: 'Shared App', isApp: true, inMedia: true, visibility: 'visible' },
+          { projectId: 'feature-a', name: 'Feature A', isApp: false, appId: 'shared-app', inMedia: true, visibility: 'visible' },
+        ];
+        const featureControl = JSON.stringify({ name: 'Feature A', appId: 'shared-app', appContextBinding: { appId: 'shared-app', contextVersion: 'v1' } });
+        state.mediaFiles = {
+          'shared-app': [
+            mediaRow('app.json', JSON.stringify({ name: 'Shared App' })),
+            mediaRow('context/versions/v1/manifest.json', JSON.stringify({ contextVersion: 'v1', files: [{ path: 'brief.md' }] })),
+            mediaRow('context/versions/v1/files/brief.md', 'shared context'),
+            mediaRow('context/versions/v1/files/docs/attachments/_sources.json', ledgerJson([ledgerItem('ctx.png', 'CTX')])),
+            mediaRow('context/versions/v2/files/docs/attachments/_sources.json', ledgerJson([ledgerItem('v2.png', 'V2')])),
+          ],
+          'feature-a': [
+            mediaRow('project.json', featureControl),
+            mediaRow('outputs/a.md', 'A'),
+            mediaRow('outputs/attachments/_sources.json', ledgerJson([ledgerItem('a.png', 'AAA'), ledgerItem('gone.png', 'GONE')])),
+          ],
+        };
+        await fs.mkdir(path.join(root, 'local-app', '_studio'), { recursive: true });
+        await fs.writeFile(path.join(root, 'local-app', '_studio', 'project-sync-mapping.json'), JSON.stringify({ schemaVersion: 1, localId: 'local-app', originId: 'shared-app' }));
+        const table = handlers(root);
+        const planned = await call(table.get('POST /api/project-sync/feature-pulls/plan')!, { localAppId: 'local-app', originAppId: 'shared-app', originFeatureIds: ['feature-a'] });
+        expect(planned.status).toBe(200);
+        const entries = planned.body.data.features[0].entries;
+        expect(entries.find((row: any) => row.path === 'feature/outputs/attachments/a.png')).toMatchObject({ change: 'new', confluence: { attachment: 'a.png' }, origin: { checksum: sha('AAA'), size: 3 } });
+        expect(entries.find((row: any) => row.path === 'bound-context/feature-a/context/versions/v1/files/docs/attachments/ctx.png')).toMatchObject({ change: 'new', confluence: { attachment: 'ctx.png' } });
+        expect(entries.some((row: any) => row.path.includes('/v2/'))).toBe(false);
+        expect(planned.body.data.features[0].summary.confluence).toEqual({ files: 3, bytes: 10 });
+        // PLAN never downloads ledger-listed attachments from media.
+        expect(state.downloads.filter((value) => /attachments\/(a|gone|ctx)\.png$/.test(value))).toEqual([]);
+
+        const batchPreflight = await call(table.get('POST /api/project-sync/confluence-preflight')!, { batchPlanId: planned.body.data.planId });
+        expect(batchPreflight.body.data).toMatchObject({ required: true, files: 3, token: 'missing', ok: false });
+
+        state.confluenceCreds = { base: WIKI, token: 'pat' };
+        state.confluenceFetch = wikiServer({ 'a.png': { pinned: 'AAA' }, 'ctx.png': { pinned: 'CTX' }, 'gone.png': { pinned: 404, latest: 404 } });
+        const started = await call(table.get('POST /api/project-sync/feature-pulls/operations')!, { planId: planned.body.data.planId });
+        expect(started.body.data.progress.totalItems).toBe(entries.filter((row: any) => row.change !== 'unchanged' && row.resolution === 'pull').length);
+        const completed = await pollFeaturePullOperation(table, started.body.data.operationId);
+        expect(completed.body.data).toMatchObject({ state: 'succeeded', progress: { percent: 100 }, result: { state: 'succeeded' } });
+        expect(completed.body.data.result.items[0].result).toMatchObject({
+          stale: [],
+          confluence: { fetched: 2, drifted: [], missing: [{ path: 'feature/outputs/attachments/gone.png', reason: 'HTTP 404' }] },
+        });
+        expect(await fs.readFile(path.join(root, 'feature-a', 'outputs', 'attachments', 'a.png'), 'utf8')).toBe('AAA');
+        expect(await fs.stat(path.join(root, 'feature-a', 'outputs', 'attachments', 'gone.png')).catch(() => null)).toBeNull();
+        expect(await fs.readFile(path.join(root, 'feature-a', 'outputs', 'a.md'), 'utf8')).toBe('A');
+        expect(await fs.readFile(path.join(root, 'local-app', 'context', 'versions', 'v1', 'files', 'docs', 'attachments', 'ctx.png'), 'utf8')).toBe('CTX');
+        expect(await fs.readFile(path.join(root, 'local-app', 'context', 'versions', 'v1', 'files', 'brief.md'), 'utf8')).toBe('shared context');
+        expect(state.projects[0].metadata.studioConfig.projectSyncMapping).toMatchObject({ originId: 'feature-a', originAppId: 'shared-app' });
+      } finally {
+        await fs.rm(root, { recursive: true, force: true });
+      }
+    });
   });
 });

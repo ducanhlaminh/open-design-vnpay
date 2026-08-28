@@ -4,6 +4,8 @@ import {
   ERR_PROJECT_SYNC_PLAN_EXPIRED,
   type ProjectSyncApplyRequest,
   type ProjectSyncApplyResult,
+  type ProjectSyncConfluencePreflight,
+  type ProjectSyncConfluencePreflightRequest,
   type ProjectSyncFeaturePullBatchOperation,
   type ProjectSyncFeaturePullBatchOperationCreateRequest,
   type ProjectSyncFeaturePullBatchPlan,
@@ -238,6 +240,28 @@ export async function getProjectSyncOperation(operationId: string): Promise<Proj
   const operation = (body as { data?: ProjectSyncOperation }).data;
   if (!operation) throw new Error('Máy chủ không trả về tiến trình đồng bộ.');
   return operation;
+}
+
+/** Asks the daemon whether THIS machine can re-download the Confluence-backed
+ *  files of a pull plan (PAT present/valid, same wiki base, space access).
+ *  Exactly one of `planId` / `batchPlanId` must be given. An expired plan
+ *  surfaces as `ProjectSyncPlanExpiredError` like the apply endpoints do. */
+export async function preflightProjectSyncConfluence(
+  request: ProjectSyncConfluencePreflightRequest,
+): Promise<ProjectSyncConfluencePreflight> {
+  const response = await syncFetch('/api/project-sync/confluence-preflight', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+  const body = await json(response);
+  if ((response.status === 404 || response.status === 409) && errorCodeOf(body) === ERR_PROJECT_SYNC_PLAN_EXPIRED) {
+    throw new ProjectSyncPlanExpiredError();
+  }
+  if (!response.ok) throw new Error(messageFrom(body, 'Không thể kiểm tra quyền truy cập Confluence.'));
+  const preflight = (body as { data?: ProjectSyncConfluencePreflight }).data;
+  if (!preflight) throw new Error('Máy chủ không trả về kết quả kiểm tra Confluence.');
+  return preflight;
 }
 
 const FEATURE_PULL_BASE = '/api/project-sync/feature-pulls';

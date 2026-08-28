@@ -23,6 +23,7 @@
 // (mcp-gateway-service 0.1.0). All tool inputSchemas are `additionalProperties:
 // false`, so the arg builders send ONLY the declared keys.
 
+import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
@@ -36,6 +37,14 @@ import type {
 
 import { readMcpConfig } from '../mcp-config.js';
 import { configuredConfluenceBase, readConfluenceConfig } from '../confluence-config.js';
+import {
+  type ConfluenceSourceItem,
+  mergeConfluenceSourcesLedger,
+  parseConfluenceDownloadUrl,
+  pruneConfluenceSourcesLedger,
+  readConfluenceSourcesLedger,
+  writeConfluenceSourcesLedger,
+} from '../confluence-sources.js';
 import { renderDrawioPages, splitMxfilePages } from './drawio-render.js';
 import { htmlToMarkdown } from './html-to-markdown.js';
 import { svgForImgEmbedding } from './svg-xml.js';
@@ -908,6 +917,155 @@ async function downloadConfluenceBinary(creds: ConfluenceCreds, url: string, sig
   return Buffer.from(await res.arrayBuffer());
 }
 
+/** Thu gom record sổ nguồn (`attachments/_sources.json`) trong MỘT lần
+ *  `fetchConfluencePages`: mỗi file THÔ tải từ wiki (ảnh theo tên gốc, nguồn
+ *  `.drawio`) ghi một item; `spaceKey` là space của trang ĐANG NHÚNG (đổi theo
+ *  từng trang), `versionCache` tra `child/attachment?filename=` một lần cho
+ *  mỗi `pageId\0attachment`. File daemon SINH ra (-pN.png render, .mmd, .svg)
+ *  KHÔNG có record — chúng không tái tạo byte-identical từ wiki. */
+export interface ConfluenceSourceCollector {
+  items: ConfluenceSourceItem[];
+  spaceKey: string;
+  versionCache: Map<string, number>;
+  /** attachment name → {pageId, version} đọc từ `body.view` của trang ĐANG
+   *  xử lý (reset mỗi trang). `export_view` nhúng ảnh dán dạng
+   *  `embedded-page/<space>/<title>/<name>` (không pageId, không version) —
+   *  `view` của cùng trang có `<img src="/download/attachments/<id>/<name>?version=N"
+   *  data-linked-resource-version data-linked-resource-default-alias>` đủ cả. */
+  viewIndex: Map<string, { pageId: string; version: number }>;
+  /** `space\0title` → pageId ('' = không resolve được) cho fallback CQL. */
+  pageIdCache: Map<string, string>;
+}
+
+export function newConfluenceSourceCollector(): ConfluenceSourceCollector {
+  return { items: [], spaceKey: '', versionCache: new Map(), viewIndex: new Map(), pageIdCache: new Map() };
+}
+
+function htmlAttr(tag: string, name: string): string | undefined {
+  const m = new RegExp(`(?<![-\\w])${name}=["']([^"']*)["']`, 'i').exec(tag);
+  if (!m) return undefined;
+  return m[1]!.replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#39;/g, "'");
+}
+
+/** Quét mọi `<img …>` của `body.view` có `src`/`data-image-src` dạng
+ *  `/download/(attachments|thumbnails)/<pageId>/<name>?version=N` → index
+ *  theo tên attachment (cả `data-linked-resource-default-alias` lẫn tên trong
+ *  URL). Ưu tiên `data-linked-resource-version` khi có. */
+export function buildConfluenceViewIndex(viewHtml: string): Map<string, { pageId: string; version: number }> {
+  const index = new Map<string, { pageId: string; version: number }>();
+  if (!viewHtml) return index;
+  for (const m of viewHtml.matchAll(/<img\b[^>]*>/gi)) {
+    const tag = m[0];
+    const lrVersionRaw = htmlAttr(tag, 'data-linked-resource-version');
+    const lrVersion = lrVersionRaw && /^\d+$/.test(lrVersionRaw) ? Number(lrVersionRaw) : 0;
+    const alias = htmlAttr(tag, 'data-linked-resource-default-alias');
+    for (const attr of ['src', 'data-image-src']) {
+      const raw = htmlAttr(tag, attr);
+      if (!raw) continue;
+      const parsed = parseConfluenceDownloadUrl(raw);
+      if (!parsed || !/^\d+$/.test(parsed.pageId)) continue;
+      const entry = { pageId: parsed.pageId, version: lrVersion > 0 ? lrVersion : parsed.version };
+      const put = (name: string | undefined) => {
+        if (!name) return;
+        const prev = index.get(name);
+        if (!prev || (prev.version === 0 && entry.version > 0)) index.set(name, entry);
+      };
+      put(parsed.attachment);
+      put(alias);
+    }
+  }
+  return index;
+}
+
+function sha256Hex(data: Buffer): string {
+  return createHash('sha256').update(data).digest('hex');
+}
+
+/** Version hiện tại của attachment `filename` trên trang `pageId` (REST
+ *  `child/attachment?filename=&expand=version`). 0 khi không tra được — the
+ *  ledger then pins nothing and pull falls back to the latest version. */
+export async function lookupConfluenceAttachmentVersion(
+  creds: ConfluenceCreds,
+  pageId: string,
+  filename: string,
+  cache?: Map<string, number>,
+  signal?: AbortSignal,
+): Promise<number> {
+  const key = `${pageId}\0${filename}`;
+  const hit = cache?.get(key);
+  if (hit !== undefined) return hit;
+  let version = 0;
+  try {
+    const res = await fetch(
+      `${creds.base}/rest/api/content/${pageId}/child/attachment?filename=${encodeURIComponent(filename)}&expand=version&limit=5`,
+      { headers: { authorization: `Bearer ${creds.token}` }, ...(signal ? { signal } : {}) },
+    );
+    if (res.ok) {
+      const data = (await res.json()) as { results?: Array<{ title?: string; version?: { number?: number } }> };
+      const hit = (data.results ?? []).find((r) => r.title === filename) ?? data.results?.[0];
+      const n = hit?.version?.number;
+      if (typeof n === 'number' && Number.isFinite(n) && n > 0) version = n;
+    }
+  } catch (err) {
+    signal?.throwIfAborted();
+    /* version unknown → 0 */
+  }
+  cache?.set(key, version);
+  return version;
+}
+
+/** Push one ledger record for a raw wiki file written (or already present,
+ *  bytes-identical) at `<attachmentsDir>/<name>`. `version` 0 in the source
+ *  URL → looked up by name (cached). */
+async function recordConfluenceSource(
+  creds: ConfluenceCreds,
+  collector: ConfluenceSourceCollector,
+  name: string,
+  data: Buffer,
+  src: { pageId: string; attachment: string; version: number; spaceKey?: string; pageTitle?: string },
+  signal?: AbortSignal,
+): Promise<void> {
+  let pageId = /^\d+$/.test(src.pageId) ? src.pageId : '';
+  let version = src.version > 0 ? src.version : 0;
+  // ① body.view của trang đang xử lý — đủ pageId + version cho ảnh dán
+  //    (export_view chỉ cho `embedded-page/<space>/<title>/<name>`).
+  const fromView = collector.viewIndex.get(src.attachment);
+  if (fromView) {
+    if (!pageId) pageId = fromView.pageId;
+    if (!version && fromView.pageId === pageId) version = fromView.version;
+  }
+  // ② Fallback: resolve trang sở hữu bằng CQL space+title (cache), rồi tra version REST.
+  if (!pageId && src.spaceKey && src.pageTitle) {
+    const key = `${src.spaceKey}\0${src.pageTitle}`;
+    let cached = collector.pageIdCache.get(key);
+    if (cached === undefined) {
+      cached = await resolveByTitlePat(creds, src.spaceKey, src.pageTitle)
+        .then((hit) => hit.id)
+        .catch((err) => {
+          signal?.throwIfAborted();
+          return '';
+        });
+      collector.pageIdCache.set(key, cached);
+    }
+    pageId = cached;
+  }
+  if (!pageId) {
+    console.warn(`[bas] ledger: bỏ ${name} — không xác định được trang sở hữu attachment "${src.attachment}"`);
+    return;
+  }
+  if (!version) version = await lookupConfluenceAttachmentVersion(creds, pageId, src.attachment, collector.versionCache, signal);
+  collector.items.push({
+    name,
+    sha256: sha256Hex(data),
+    size: data.length,
+    pageId,
+    spaceKey: collector.spaceKey || src.spaceKey || '',
+    attachment: src.attachment,
+    attachmentVersion: version,
+    fetchedAt: Date.now(),
+  });
+}
+
 /** Download every same-host <img src> in html into attachmentsDir, rewriting
  *  src to a path relative to the page's .md so the exported Markdown carries
  *  real images instead of Confluence-authenticated URLs that break outside a
@@ -920,6 +1078,7 @@ async function localizeConfluenceImages(
   attachmentsDir: string,
   relPrefix: string,
   signal?: AbortSignal,
+  ledger?: ConfluenceSourceCollector,
 ): Promise<{ html: string; count: number }> {
   const rawSrcs = new Set<string>();
   for (const m of html.matchAll(IMG_SRC_RE)) rawSrcs.add(m[2]!);
@@ -961,6 +1120,19 @@ async function localizeConfluenceImages(
         }
         localName = candidate;
         downloadedByUrl.set(url, localName);
+        // Ledger record for BOTH a fresh download and a bytes-identical reuse
+        // (the reused file is still a raw wiki attachment the pull side can
+        // re-fetch). Only `/download/(attachments|thumbnails)/<pageId>/<name>`
+        // URLs are attachments; `/images/…`, `/plugins/servlet/…` are not.
+        if (ledger) {
+          const parsed = parseConfluenceDownloadUrl(url);
+          if (parsed) {
+            await recordConfluenceSource(creds, ledger, candidate, data, parsed, signal).catch((err) => {
+              signal?.throwIfAborted();
+              console.warn(`[bas] ledger record failed for ${candidate}:`, err);
+            });
+          }
+        }
       } catch (err) {
         signal?.throwIfAborted();
         console.warn(`[bas] image download failed (${url}):`, err);
@@ -1150,6 +1322,7 @@ async function expandDrawioPagesInExportView(
   attachmentsDir: string,
   relPrefix: string,
   runtimeDataDir: string,
+  ledger?: ConfluenceSourceCollector,
 ): Promise<string> {
   const metas: DrawioMacroMeta[] = [];
   for (let i = macroHtml.indexOf('data-macro-name="drawio"'); i !== -1; i = macroHtml.indexOf('data-macro-name="drawio"', i + 1)) {
@@ -1183,8 +1356,20 @@ async function expandDrawioPagesInExportView(
     let sourceSaved = false;
     try {
       await fs.mkdir(attachmentsDir, { recursive: true });
-      await fs.writeFile(path.join(attachmentsDir, sourceRel), xml, 'utf8');
+      // Written as utf8 text — the ledger sha256 MUST match the bytes on
+      // disk, so hash the re-encoded buffer, not the download buffer.
+      const xmlBytes = Buffer.from(xml, 'utf8');
+      await fs.writeFile(path.join(attachmentsDir, sourceRel), xmlBytes);
       sourceSaved = true;
+      if (ledger) {
+        await recordConfluenceSource(
+          creds,
+          ledger,
+          sourceRel,
+          xmlBytes,
+          { pageId: meta.pageId, attachment: meta.diagramName, version: 0 },
+        ).catch((err) => console.warn(`[bas] ledger record failed for ${sourceRel}:`, err));
+      }
     } catch (err) {
       console.warn(`[bas] could not save drawio source for "${meta.diagramName}":`, err);
     }
@@ -1648,7 +1833,15 @@ async function fetchConfluencePageDirect(
   creds: ConfluenceCreds,
   pageId: string,
   signal?: AbortSignal,
-): Promise<{ title: string; url: string; html: string; macroHtml: string; ancestors: Array<{ id: string; title: string }> }> {
+): Promise<{
+  title: string;
+  url: string;
+  html: string;
+  macroHtml: string;
+  ancestors: Array<{ id: string; title: string }>;
+  /** Space của trang ('' nếu REST không trả). Ghi vào sổ nguồn attachment. */
+  spaceKey: string;
+}> {
   const res = await fetch(`${creds.base}/rest/api/content/${pageId}?expand=body.export_view,body.view,space,ancestors`, {
     headers: { authorization: `Bearer ${creds.token}` },
     ...(signal ? { signal } : {}),
@@ -1659,6 +1852,7 @@ async function fetchConfluencePageDirect(
     title?: string;
     body?: { view?: { value?: string }; export_view?: { value?: string } };
     ancestors?: Array<{ id?: string; title?: string }>;
+    space?: { key?: string };
     _links?: { base?: string; webui?: string };
   };
   const url = p._links?.webui
@@ -1667,6 +1861,7 @@ async function fetchConfluencePageDirect(
   return {
     title: p.title ?? `Confluence page ${pageId}`,
     url,
+    spaceKey: typeof p.space?.key === 'string' ? p.space.key : '',
     // Root→page ancestor chain (used to fold a multi-page selection into folders).
     ancestors: (p.ancestors ?? [])
       .map((a) => ({ id: String(a.id ?? ''), title: a.title ?? '' }))
@@ -1837,6 +2032,8 @@ export async function fetchConfluencePages(
     treePath?: string[];
     /** Root→page ancestor chain (direct-PAT seeds) — folds a multi-page pick. */
     ancestors?: Array<{ id: string; title: string }>;
+    /** Space của trang (direct-PAT) — `spaceKey` cho record sổ nguồn attachment. */
+    spaceKey?: string;
   }
   const fetched = new Map<string, RawPage>();
   const seedIds: string[] = [];
@@ -2002,9 +2199,18 @@ export async function fetchConfluencePages(
     return rel.startsWith('.') ? rel : `./${rel}`;
   };
   let totalImages = 0;
+  // Sổ nguồn attachment (`attachments/_sources.json`): gom record của mọi file
+  // THÔ tải từ wiki trong lần fetch này; ghi một lần sau vòng per-page. Chỉ
+  // đường PAT trực tiếp có creds để tra version + base cho ledger.
+  const ledger: ConfluenceSourceCollector | undefined =
+    src.creds && opts.attachmentsDir ? newConfluenceSourceCollector() : undefined;
   for (const p of ordered) {
     opts.signal?.throwIfAborted();
     const relPath = relByPageId.get(p.pageId)!;
+    if (ledger) {
+      ledger.spaceKey = p.spaceKey ?? '';
+      ledger.viewIndex = buildConfluenceViewIndex(p.macroHtml ?? '');
+    }
     // Relative path from THIS page's folder to the shared attachments dir (all
     // images localize into docs/confluence/attachments, regardless of whether
     // the page itself lives under confluence/ or context/). Using a real
@@ -2035,6 +2241,7 @@ export async function fetchConfluencePages(
           opts.attachmentsDir,
           attachmentsPrefix,
           opts.runtimeDataDir,
+          ledger,
         ).catch((err) => {
           opts.signal?.throwIfAborted();
           console.warn(`[bas] drawio multi-page pass failed for page ${p.pageId} (keeping page-1 previews):`, err);
@@ -2075,6 +2282,7 @@ export async function fetchConfluencePages(
           opts.attachmentsDir,
           attachmentsPrefix,
           opts.signal,
+          ledger,
         ).catch((err) => {
           opts.signal?.throwIfAborted();
           console.warn(`[bas] image localization failed for page ${p.pageId}:`, err);
@@ -2118,6 +2326,19 @@ export async function fetchConfluencePages(
               : {}),
         }) + (body || '> (empty page body)\n'),
     });
+  }
+  // Ghi sổ nguồn: gộp với ledger đã có trong attachmentsDir (thay theo tên),
+  // bỏ item mất file, ghi tmp+rename. Lỗi ghi không được làm hỏng lần fetch —
+  // thiếu ledger chỉ có nghĩa push phải upload bytes như trước.
+  if (ledger && src.creds && opts.attachmentsDir && ledger.items.length) {
+    const dir = opts.attachmentsDir;
+    try {
+      const merged = mergeConfluenceSourcesLedger(await readConfluenceSourcesLedger(dir), src.creds.base, ledger.items);
+      await writeConfluenceSourcesLedger(dir, await pruneConfluenceSourcesLedger(merged, dir));
+    } catch (err) {
+      opts.signal?.throwIfAborted();
+      console.warn(`[bas] could not write attachments ledger in ${dir}:`, err);
+    }
   }
   if (pages.length === 0) throw new Error('Confluence source produced no files');
   console.log(`[bas] deterministic docs fetch: ${pages.length} page(s), ${totalImages} image(s) downloaded`);

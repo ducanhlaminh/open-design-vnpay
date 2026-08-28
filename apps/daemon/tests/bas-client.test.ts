@@ -1228,7 +1228,8 @@ test('fetchConfluencePages downloads a same-host <img> into attachmentsDir and r
     assert.equal(pages.length, 1);
     assert.match(pages[0]!.content, /!\[minh họa\]\(attachments\/pic\.png\)/);
     const files = await readdir(attachmentsDir);
-    assert.deepEqual(files, ['pic.png']);
+    // `_sources.json` là sổ nguồn attachment (WP project-sync-confluence-manifest).
+    assert.deepEqual(files.sort(), ['_sources.json', 'pic.png']);
     assert.equal(await readFile(join(attachmentsDir, 'pic.png'), 'utf8'), 'FAKE-PNG-BYTES');
   } finally {
     await rm(attachmentsDir, { recursive: true, force: true });
@@ -1456,4 +1457,288 @@ test('splitMxfilePages: one single-page mxfile per <diagram>, header preserved',
 test('splitMxfilePages: single-page diagram → one page', () => {
   const xml = '<mxfile><diagram id="only">X</diagram></mxfile>';
   assert.equal(splitMxfilePages(xml).length, 1);
+});
+
+// ── Sổ nguồn attachment `attachments/_sources.json` (WP project-sync-confluence-manifest) ──
+
+import { createHash } from 'node:crypto';
+import { readConfluenceSourcesLedger } from '../src/confluence-sources.js';
+
+const sha = (s: string | Buffer) => createHash('sha256').update(s).digest('hex');
+
+function binRes(body: string) {
+  return { ok: true, status: 200, arrayBuffer: async () => new TextEncoder().encode(body).buffer } as any;
+}
+
+function pageRes(id: string, title: string, space: string, view: string, exportView?: string) {
+  return makeRes(
+    JSON.stringify({
+      title,
+      space: { key: space },
+      body: { view: { value: view }, ...(exportView !== undefined ? { export_view: { value: exportView } } : {}) },
+      _links: { base: 'https://wiki.test', webui: `/spaces/${space}/pages/${id}/T` },
+    }),
+  ) as any;
+}
+
+test('fetchConfluencePages ghi _sources.json: ảnh có ?version, ảnh tra version qua child/attachment, /images/ không record, reuse bytes-identical vẫn record, đụng tên → -1, lookup lỗi → 0; chạy lại merge+prune', async () => {
+  const attachmentsDir = await mkdtemp(join(tmpdir(), 'bas-ledger-'));
+  try {
+    const lookups: string[] = [];
+    globalThis.fetch = vi.fn(async (url: any) => {
+      const u = String(url);
+      if (u.startsWith('https://wiki.test/rest/api/content/12?')) {
+        return pageRes(
+          '12',
+          'A trang',
+          'SP',
+          '<p><img src="/download/attachments/12/pic.png?version=3">' +
+            '<img src="/download/attachments/12/logo.png">' +
+            '<img src="/images/icons/emoticons/smile.png"></p>',
+        );
+      }
+      if (u.startsWith('https://wiki.test/rest/api/content/13?')) {
+        return pageRes(
+          '13',
+          'B trang',
+          'SQ',
+          '<p><img src="/download/attachments/12/pic.png?version=3">' +
+            '<img src="/download/attachments/13/pic.png?version=2">' +
+            '<img src="/download/attachments/13/nover.png"></p>',
+        );
+      }
+      if (u.includes('/child/attachment?filename=')) {
+        lookups.push(u);
+        if (u.startsWith('https://wiki.test/rest/api/content/12/child/attachment?filename=logo.png')) {
+          return { ok: true, status: 200, json: async () => ({ results: [{ title: 'logo.png', version: { number: 5 } }] }) } as any;
+        }
+        return { ok: false, status: 500, json: async () => ({}) } as any; // nover.png → lookup fails
+      }
+      if (u.startsWith('https://wiki.test/download/attachments/12/pic.png')) return binRes('PIC-12');
+      if (u.startsWith('https://wiki.test/download/attachments/12/logo.png')) return binRes('LOGO');
+      if (u.startsWith('https://wiki.test/images/icons/emoticons/smile.png')) return binRes('SMILE');
+      if (u.startsWith('https://wiki.test/download/attachments/13/pic.png')) return binRes('PIC-13');
+      if (u.startsWith('https://wiki.test/download/attachments/13/nover.png')) return binRes('NOVER');
+      throw new Error(`unexpected fetch: ${u}`);
+    }) as any;
+    const creds = { base: 'https://wiki.test', token: 'pat' };
+    const pages = await fetchConfluencePages({ creds }, ['12', '13'], { attachmentsDir, followLinks: false });
+    assert.equal(pages.length, 2);
+    // Trang 13 dùng lại pic.png (bytes-identical) → không ghi file mới; ảnh khác bytes cùng tên → pic-1.png.
+    assert.deepEqual((await readdir(attachmentsDir)).sort(), ['_sources.json', 'logo.png', 'nover.png', 'pic-1.png', 'pic.png', 'smile.png']);
+    assert.equal(await readFile(join(attachmentsDir, 'pic-1.png'), 'utf8'), 'PIC-13');
+
+    const ledger = await readConfluenceSourcesLedger(attachmentsDir);
+    assert.ok(ledger, 'ledger written');
+    assert.equal(ledger.version, 1);
+    assert.equal(ledger.base, 'https://wiki.test');
+    const strip = ledger.items.map(({ fetchedAt, ...rest }) => {
+      assert.ok(fetchedAt > 0);
+      return rest;
+    });
+    assert.deepEqual(strip, [
+      { name: 'logo.png', sha256: sha('LOGO'), size: 4, pageId: '12', spaceKey: 'SP', attachment: 'logo.png', attachmentVersion: 5 },
+      { name: 'nover.png', sha256: sha('NOVER'), size: 5, pageId: '13', spaceKey: 'SQ', attachment: 'nover.png', attachmentVersion: 0 },
+      { name: 'pic-1.png', sha256: sha('PIC-13'), size: 6, pageId: '13', spaceKey: 'SQ', attachment: 'pic.png', attachmentVersion: 2 },
+      // reuse ở trang 13 vẫn có record; replace-by-name → spaceKey của trang nhúng SAU CÙNG.
+      { name: 'pic.png', sha256: sha('PIC-12'), size: 6, pageId: '12', spaceKey: 'SQ', attachment: 'pic.png', attachmentVersion: 3 },
+    ]);
+    // /images/… không phải attachment → không record dù đã tải.
+    assert.ok(!ledger.items.some((i) => i.name === 'smile.png'));
+    // Chỉ 2 lookup (logo.png, nover.png) — ảnh có ?version không tra.
+    assert.equal(lookups.length, 2);
+
+    // Chạy lại chỉ trang 12 vào cùng dir: ledger merge theo tên, item của trang 13 giữ (file còn) — prune chỉ bỏ item mất file.
+    await rm(join(attachmentsDir, 'nover.png'));
+    await fetchConfluencePages({ creds }, ['12'], { attachmentsDir, followLinks: false });
+    const again = await readConfluenceSourcesLedger(attachmentsDir);
+    assert.ok(again);
+    assert.deepEqual(again.items.map((i) => [i.name, i.spaceKey]), [
+      ['logo.png', 'SP'],
+      ['pic-1.png', 'SQ'],
+      ['pic.png', 'SP'],
+    ]);
+  } finally {
+    await rm(attachmentsDir, { recursive: true, force: true });
+  }
+});
+
+test('fetchConfluencePages ghi record .drawio (sha trên bytes utf8 thực ghi, version tra theo tên) + record preview PNG như ảnh thường', async () => {
+  const attachmentsDir = await mkdtemp(join(tmpdir(), 'bas-ledger-drawio-'));
+  const runtimeDataDir = await mkdtemp(join(tmpdir(), 'bas-ledger-rt-'));
+  const XML = '<mxfile host="x"><diagram id="p1" name="Trang 1">Zm9v</diagram></mxfile>';
+  try {
+    globalThis.fetch = vi.fn(async (url: any) => {
+      const u = String(url);
+      if (u.startsWith('https://wiki.test/rest/api/content/20?')) {
+        return pageRes(
+          '20',
+          'Sơ đồ',
+          'SP',
+          DRAWIO_MACRO,
+          '<p><img src="/download/attachments/992678790/Untitled%20Diagram-1783562766184.png"></p>',
+        );
+      }
+      if (u === 'https://wiki.test/download/attachments/992678790/Untitled%20Diagram-1783562766184') return binRes(XML);
+      if (u.startsWith('https://wiki.test/download/attachments/992678790/Untitled%20Diagram-1783562766184.png')) return binRes('PNG');
+      if (u.startsWith('https://wiki.test/rest/api/content/992678790/child/attachment?filename=Untitled%20Diagram-1783562766184.png')) {
+        return { ok: true, status: 200, json: async () => ({ results: [{ title: 'Untitled Diagram-1783562766184.png', version: { number: 9 } }] }) } as any;
+      }
+      if (u.startsWith('https://wiki.test/rest/api/content/992678790/child/attachment?filename=Untitled%20Diagram-1783562766184&')) {
+        return { ok: true, status: 200, json: async () => ({ results: [{ title: 'Untitled Diagram-1783562766184', version: { number: 7 } }] }) } as any;
+      }
+      throw new Error(`unexpected fetch: ${u}`);
+    }) as any;
+    const pages = await fetchConfluencePages(
+      { creds: { base: 'https://wiki.test', token: 'pat' } },
+      ['20'],
+      { attachmentsDir, followLinks: false, runtimeDataDir },
+    );
+    assert.equal(pages.length, 1);
+    const drawioName = '992678790-Untitled_Diagram-1783562766184.drawio';
+    const onDisk = await readFile(join(attachmentsDir, drawioName));
+    const ledger = await readConfluenceSourcesLedger(attachmentsDir);
+    assert.ok(ledger);
+    const byName = new Map(ledger.items.map((i) => [i.name, i]));
+    const dr = byName.get(drawioName);
+    assert.ok(dr, `drawio record in ${[...byName.keys()].join(', ')}`);
+    assert.equal(dr.sha256, sha(onDisk));
+    assert.equal(dr.size, onDisk.length);
+    assert.equal(dr.pageId, '992678790');
+    assert.equal(dr.attachment, 'Untitled Diagram-1783562766184');
+    assert.equal(dr.attachmentVersion, 7);
+    assert.equal(dr.spaceKey, 'SP');
+    const png = byName.get('Untitled Diagram-1783562766184.png');
+    assert.ok(png);
+    assert.equal(png.sha256, sha('PNG'));
+    assert.equal(png.attachmentVersion, 9);
+    assert.equal(ledger.items.length, 2);
+  } finally {
+    await rm(attachmentsDir, { recursive: true, force: true });
+    await rm(runtimeDataDir, { recursive: true, force: true });
+  }
+});
+
+test('fetchConfluencePages không ghi _sources.json khi không có creds (đường gateway) hoặc không có attachment nào', async () => {
+  const attachmentsDir = await mkdtemp(join(tmpdir(), 'bas-ledger-none-'));
+  try {
+    globalThis.fetch = vi.fn(async (url: any) => {
+      const u = String(url);
+      if (u.startsWith('https://wiki.test/rest/api/content/30?')) return pageRes('30', 'Chỉ chữ', 'SP', '<p>không ảnh</p>');
+      throw new Error(`unexpected fetch: ${u}`);
+    }) as any;
+    await fetchConfluencePages({ creds: { base: 'https://wiki.test', token: 'pat' } }, ['30'], { attachmentsDir, followLinks: false });
+    assert.equal(await readConfluenceSourcesLedger(attachmentsDir), null);
+  } finally {
+    await rm(attachmentsDir, { recursive: true, force: true });
+  }
+});
+
+// ── embedded-page URL (export_view ảnh dán) → pageId/version từ body.view, CQL fallback ──
+
+const VIEW_IMG = (pageId: string, name: string, v: number) =>
+  `<img class="confluence-embedded-image" src="/download/attachments/${pageId}/${encodeURIComponent(name)}?version=${v}&amp;modificationDate=1755&amp;api=v2" ` +
+  `data-image-src="/download/attachments/${pageId}/${encodeURIComponent(name)}?version=${v}&amp;api=v2" data-linked-resource-id="1012894707" ` +
+  `data-linked-resource-version="${v}" data-linked-resource-type="attachment" data-linked-resource-default-alias="${name}" data-base-url="https://wiki.test">`;
+const EMB = (space: string, title: string, name: string) =>
+  `<img src="https://wiki.test/download/attachments/embedded-page/${space}/${encodeURIComponent(title)}/${encodeURIComponent(name)}?api=v2">`;
+
+test('fetchConfluencePages: export_view embedded-page URL → pageId/version lấy từ body.view cùng trang, KHÔNG gọi lookup REST/CQL; URL numeric thiếu version cũng tra view trước', async () => {
+  const attachmentsDir = await mkdtemp(join(tmpdir(), 'bas-ledger-emb-'));
+  try {
+    const restCalls: string[] = [];
+    globalThis.fetch = vi.fn(async (url: any) => {
+      const u = String(url);
+      if (u.startsWith('https://wiki.test/rest/api/content/1008831307?')) {
+        return pageRes(
+          '1008831307',
+          'Quản lý thẻ',
+          'SMB',
+          `<p>${VIEW_IMG('1008831307', 'image-2026-8-14_9-21-5.png', 1)}${VIEW_IMG('1008831307', 'other.png', 2)}</p>`,
+          `<p>${EMB('SMB', 'Quản lý thẻ', 'image-2026-8-14_9-21-5.png')}<img src="/download/attachments/1008831307/other.png"></p>`,
+        );
+      }
+      if (u.startsWith('https://wiki.test/rest/api/')) {
+        restCalls.push(u);
+        return { ok: false, status: 500, text: async () => '', json: async () => ({}) } as any;
+      }
+      if (u.includes('/download/attachments/embedded-page/SMB/')) return binRes('PASTED');
+      if (u.startsWith('https://wiki.test/download/attachments/1008831307/other.png')) return binRes('OTHER');
+      throw new Error(`unexpected fetch: ${u}`);
+    }) as any;
+    await fetchConfluencePages({ creds: { base: 'https://wiki.test', token: 'pat' } }, ['1008831307'], { attachmentsDir, followLinks: false });
+    const ledger = await readConfluenceSourcesLedger(attachmentsDir);
+    assert.ok(ledger, 'ledger written');
+    assert.deepEqual(
+      ledger.items.map(({ fetchedAt, ...r }) => r),
+      [
+        { name: 'image-2026-8-14_9-21-5.png', sha256: sha('PASTED'), size: 6, pageId: '1008831307', spaceKey: 'SMB', attachment: 'image-2026-8-14_9-21-5.png', attachmentVersion: 1 },
+        { name: 'other.png', sha256: sha('OTHER'), size: 5, pageId: '1008831307', spaceKey: 'SMB', attachment: 'other.png', attachmentVersion: 2 },
+      ],
+    );
+    assert.deepEqual(restCalls, [], 'no lookup/CQL REST call when body.view already answers');
+  } finally {
+    await rm(attachmentsDir, { recursive: true, force: true });
+  }
+});
+
+test('fetchConfluencePages: embedded-page KHÔNG có trong body.view → CQL space+title resolve pageId (cache) rồi tra version REST', async () => {
+  const attachmentsDir = await mkdtemp(join(tmpdir(), 'bas-ledger-cql-'));
+  try {
+    const cql: string[] = [];
+    globalThis.fetch = vi.fn(async (url: any) => {
+      const u = String(url);
+      if (u.startsWith('https://wiki.test/rest/api/content/40?')) {
+        return pageRes('40', 'Trang nhúng', 'SMB', '<p>view không có img</p>', `<p>${EMB('SMB', 'Trang khác', 'a.png')}${EMB('SMB', 'Trang khác', 'b.png')}</p>`);
+      }
+      if (u.startsWith('https://wiki.test/rest/api/content/search?cql=')) {
+        cql.push(decodeURIComponent(u));
+        return makeRes(JSON.stringify({ results: [{ id: '777', title: 'Trang khác', space: { key: 'SMB' } }] })) as any;
+      }
+      if (u.startsWith('https://wiki.test/rest/api/content/777/child/attachment?filename=a.png')) {
+        return { ok: true, status: 200, json: async () => ({ results: [{ title: 'a.png', version: { number: 4 } }] }) } as any;
+      }
+      if (u.startsWith('https://wiki.test/rest/api/content/777/child/attachment?filename=b.png')) {
+        return { ok: false, status: 500, json: async () => ({}) } as any;
+      }
+      if (u.includes('/download/attachments/embedded-page/SMB/')) return binRes(u.includes('a.png') ? 'AAA' : 'BB');
+      throw new Error(`unexpected fetch: ${u}`);
+    }) as any;
+    await fetchConfluencePages({ creds: { base: 'https://wiki.test', token: 'pat' } }, ['40'], { attachmentsDir, followLinks: false });
+    const ledger = await readConfluenceSourcesLedger(attachmentsDir);
+    assert.ok(ledger);
+    assert.deepEqual(
+      ledger.items.map((i) => [i.name, i.pageId, i.attachmentVersion, i.spaceKey]),
+      [
+        ['a.png', '777', 4, 'SMB'],
+        ['b.png', '777', 0, 'SMB'],
+      ],
+    );
+    // 2 ảnh cùng space+title → CQL 1 lần (cache).
+    assert.equal(cql.length, 1);
+    assert.match(cql[0]!, /space="SMB" AND title="Trang khác"/);
+  } finally {
+    await rm(attachmentsDir, { recursive: true, force: true });
+  }
+});
+
+test('fetchConfluencePages: embedded-page không resolve được trang (CQL 404) → bỏ record, không throw; ảnh vẫn tải', async () => {
+  const attachmentsDir = await mkdtemp(join(tmpdir(), 'bas-ledger-noresolve-'));
+  try {
+    globalThis.fetch = vi.fn(async (url: any) => {
+      const u = String(url);
+      if (u.startsWith('https://wiki.test/rest/api/content/41?')) {
+        return pageRes('41', 'Trang', 'SMB', '', `<p>${EMB('SMB', 'Mất', 'x.png')}</p>`);
+      }
+      if (u.startsWith('https://wiki.test/rest/api/content/search?cql=')) return makeRes('{"results":[]}', { status: 404 }) as any;
+      if (u.includes('/download/attachments/embedded-page/SMB/')) return binRes('X');
+      throw new Error(`unexpected fetch: ${u}`);
+    }) as any;
+    const pages = await fetchConfluencePages({ creds: { base: 'https://wiki.test', token: 'pat' } }, ['41'], { attachmentsDir, followLinks: false });
+    assert.match(pages[0]!.content, /attachments\/x\.png/);
+    assert.deepEqual(await readdir(attachmentsDir), ['x.png']);
+    assert.equal(await readConfluenceSourcesLedger(attachmentsDir), null);
+  } finally {
+    await rm(attachmentsDir, { recursive: true, force: true });
+  }
 });
