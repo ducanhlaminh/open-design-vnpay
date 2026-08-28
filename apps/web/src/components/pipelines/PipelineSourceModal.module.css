@@ -208,6 +208,37 @@
   font-size: 11px;
 }
 
+/* Chế độ dán link/page id (AppPoolLinkRows): các dòng ngay dưới vùng cây —
+   meta "Từ link đã dán", «trang» chưa có + nút Import, lỗi tra ref. Cùng
+   lề ngang với `.poolTree`, chữ nhỏ như chân panel. */
+.poolLinkRows {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 6px 12px 0;
+}
+
+.poolLinkMeta {
+  margin: 0;
+  min-width: 0;
+  color: var(--text-soft);
+  font-size: 11.5px;
+}
+
+.poolLinkMissing {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.poolLinkError {
+  margin: 0;
+  color: var(--pl-danger, #c0392b);
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
 .poolImportBtn {
   display: inline-flex;
   align-items: center;

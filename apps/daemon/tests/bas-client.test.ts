@@ -5,10 +5,13 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, test, vi } from 'vitest';
 
 import {
+  ConfluenceResolveError,
   basConfluenceMeta,
   basListDocuments,
   basListFeatures,
   extractPageId,
+  parseConfluenceRef,
+  resolveConfluencePage,
   fetchConfluencePages,
   discoverLinkedConfluencePages,
   fetchSourceFiles,
@@ -79,6 +82,180 @@ test('resolveBasEndpoint prefers env BAS_MCP_URL + BAS_MCP_TOKEN', async () => {
   process.env.BAS_MCP_TOKEN = 'Bearer env_tok'; // "Bearer " prefix must be stripped
   const ep = await resolveBasEndpoint('/nonexistent-data-dir');
   assert.deepEqual(ep, { url: 'https://env.bas/mcp/', token: 'env_tok' });
+});
+
+// ── WP confluence-paste-link: parseConfluenceRef + resolveConfluencePage ─────
+
+test('parseConfluenceRef recognises the 6 supported link shapes', () => {
+  assert.deepEqual(parseConfluenceRef(' 874352117 '), { kind: 'id', id: '874352117' });
+  assert.deepEqual(parseConfluenceRef('https://wiki.test/pages/874352117/Login'), { kind: 'id', id: '874352117' });
+  assert.deepEqual(parseConfluenceRef('https://wiki.test/pages/viewpage.action?pageId=98765'), { kind: 'id', id: '98765' });
+  // Cloud shape — matches the /pages/<id> rule.
+  assert.deepEqual(parseConfluenceRef('https://x.atlassian.net/wiki/spaces/CONSOC/pages/555/Abc'), { kind: 'id', id: '555' });
+  // Server "display" shape: title URL-encoded, `+` = space, trailing query dropped.
+  assert.deepEqual(parseConfluenceRef('https://wiki.test/display/CONSOC/%C4%90%C4%83ng+nh%E1%BA%ADp+SDK?src=contextnav'), {
+    kind: 'title',
+    space: 'CONSOC',
+    title: 'Đăng nhập SDK',
+  });
+  // Tiny link keeps the full URL so it can be followed.
+  assert.deepEqual(parseConfluenceRef('https://wiki.test/x/AbC-1_'), { kind: 'tiny', url: 'https://wiki.test/x/AbC-1_' });
+  assert.deepEqual(parseConfluenceRef('https://wiki.test/wiki/x/AbC'), { kind: 'tiny', url: 'https://wiki.test/wiki/x/AbC' });
+});
+
+test('parseConfluenceRef rejects anything else with a 400 that lists the supported shapes', () => {
+  for (const bad of ['', 'Đăng nhập', 'https://wiki.test/spaces/CONSOC/overview', 'https://jira.test/browse/PRJ-1']) {
+    assert.throws(
+      () => parseConfluenceRef(bad),
+      (err: unknown) =>
+        err instanceof ConfluenceResolveError && err.status === 400 && /page id/.test(err.message) && /display/.test(err.message) && /\/x\//.test(err.message),
+      `should reject ${JSON.stringify(bad)}`,
+    );
+  }
+  // `/x/` must be a real http(s) URL — a bare path can't be followed.
+  assert.throws(() => parseConfluenceRef('/x/AbC'), /page id/);
+});
+
+function patFetchStub(routes: Record<string, () => { status?: number; body?: unknown; location?: string }>) {
+  const calls: Array<{ url: string; init: any }> = [];
+  globalThis.fetch = vi.fn(async (url: any, init: any) => {
+    calls.push({ url: String(url), init });
+    const key = Object.keys(routes).find((k) => String(url).startsWith(k));
+    if (!key) return { ok: false, status: 599, headers: { get: () => null }, text: async () => `no stub for ${url}` } as any;
+    const r = routes[key]!();
+    const status = r.status ?? 200;
+    const headers = new Map<string, string>();
+    if (r.location) headers.set('location', r.location);
+    return {
+      ok: status < 400,
+      status,
+      headers: { get: (k: string) => headers.get(k.toLowerCase()) ?? null },
+      text: async () => (typeof r.body === 'string' ? r.body : JSON.stringify(r.body ?? {})),
+    } as any;
+  }) as any;
+  return calls;
+}
+
+const PAT = { base: 'https://wiki.test', token: 'pat' };
+
+test('resolveConfluencePage (PAT, id) maps /rest/api/content/<id> to a search-shaped hit', async () => {
+  const calls = patFetchStub({
+    'https://wiki.test/rest/api/content/301?': () => ({
+      body: {
+        id: '301',
+        title: 'Đăng nhập',
+        space: { key: 'XPOS' },
+        _links: { base: 'https://wiki.test/', webui: '/spaces/XPOS/pages/301/Dang-nhap' },
+        ancestors: [{ id: '2', title: 'Space XPOS' }, { id: '200', title: 'Dự án XPOS' }],
+        children: { page: { size: 2, results: [] } },
+      },
+    }),
+  });
+  const hit = await resolveConfluencePage(PAT, null, 'https://wiki.test/spaces/XPOS/pages/301/Dang-nhap');
+  assert.deepEqual(hit, {
+    id: '301',
+    title: 'Đăng nhập',
+    url: 'https://wiki.test/spaces/XPOS/pages/301/Dang-nhap',
+    space: 'XPOS',
+    ancestors: ['Space XPOS', 'Dự án XPOS'],
+    hasChildren: true,
+  });
+  assert.equal(calls.length, 1);
+  assert.match(calls[0]!.url, /expand=space,ancestors,children\.page/);
+  assert.equal(calls[0]!.init.headers.authorization, 'Bearer pat');
+  // PAT wins even when a BAS endpoint is configured (same order as search).
+  const again = await resolveConfluencePage(PAT, EP, '301');
+  assert.equal(again.id, '301');
+  assert.equal(calls.length, 2);
+});
+
+test('resolveConfluencePage (PAT, /display/SPACE/Title) runs an exact CQL and takes the first result', async () => {
+  const calls = patFetchStub({
+    'https://wiki.test/rest/api/content/search?': () => ({
+      body: { results: [{ id: '777', title: 'Đăng nhập "SDK"', space: { key: 'CONSOC' }, _links: { webui: '/display/CONSOC/x' } }] },
+    }),
+  });
+  const hit = await resolveConfluencePage(PAT, null, 'https://wiki.test/display/CONSOC/%C4%90%C4%83ng+nh%E1%BA%ADp+%22SDK%22');
+  assert.deepEqual(hit, { id: '777', title: 'Đăng nhập "SDK"', space: 'CONSOC', url: 'https://wiki.test/display/CONSOC/x' });
+  const cql = decodeURIComponent(new URL(calls[0]!.url).searchParams.get('cql')!);
+  assert.equal(cql, 'type=page AND space="CONSOC" AND title="Đăng nhập \\"SDK\\""');
+  assert.equal(new URL(calls[0]!.url).searchParams.get('limit'), '1');
+});
+
+test('resolveConfluencePage (PAT, /display/…) with no CQL match → 404', async () => {
+  patFetchStub({ 'https://wiki.test/rest/api/content/search?': () => ({ body: { results: [] } }) });
+  await assert.rejects(
+    resolveConfluencePage(PAT, null, 'https://wiki.test/display/CONSOC/Nope'),
+    (err: unknown) => err instanceof ConfluenceResolveError && err.status === 404,
+  );
+});
+
+test('resolveConfluencePage (PAT, /x/<tiny>) follows the redirect manually, then resolves the id', async () => {
+  const calls = patFetchStub({
+    'https://wiki.test/x/AbC': () => ({ status: 302, location: '/pages/viewpage.action?pageId=4242' }),
+    'https://wiki.test/rest/api/content/4242?': () => ({ body: { id: '4242', title: 'Từ tiny', _links: { webui: '/pages/4242' } } }),
+  });
+  const hit = await resolveConfluencePage(PAT, null, 'https://wiki.test/x/AbC');
+  assert.deepEqual(hit, { id: '4242', title: 'Từ tiny', url: 'https://wiki.test/pages/4242' });
+  assert.equal(calls[0]!.init.redirect, 'manual');
+  assert.equal(calls[0]!.init.headers.authorization, 'Bearer pat');
+  assert.equal(calls.length, 2);
+});
+
+test('resolveConfluencePage (PAT, /x/<tiny>) gives up after 3 hops and 404s when the target is not a page', async () => {
+  patFetchStub({ 'https://wiki.test/x/': () => ({ status: 301, location: 'https://wiki.test/x/loop' }) });
+  await assert.rejects(
+    resolveConfluencePage(PAT, null, 'https://wiki.test/x/loop'),
+    (err: unknown) => err instanceof ConfluenceResolveError && err.status === 502 && /3/.test(err.message),
+  );
+  patFetchStub({ 'https://wiki.test/x/': () => ({ status: 302, location: 'https://wiki.test/spaces/CONSOC/overview' }) });
+  await assert.rejects(
+    resolveConfluencePage(PAT, null, 'https://wiki.test/x/ovw'),
+    (err: unknown) => err instanceof ConfluenceResolveError && err.status === 404,
+  );
+});
+
+test('resolveConfluencePage (PAT) maps Confluence 404/403 to status 404 and other HTTP errors to 502', async () => {
+  patFetchStub({ 'https://wiki.test/rest/api/content/1?': () => ({ status: 404, body: 'nope' }) });
+  await assert.rejects(resolveConfluencePage(PAT, null, '1'), (err: unknown) => err instanceof ConfluenceResolveError && err.status === 404);
+  patFetchStub({ 'https://wiki.test/rest/api/content/2?': () => ({ status: 403, body: 'forbidden' }) });
+  await assert.rejects(resolveConfluencePage(PAT, null, '2'), (err: unknown) => err instanceof ConfluenceResolveError && err.status === 404);
+  patFetchStub({ 'https://wiki.test/rest/api/content/3?': () => ({ status: 500, body: 'boom' }) });
+  await assert.rejects(resolveConfluencePage(PAT, null, '3'), (err: unknown) => err instanceof ConfluenceResolveError && err.status === 502);
+});
+
+test('resolveConfluencePage falls back to the BAS gateway (id only) when there is no PAT', async () => {
+  stubFetch((name, args) => {
+    assert.equal(name, 'confluence_fetch_page');
+    assert.equal(args.page_id, '301');
+    return makeRes(toolResult(2, { page_id: '301', title: 'Đăng nhập', space_key: 'XPOS', url: 'https://wiki.test/pages/301', markdown: '# hi' }));
+  });
+  const hit = await resolveConfluencePage(null, EP, 'https://wiki.test/pages/301/Dang-nhap');
+  assert.deepEqual(hit, { id: '301', title: 'Đăng nhập', url: 'https://wiki.test/pages/301', space: 'XPOS' });
+  assert.equal('ancestors' in hit, false);
+  assert.equal('hasChildren' in hit, false);
+});
+
+test('resolveConfluencePage without PAT: /display and /x need a PAT (502), bad ref is 400, nothing configured is 502', async () => {
+  globalThis.fetch = vi.fn(async () => {
+    throw new Error('must not hit the network');
+  }) as any;
+  await assert.rejects(
+    resolveConfluencePage(null, EP, 'https://wiki.test/display/CONSOC/Login'),
+    (err: unknown) => err instanceof ConfluenceResolveError && err.status === 502 && /PAT/.test(err.message) && /Integrations/.test(err.message),
+  );
+  await assert.rejects(
+    resolveConfluencePage(null, EP, 'https://wiki.test/x/AbC'),
+    (err: unknown) => err instanceof ConfluenceResolveError && err.status === 502 && /PAT/.test(err.message),
+  );
+  await assert.rejects(
+    resolveConfluencePage(null, EP, 'not a link'),
+    (err: unknown) => err instanceof ConfluenceResolveError && err.status === 400,
+  );
+  await assert.rejects(
+    resolveConfluencePage(null, null, '301'),
+    (err: unknown) => err instanceof ConfluenceResolveError && err.status === 502 && /Integrations/.test(err.message),
+  );
 });
 
 test('extractPageId pulls the id from a Confluence URL or a bare number', () => {

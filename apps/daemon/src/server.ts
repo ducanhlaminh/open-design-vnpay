@@ -642,6 +642,7 @@ import {
   renderConfluenceIndex,
   resolveBasEndpoint,
   resolveConfluenceCreds,
+  resolveConfluencePage,
   searchConfluencePages,
 } from './bas/bas-client.js';
 import { buildReactDemo } from './react-demo.js';
@@ -24708,6 +24709,15 @@ export async function startServer({
         q,
         25,
         await resolveConfluenceCreds(RUNTIME_DATA_DIR),
+      ),
+    // Tra một trang từ link/page id dán vào CÙNG ô tìm (WP confluence-paste-
+    // link): cùng thứ tự creds như searchConfluencePages — PAT per-user trước,
+    // BAS gateway fallback (chỉ theo page id) nên endpoint gateway optional.
+    resolveConfluencePage: async (ref: string) =>
+      resolveConfluencePage(
+        await resolveConfluenceCreds(RUNTIME_DATA_DIR),
+        await resolveBasEndpoint(RUNTIME_DATA_DIR).catch(() => null),
+        ref,
       ),
     // Descendant pages (all levels, flat + treePath) of one page — the tree
     // picker expands a search hit into its sub-tree so the user checks exactly

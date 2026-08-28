@@ -45,10 +45,17 @@ import { relativeTimeLong } from '../../utils/chatTime';
 import { fetchDesignSystems } from '../../providers/registry';
 import { ProjectDesignSystemPicker } from '../ProjectDesignSystemPicker';
 import { AppPoolTree } from './AppPoolTree';
+import { AppPoolLinkRows, useAppPoolRefMatch } from './AppPoolLinkPaste';
 import { LabRefsSection } from './LabRefsSection';
 import { PlModal } from './PlModal';
 import { UploadDropzone, toPendingFiles, type PendingFile } from './UploadDropzone';
-import { ConfluenceTreeImport } from './ConfluenceTreeImport';
+import {
+  ConfluenceTreeImport,
+  looksLikeConfluenceRef,
+  shortConfluenceRef,
+  splitConfluenceRefs,
+  useConfluenceRefResolve,
+} from './ConfluenceTreeImport';
 import { ProgressBar } from './ProgressBar';
 import styles from './PipelineSourceModal.module.css';
 import sp from './StagePicker.module.css';
@@ -348,10 +355,13 @@ function confSubtreeIds(node: ConfTreeNode): string[] {
 }
 
 /** Picker trang Confluence DÙNG CHUNG (modal Run bước Docs + modal Chạy full
- * workflow): tìm trang theo tên qua GET /api/pipelines/confluence/pages (tick
- * chọn nhiều), hoặc dán link/page id (mỗi dòng một trang — tự thêm vào danh
- * sách khi rời ô nhập). Parent chỉ giữ danh sách `pages`; mọi state tìm kiếm
- * sống trong picker. */
+ * workflow): MỘT ô nhận cả tên trang lẫn link/page id. Tên → tìm qua GET
+ * /api/pipelines/confluence/pages; link/id (`looksLikeConfluenceRef`) → tra qua
+ * GET /api/pipelines/confluence/resolve?ref= (helper dùng chung với
+ * `ConfluenceTreePicker`) và trang hiện thành hit trong cùng cây (tick, mở
+ * trang con, "Thêm N trang" như thường — trang từ link có đủ {id,title,url}).
+ * Không còn textarea "Dán link / page id". Parent chỉ giữ danh sách `pages`;
+ * mọi state tìm kiếm sống trong picker. */
 export function ConfluencePagePicker({
   pages,
   onPagesChange,
@@ -359,9 +369,11 @@ export function ConfluencePagePicker({
   pages: ConfluencePageRefLike[];
   onPagesChange: (pages: ConfluencePageRefLike[]) => void;
 }) {
-  const [manual, setManual] = useState(false);
-  const [manualText, setManualText] = useState('');
   const [query, setQuery] = useState('');
+  const trimmedQuery = query.trim();
+  const isRef = looksLikeConfluenceRef(trimmedQuery);
+  const refs = useMemo(() => (isRef ? splitConfluenceRefs(trimmedQuery) : []), [isRef, trimmedQuery]);
+  const resolved = useConfluenceRefResolve(refs);
   const [hits, setHits] = useState<Array<{ id: string; title: string; url?: string; space?: string }> | null>(null);
   const [searching, setSearching] = useState(false);
   const [searchErr, setSearchErr] = useState<string | null>(null);
@@ -439,10 +451,12 @@ export function ConfluencePagePicker({
   };
 
   useEffect(() => {
-    if (manual) return;
     clearTimeout(debounce.current);
-    if (query.trim().length < 2) {
+    // Link / page id: không tìm theo tên — `resolved` bên trên lo phần tra.
+    if (isRef || query.trim().length < 2) {
       setHits(null);
+      setSearching(false);
+      setSearchErr(null);
       return;
     }
     debounce.current = setTimeout(() => {
@@ -463,20 +477,21 @@ export function ConfluencePagePicker({
       })();
     }, 350);
     return () => clearTimeout(debounce.current);
-  }, [query, manual]);
+  }, [query, isRef]);
 
   const renderConfNode = (
     node: ConfTreeNode,
-    hit: { id: string; title: string; url?: string },
+    hit: { id: string; title: string; url?: string; hasChildren?: boolean },
     depth: number,
   ): JSX.Element => {
     const cs = nodeCheck(node);
     const isHit = node.id === hit.id;
     const isExp = expanded.has(node.id);
     const hitLoaded = Boolean(treeByHit[hit.id]);
-    // A hit shows a chevron until we know whether it has children; inner nodes
-    // show one only when they actually do.
-    const hasKids = node.children.length > 0 || (isHit && !hitLoaded);
+    // A hit shows a chevron until we know whether it has children (unless the
+    // daemon already said `hasChildren: false`); inner nodes show one only
+    // when they actually do.
+    const hasKids = node.children.length > 0 || (isHit && !hitLoaded && hit.hasChildren !== false);
     const committed = committedIds.has(node.id);
     return (
       <div key={node.id || node.title}>
@@ -514,25 +529,20 @@ export function ConfluencePagePicker({
     );
   };
 
-  // Dán tay: commit khi blur HOẶC bấm Thêm — không bắt user nhớ bấm nút để
-  // khỏi mất text khi chuyển thẳng sang Run.
-  const commitManual = (backToSearch: boolean) => {
-    const refs = manualText
-      .split(/\r?\n/)
-      .map((s) => s.trim())
-      .filter(Boolean);
-    if (refs.length) {
-      const existing = new Set(pages.map(confPageKey));
-      onPagesChange([
-        ...pages,
-        ...refs
-          .filter((r) => !existing.has(r))
-          .map((r) => (/^https?:\/\//i.test(r) ? { url: r } : { id: r })),
-      ]);
-      setManualText('');
-    }
-    if (backToSearch) setManual(false);
-  };
+  // Một hit (từ tìm tên HAY từ link) → node gốc của cây con; `url` đi theo để
+  // trang được stage có đủ {id,title,url}.
+  const renderHitTree = (list: Array<{ id: string; title: string; url?: string; hasChildren?: boolean }>) => (
+    <>
+      <div className={styles.tree}>
+        {list.map((h) =>
+          renderConfNode(treeByHit[h.id] ?? { id: h.id, title: h.title, ...(h.url ? { url: h.url } : {}), children: [] }, h, 0),
+        )}
+      </div>
+      <p className={styles.treeHint}>
+        Bấm ▸ để xem trang con · tick thư mục cha để chọn cả nhánh · rồi bấm “Thêm”.
+      </p>
+    </>
+  );
 
   return (
     <div className={styles.panel}>
@@ -562,85 +572,48 @@ export function ConfluencePagePicker({
         </>
       ) : null}
 
-      {manual ? (
+      <label className="pl-modal-field">
+        <span className="pl-modal-field__label">Tìm trang Confluence</span>
+        <input
+          type="text"
+          className="pl-input"
+          placeholder="Gõ tên trang hoặc dán link/page id — tick rồi bấm Thêm…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+      </label>
+      {isRef ? (
         <>
-          <label className="pl-modal-field">
-            <span className="pl-modal-field__label">Dán link / page id</span>
-            <textarea
-              className="pl-input"
-              rows={3}
-              autoFocus
-              placeholder={'https://wiki…/pages/123456 hoặc page id\n(mỗi dòng một trang)'}
-              value={manualText}
-              onChange={(e) => setManualText(e.target.value)}
-              onBlur={() => commitManual(false)}
-            />
-          </label>
-          <div className={styles.footerLinks}>
-            <button
-              type="button"
-              className="pl-btn pl-btn--primary"
-              onClick={() => commitManual(true)}
-              disabled={!manualText.trim()}
-            >
-              <Icon name="plus" size={13} />
-              <span>Thêm vào danh sách</span>
-            </button>
-            <button type="button" className={styles.linkBtn} onClick={() => setManual(false)}>
-              ← Quay lại tìm theo tên
-            </button>
-          </div>
+          {resolved.hits.length > 0 ? renderHitTree(resolved.hits) : null}
+          {Object.entries(resolved.errors).map(([ref, message]) => (
+            <p key={ref} className={styles.empty} title={ref}>
+              Không tra được «{shortConfluenceRef(ref)}»: {message}
+            </p>
+          ))}
+          {resolved.loading ? <p className={styles.empty}>Đang tra trang từ link…</p> : null}
         </>
-      ) : (
-        <>
-          <label className="pl-modal-field">
-            <span className="pl-modal-field__label">Tìm trang Confluence</span>
-            <input
-              type="text"
-              className="pl-input"
-              placeholder="Gõ tên trang để tìm — tick trang/thư mục rồi bấm Thêm…"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-            />
-          </label>
-          {searching ? (
-            <p className={styles.empty}>Đang tìm…</p>
-          ) : searchErr ? (
-            <p className={styles.empty}>{searchErr}</p>
-          ) : hits !== null ? (
-            hits.length === 0 ? (
-              <p className={styles.empty}>Không trang nào khớp “{query}”.</p>
-            ) : (
-              <>
-                <div className={styles.tree}>
-                  {hits.map((h) =>
-                    renderConfNode(treeByHit[h.id] ?? { id: h.id, title: h.title, ...(h.url ? { url: h.url } : {}), children: [] }, h, 0),
-                  )}
-                </div>
-                <p className={styles.treeHint}>
-                  Bấm ▸ để xem trang con · tick thư mục cha để chọn cả nhánh · rồi bấm “Thêm”.
-                </p>
-              </>
-            )
-          ) : null}
-          {stagedList.length > 0 ? (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 4 }}>
-              <button type="button" className="pl-btn pl-btn--primary" onClick={addStaged}>
-                <Icon name="plus" size={13} />
-                <span>Thêm {stagedList.length} trang vào danh sách</span>
-              </button>
-              <button type="button" className={styles.linkBtn} onClick={() => setStaged({})}>
-                Bỏ tick
-              </button>
-            </div>
-          ) : null}
-          <div className={styles.footerLinks}>
-            <button type="button" className={styles.linkBtn} onClick={() => setManual(true)}>
-              Dán link / page id thay vì tìm →
-            </button>
-          </div>
-        </>
-      )}
+      ) : searching ? (
+        <p className={styles.empty}>Đang tìm…</p>
+      ) : searchErr ? (
+        <p className={styles.empty}>{searchErr}</p>
+      ) : hits !== null ? (
+        hits.length === 0 ? (
+          <p className={styles.empty}>Không trang nào khớp “{query}”.</p>
+        ) : (
+          renderHitTree(hits)
+        )
+      ) : null}
+      {stagedList.length > 0 ? (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 4 }}>
+          <button type="button" className="pl-btn pl-btn--primary" onClick={addStaged}>
+            <Icon name="plus" size={13} />
+            <span>Thêm {stagedList.length} trang vào danh sách</span>
+          </button>
+          <button type="button" className={styles.linkBtn} onClick={() => setStaged({})}>
+            Bỏ tick
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -1697,6 +1670,23 @@ export function RunAllModal({
   }, [appId]);
 
   const appPoolAvailable = appId !== undefined && (appPoolPages?.length ?? 0) > 0;
+
+  // Dán link/page id Confluence vào ô tìm → chế độ link (WP app-pool-paste-link):
+  // trang có trong kho → cây chỉ hiện trang đó + tự tick MỘT lần cho mỗi
+  // pageId (user bỏ tick thì không tick lại); chưa có → AppPoolLinkRows lo.
+  const appPoolMatch = useAppPoolRefMatch({ query: appPoolQuery, pages: appPoolPages ?? [] });
+  const appPoolAutoTicked = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (!appPoolMatch.active) return;
+    const fresh = appPoolMatch.inPool.filter(({ page }) => !appPoolAutoTicked.current.has(page.pageId));
+    if (fresh.length === 0) return;
+    for (const { page } of fresh) appPoolAutoTicked.current.add(page.pageId);
+    setAppPoolPaths((prev) => {
+      const next = new Set(prev);
+      for (const { page } of fresh) next.add(page.path);
+      return next;
+    });
+  }, [appPoolMatch.active, appPoolMatch.inPool]);
   // Legacy single-platform (docs-to-prd has no UI stage / non-target callers).
   // docs-to-ui uses the `targets` multi-select below; platform is derived from
   // the first target in submit when targets are set.
@@ -2171,8 +2161,8 @@ export function RunAllModal({
                     className={styles.poolSearchInput}
                     value={appPoolQuery}
                     onChange={(event) => setAppPoolQuery(event.target.value)}
-                    placeholder="Tìm URD hoặc PRD trong tài liệu dự án…"
-                    aria-label="Tìm URD hoặc PRD trong tài liệu dự án"
+                    placeholder="Tìm theo tên hoặc dán link/page id Confluence…"
+                    aria-label="Tìm theo tên hoặc dán link/page id Confluence"
                     disabled={busy}
                   />
                 </span>
@@ -2186,9 +2176,25 @@ export function RunAllModal({
                 <AppPoolTree
                   pages={appPoolPages ?? []}
                   query={appPoolQuery}
+                  pageIdFilter={appPoolMatch.active ? appPoolMatch.pageIdFilter : undefined}
                   selection={{ ticked: appPoolPaths, onToggle: setAppPoolPaths, disabled: busy }}
                 />
               </div>
+              {appPoolMatch.active && appId ? (
+                <AppPoolLinkRows
+                  appId={appId}
+                  match={appPoolMatch}
+                  disabled={busy}
+                  onTick={(paths) =>
+                    setAppPoolPaths((prev) => {
+                      const next = new Set(prev);
+                      for (const p of paths) next.add(p);
+                      return next;
+                    })
+                  }
+                  onImported={() => void refreshAppPool(true)}
+                />
+              ) : null}
               <div className={styles.poolFoot}>
                 <span className={styles.poolFootHint}>
                   Trang đã tick nạp vào <code>docs-feature/</code>
@@ -3278,7 +3284,11 @@ export function isUiPreviewFile(name: string, pipelineId?: string): boolean {
   // Primary visual spec docs (UX Spec / Customer Journey).
   if (/-ux-spec\.json$/.test(base) || /-(customer-journey|journey|cj)\.json$/.test(base)) return true;
   // Visual report previews — UX Heuristic Review + UX Research + docs-to-prd's
-  // PRD Mockup Review (DocsReviewPreview).
+  // PRD Mockup Review (DocsReviewPreview). File máy-đọc tiền tố `_` trong
+  // review/ (vd `review/_screen-flow-context.json` — ngữ cảnh luồng màn 0.8.155,
+  // bằng chứng cho panel, không phải trang review) ẩn: naturalPathCompare xếp
+  // `_` lên đầu nên nó từng chiếm chỗ file mở mặc định của Quick result dr-review.
+  if (base.startsWith('_')) return false;
   return /(^|\/)(heuristic-review|ux-research|review)\/[^/]*\.json$/.test(lower);
 }
 

@@ -148,6 +148,16 @@ function filterTree(nodes: TreeNode[], normalizedQuery: string): TreeNode[] {
   });
 }
 
+/** Chế độ link (dán link/page id Confluence): chỉ giữ trang có `pageId` trong
+ *  tập, kèm tổ tiên; con của trang khớp giữ nguyên. */
+function filterTreeByPageIds(nodes: TreeNode[], ids: ReadonlySet<string>): TreeNode[] {
+  return nodes.flatMap((node) => {
+    if (node.page && ids.has(node.page.pageId)) return [node];
+    const children = filterTreeByPageIds(node.children, ids);
+    return children.length > 0 ? [{ ...node, children }] : [];
+  });
+}
+
 export interface AppPoolTreeProps {
   pages: AppPoolPage[];
   /** Present → every row (leaf AND folder, cascading) gets a tick checkbox
@@ -166,6 +176,11 @@ export interface AppPoolTreeProps {
   renderLeafActions?: (page: AppPoolPage) => ReactNode;
   /** Từ khóa lọc; rỗng/undefined thì hiển thị toàn bộ cây. */
   query?: string;
+  /** Chế độ link (host dán link/page id Confluence): có mặt → chỉ hiện trang
+   *  có `pageId` trong tập (kèm tổ tiên, mở hết như lọc theo tên), BỎ QUA
+   *  `query`; tập rỗng → render `null` (host tự hiện dòng "chưa có trong
+   *  kho"/lỗi, KHÔNG in "Không có trang nào khớp"). Vắng mặt → như cũ. */
+  pageIdFilter?: ReadonlySet<string>;
   /** Bấm vào TÊN một trang → mở preview (AppPoolSection 2 cột). Vắng mặt thì
    *  tên trang không bấm được như cũ. */
   onOpenPage?: (page: AppPoolPage) => void;
@@ -177,7 +192,7 @@ export interface AppPoolTreeProps {
  *  levels); unticking mirrors it. Mixed state (some but not all leaves
  *  ticked) reads as "off" for the click decision (tapping it fills the rest
  *  in, same as an indeterminate checkbox committing to "on" on click). */
-export function AppPoolTree({ pages, selection, renderLeafActions, query, onOpenPage, activePath }: AppPoolTreeProps) {
+export function AppPoolTree({ pages, selection, renderLeafActions, query, onOpenPage, activePath, pageIdFilter }: AppPoolTreeProps) {
   // Path pool lưu TUYỆT ĐỐI theo chuỗi tổ tiên Confluence thật (bất biến theo
   // batch import) — phần "giàn giáo wiki" chung (space home…) là chuỗi folder
   // gốc đơn-con KHÔNG có trang bắt cặp: ẩn đi khi render, cây bắt đầu từ gốc
@@ -191,10 +206,15 @@ export function AppPoolTree({ pages, selection, renderLeafActions, query, onOpen
   }, [pages]);
   const normalizedQuery = useMemo(() => normalizeForSearch(query ?? '').trim(), [query]);
   const visibleTree = useMemo(
-    () => (normalizedQuery ? filterTree(tree, normalizedQuery) : tree),
-    [tree, normalizedQuery],
+    () =>
+      pageIdFilter
+        ? filterTreeByPageIds(tree, pageIdFilter)
+        : normalizedQuery
+          ? filterTree(tree, normalizedQuery)
+          : tree,
+    [tree, normalizedQuery, pageIdFilter],
   );
-  const isFiltering = normalizedQuery.length > 0;
+  const isFiltering = pageIdFilter !== undefined || normalizedQuery.length > 0;
   // Seeded ONCE (first non-empty tree) with every top-level folder key, per
   // "mặc định cấp 1 mở, sâu hơn đóng" — a later pool refresh (a fresh import) must not stomp on folders the user has since
   // toggled, so this never re-seeds after that first pass.
@@ -299,6 +319,10 @@ export function AppPoolTree({ pages, selection, renderLeafActions, query, onOpen
       </div>
     );
   };
+
+  // Chế độ link, không trang nào trong kho khớp: host tự hiện dòng "chưa có
+  // trong kho"/lỗi/đang tra — KHÔNG in "Không có trang nào khớp <link>".
+  if (pageIdFilter !== undefined && visibleTree.length === 0) return null;
 
   if (isFiltering && visibleTree.length === 0) {
     return (

@@ -158,3 +158,12 @@ describe('isUiPreviewFile theo bước (pipelineId)', () => {
     expect(isUiPreviewFile('docs-review/comp/_screens.json', 'dr-flow')).toBe(false);
   });
 });
+
+describe('isUiPreviewFile — review/_*.json (bằng chứng máy-đọc) ẩn khỏi Quick result dr-review', () => {
+  it('ẩn review/_screen-flow-context.json nhưng vẫn nhận review JSON trang thường', () => {
+    expect(isUiPreviewFile('docs-review/review/_screen-flow-context.json', 'dr-review')).toBe(false);
+    expect(isUiPreviewFile('docs-review/review/_screen-flow-context.json')).toBe(false);
+    expect(isUiPreviewFile('docs-review/review/spec.json', 'dr-review')).toBe(true);
+    expect(isUiPreviewFile('docs-review/review/docs-feature/01-urd.md', 'dr-review')).toBe(true);
+  });
+});

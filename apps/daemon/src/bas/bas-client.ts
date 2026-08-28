@@ -29,6 +29,7 @@ import path from 'node:path';
 import type {
   BasDocument,
   BasFeature,
+  ConfluencePageHit as ContractConfluencePageHit,
   ConfluencePageMeta,
   PipelineRunSource,
 } from '@open-design/contracts';
@@ -239,27 +240,114 @@ function str(row: Record<string, unknown>, ...keys: string[]): string {
   return '';
 }
 
+/** Lỗi tra trang Confluence mang HTTP status để route map thẳng
+ *  (400 = không đọc được ref, 404 = không tồn tại/không quyền, 502 = thiếu
+ *  cấu hình / upstream lỗi). */
+export class ConfluenceResolveError extends Error {
+  constructor(
+    public readonly status: 400 | 404 | 502,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'ConfluenceResolveError';
+  }
+}
+
+/** Một ref Confluence người dùng dán vào ô tìm, đã nhận dạng:
+ *  - `id`    — `…/pages/<id>[/…]`, `…?pageId=<id>`, hoặc id số trần;
+ *  - `title` — Server-style `…/display/<SPACE>/<Title>` (title URL-encoded,
+ *              `+` = khoảng trắng) → phải tra CQL theo space+title;
+ *  - `tiny`  — link rút gọn `…/x/<token>` → phải follow redirect mới ra id. */
+export type ConfluenceRef =
+  | { kind: 'id'; id: string }
+  | { kind: 'title'; space: string; title: string }
+  | { kind: 'tiny'; url: string };
+
+const REF_HELP =
+  'Paste the page URL (…/pages/<id>/…, …?pageId=<id>, …/display/<SPACE>/<Title>, …/x/<tiny>) or the numeric page id.';
+
+/** Nhận dạng link/id Confluence (thuần, không mạng). Không khớp → throw
+ *  `ConfluenceResolveError` 400 với hướng dẫn các dạng hỗ trợ. */
+export function parseConfluenceRef(ref: string): ConfluenceRef {
+  const t = ref.trim();
+  if (/^\d+$/.test(t)) return { kind: 'id', id: t };
+  const idMatch = /\/pages\/(\d+)/.exec(t) ?? /[?&]pageId=(\d+)/.exec(t);
+  if (idMatch) return { kind: 'id', id: idMatch[1]! };
+  const display = /\/display\/([^/?#]+)\/([^?#]+)/.exec(t);
+  if (display) {
+    const decode = (v: string) => {
+      try {
+        return decodeURIComponent(v);
+      } catch {
+        return v;
+      }
+    };
+    const space = decode(display[1]!);
+    const title = decode(display[2]!).replace(/\+/g, ' ').replace(/\/+$/, '').trim();
+    if (space && title) return { kind: 'title', space, title };
+  }
+  if (/^https?:\/\/[^/]+\/(?:[^?#]*\/)?x\/[A-Za-z0-9_-]+/.test(t)) return { kind: 'tiny', url: t };
+  throw new ConfluenceResolveError(400, `Could not find a Confluence page id in "${ref}". ${REF_HELP}`);
+}
+
 // Pull a Confluence numeric page_id out of a pasted link (…/pages/<id>/… or
 // ?pageId=<id>) or accept a bare numeric id. Throws with guidance otherwise —
-// confluence_fetch_page requires page_id, not a URL.
+// confluence_fetch_page requires page_id, not a URL. Only the `id` shape of
+// parseConfluenceRef counts here: `/display/…` and `/x/…` need a network round
+// trip (resolveConfluencePage) so they stay "no page id" for this helper.
 export function extractPageId(ref: string): string {
-  const t = ref.trim();
-  if (/^\d+$/.test(t)) return t;
-  const m = /\/pages\/(\d+)/.exec(t) ?? /[?&]pageId=(\d+)/.exec(t);
-  if (m) return m[1]!;
-  throw new Error(
-    `Could not find a Confluence page id in "${ref}". Paste the page URL (…/pages/<id>/…) or the numeric page id.`,
-  );
+  const parsed = parseConfluenceRef(ref);
+  if (parsed.kind === 'id') return parsed.id;
+  throw new ConfluenceResolveError(400, `Could not find a Confluence page id in "${ref}". ${REF_HELP}`);
 }
 
 // ── Confluence page search (modal Run pipeline 1 — picker "tìm trang theo
 // tên" như bên pipeline-studio) ──────────────────────────────────────────────
 
-export interface ConfluencePageHit {
-  id: string;
-  title: string;
-  url?: string;
-  space?: string;
+/** Cùng khuôn với contracts (id,title,url?,space?,ancestors?,hasChildren?) —
+ *  search lẫn resolve đều trả đúng type FE dùng. */
+export type ConfluencePageHit = ContractConfluencePageHit;
+
+/** Một bản ghi trang từ Confluence REST (`/rest/api/content/<id>` hoặc kết
+ *  quả `content/search`) với `expand=space,ancestors,children.page`. */
+interface RestPage {
+  id?: string;
+  title?: string;
+  space?: { key?: string };
+  _links?: { base?: string; webui?: string };
+  // Confluence returns these root→down, page itself excluded — the
+  // App-root combobox needs this to tell apart same-titled pages that
+  // live under different dự án.
+  ancestors?: Array<{ title?: string }>;
+  // Existence-only signal for the App-root search dropdown's expand
+  // arrow — `size` is Confluence's own child COUNT (preferred, doesn't
+  // depend on how many child rows the default page limit returned);
+  // `results` is the fallback when `size` is absent.
+  children?: { page?: { size?: number; results?: unknown[] } };
+}
+
+/** Map một bản ghi REST → ConfluencePageHit (dùng chung cho search + resolve).
+ *  `url` = `_links.base` (nếu có) hoặc `base` + `webui`. */
+function restPageToHit(r: RestPage, base: string): ConfluencePageHit {
+  const ancestors = (r.ancestors ?? []).map((a) => a.title ?? '').filter(Boolean);
+  const childPage = r.children?.page;
+  const hasChildren =
+    childPage === undefined
+      ? undefined
+      : typeof childPage.size === 'number'
+        ? childPage.size > 0
+        : Array.isArray(childPage.results)
+          ? childPage.results.length > 0
+          : undefined;
+  const urlBase = (r._links?.base ?? base).replace(/\/+$/, '');
+  return {
+    id: String(r.id ?? ''),
+    title: r.title ?? String(r.id ?? ''),
+    ...(r._links?.webui ? { url: `${urlBase}${r._links.webui}` } : {}),
+    ...(r.space?.key ? { space: r.space.key } : {}),
+    ...(ancestors.length ? { ancestors } : {}),
+    ...(hasChildren !== undefined ? { hasChildren } : {}),
+  };
 }
 
 export interface ConfluenceCreds {
@@ -308,44 +396,9 @@ export async function searchConfluencePages(
     const res = await fetch(url, { headers: { authorization: `Bearer ${creds.token}` } });
     const text = await res.text();
     if (!res.ok) throw new Error(`Confluence search HTTP ${res.status}: ${text.slice(0, 200)}`);
-    const body = JSON.parse(text) as {
-      results?: Array<{
-        id?: string;
-        title?: string;
-        space?: { key?: string };
-        _links?: { webui?: string };
-        // Confluence returns these root→down, page itself excluded — the
-        // App-root combobox needs this to tell apart same-titled pages that
-        // live under different dự án.
-        ancestors?: Array<{ title?: string }>;
-        // Existence-only signal for the App-root search dropdown's expand
-        // arrow — `size` is Confluence's own child COUNT (preferred, doesn't
-        // depend on how many child rows the default page limit returned);
-        // `results` is the fallback when `size` is absent.
-        children?: { page?: { size?: number; results?: unknown[] } };
-      }>;
-    };
+    const body = JSON.parse(text) as { results?: RestPage[] };
     return (body.results ?? [])
-      .map((r) => {
-        const ancestors = (r.ancestors ?? []).map((a) => a.title ?? '').filter(Boolean);
-        const childPage = r.children?.page;
-        const hasChildren =
-          childPage === undefined
-            ? undefined
-            : typeof childPage.size === 'number'
-              ? childPage.size > 0
-              : Array.isArray(childPage.results)
-                ? childPage.results.length > 0
-                : undefined;
-        return {
-          id: String(r.id ?? ''),
-          title: r.title ?? String(r.id ?? ''),
-          ...(r._links?.webui ? { url: `${creds.base}${r._links.webui}` } : {}),
-          ...(r.space?.key ? { space: r.space.key } : {}),
-          ...(ancestors.length ? { ancestors } : {}),
-          ...(hasChildren !== undefined ? { hasChildren } : {}),
-        };
-      })
+      .map((r) => restPageToHit(r, creds.base))
       .filter((r) => r.id);
   }
   if (!ep) {
@@ -365,6 +418,126 @@ export async function searchConfluencePages(
       return { id, title: title || id, ...(url ? { url } : {}), ...(space ? { space } : {}) };
     })
     .filter((r) => r.id);
+}
+
+// ── Tra MỘT trang từ link/page id dán vào ô tìm (WP confluence-paste-link) ──
+
+const PAT_REQUIRED_MSG =
+  'Dạng link này cần PAT Confluence (Settings → Integrations → Confluence) — BAS gateway chỉ tra được theo page id.';
+const NO_CREDS_MSG =
+  'Tra trang Confluence chưa cấu hình — thêm Base URL + Personal Access Token ở Settings → Integrations → Confluence (hoặc env daemon / BAS gateway).';
+const TINY_MAX_HOPS = 3;
+/** Ref đã hết chuyển hướng — chỉ còn dạng tra được trực tiếp. */
+type ResolvedRef = Exclude<ConfluenceRef, { kind: 'tiny' }>;
+
+function cqlQuote(v: string): string {
+  return `"${v.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+}
+
+async function patGetJson(creds: ConfluenceCreds, url: string, what: string): Promise<unknown> {
+  const res = await fetch(url, { headers: { authorization: `Bearer ${creds.token}` } });
+  const text = await res.text();
+  if (res.status === 404 || res.status === 403) {
+    throw new ConfluenceResolveError(404, `Không tìm thấy hoặc không có quyền xem ${what} (Confluence HTTP ${res.status}).`);
+  }
+  if (!res.ok) throw new ConfluenceResolveError(502, `Confluence HTTP ${res.status} khi tra ${what}: ${text.slice(0, 200)}`);
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new ConfluenceResolveError(502, `Confluence trả về dữ liệu không phải JSON khi tra ${what}.`);
+  }
+}
+
+async function resolveByIdPat(creds: ConfluenceCreds, id: string): Promise<ConfluencePageHit> {
+  const p = (await patGetJson(
+    creds,
+    `${creds.base}/rest/api/content/${id}?expand=space,ancestors,children.page`,
+    `trang ${id}`,
+  )) as RestPage;
+  const hit = restPageToHit({ ...p, id: String(p.id ?? id) }, creds.base);
+  if (!hit.id) throw new ConfluenceResolveError(404, `Không tìm thấy trang Confluence ${id}.`);
+  return hit;
+}
+
+async function resolveByTitlePat(creds: ConfluenceCreds, space: string, title: string): Promise<ConfluencePageHit> {
+  const cql = `type=page AND space=${cqlQuote(space)} AND title=${cqlQuote(title)}`;
+  const body = (await patGetJson(
+    creds,
+    `${creds.base}/rest/api/content/search?cql=${encodeURIComponent(cql)}&limit=1&expand=space,ancestors,children.page`,
+    `trang «${title}» trong space ${space}`,
+  )) as { results?: RestPage[] };
+  const first = (body.results ?? []).map((r) => restPageToHit(r, creds.base)).find((r) => r.id);
+  if (!first) {
+    throw new ConfluenceResolveError(404, `Không tìm thấy trang «${title}» trong space ${space} (hoặc không có quyền xem).`);
+  }
+  return first;
+}
+
+/** Follow link rút gọn `/x/<tiny>` (tối đa 3 hop, `redirect: 'manual'`) tới
+ *  khi ra được một ref tra được (`id` / `title`). */
+async function followTinyPat(creds: ConfluenceCreds, url: string): Promise<ResolvedRef> {
+  let current = url;
+  for (let hop = 0; hop < TINY_MAX_HOPS; hop++) {
+    const res = await fetch(current, { redirect: 'manual', headers: { authorization: `Bearer ${creds.token}` } });
+    const location = res.headers.get('location');
+    if (res.status === 404 || res.status === 403) {
+      throw new ConfluenceResolveError(404, `Link rút gọn không tồn tại hoặc không có quyền xem (Confluence HTTP ${res.status}).`);
+    }
+    if (!location) {
+      throw new ConfluenceResolveError(404, `Link rút gọn "${url}" không chuyển hướng tới trang nào (HTTP ${res.status}).`);
+    }
+    let next: string;
+    try {
+      next = new URL(location, current).toString();
+    } catch {
+      throw new ConfluenceResolveError(502, `Link rút gọn chuyển hướng tới địa chỉ không hợp lệ: ${location}`);
+    }
+    let parsed: ConfluenceRef;
+    try {
+      parsed = parseConfluenceRef(next);
+    } catch {
+      throw new ConfluenceResolveError(404, `Link rút gọn chuyển hướng tới "${next}" — không nhận ra trang Confluence.`);
+    }
+    if (parsed.kind !== 'tiny') return parsed;
+    current = next;
+  }
+  throw new ConfluenceResolveError(502, `Link rút gọn "${url}" chuyển hướng quá ${TINY_MAX_HOPS} lần.`);
+}
+
+/**
+ * Tra một trang Confluence từ link/page id dán vào ô tìm → một hit y hệt
+ * kết quả tìm-theo-tên. Thứ tự như searchConfluencePages: PAT trực tiếp
+ * trước, BAS gateway (`confluence_fetch_page`) fallback — gateway chỉ tra
+ * được theo page id (không ancestors/hasChildren); `/display/…` và `/x/…`
+ * không có PAT → lỗi rõ. Lỗi ném ra luôn là ConfluenceResolveError:
+ * 400 = ref không đọc được, 404 = không tồn tại/không quyền, 502 = thiếu cấu
+ * hình / upstream.
+ */
+export async function resolveConfluencePage(
+  creds: ConfluenceCreds | null,
+  ep: BasEndpoint | null,
+  ref: string,
+): Promise<ConfluencePageHit> {
+  const parsed = parseConfluenceRef(ref);
+  if (creds) {
+    const target: ResolvedRef = parsed.kind === 'tiny' ? await followTinyPat(creds, parsed.url) : parsed;
+    if (target.kind === 'id') return resolveByIdPat(creds, target.id);
+    return resolveByTitlePat(creds, target.space, target.title);
+  }
+  if (parsed.kind !== 'id') throw new ConfluenceResolveError(502, PAT_REQUIRED_MSG);
+  if (!ep) throw new ConfluenceResolveError(502, NO_CREDS_MSG);
+  try {
+    const meta = await basConfluenceMeta(ep, parsed.id);
+    return {
+      id: meta.id,
+      title: meta.title,
+      ...(meta.url ? { url: meta.url } : {}),
+      ...(meta.space ? { space: meta.space } : {}),
+    };
+  } catch (err) {
+    if (err instanceof ConfluenceResolveError) throw err;
+    throw new ConfluenceResolveError(502, `BAS gateway không tra được trang ${parsed.id}: ${String((err as Error)?.message ?? err)}`);
+  }
 }
 
 /** One descendant page of a scan seed: its id/title plus the folder path

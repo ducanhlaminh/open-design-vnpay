@@ -26,10 +26,14 @@
 // và kéo theo cả một bộ outside-click + listener resize/scroll. Đổ inline bỏ
 // hết chỗ đó, không mất tính năng nào.
 //
+// Dán link / page id (WP confluence-paste-link): CÙNG ô tìm nhận cả link lẫn
+// id — `looksLikeConfluenceRef` nhận dạng, `useConfluenceRefResolve` tra qua
+// `GET /api/pipelines/confluence/resolve?ref=` và trang hiện thành MỘT hàng kết
+// quả y hệt hit tìm (tick + mũi tên xem trang con). Không textarea, không nút
+// chuyển chế độ. `ConfluencePagePicker` (PipelineModals) import lại các helper
+// này để hai picker hành xử giống nhau.
+//
 // NOT recovered (deliberately dropped, out of this task's scope):
-//   - the "paste a link/bare id as a root" affordance (`looksLikeConfluenceRef`
-//     / addPastedRef) — this picker is title-search-only, matching the
-//     `ConfluenceTitleSearchImport` UX it replaces.
 //   - "implied" cascade semantics (a checked ancestor implicitly covers its
 //     subtree while the subtree's own ids stay OUT of `value`, with a
 //     `coveredBy` map driving greyed-out rows). `import-confluence` wants a
@@ -314,6 +318,118 @@ function useConfluenceTitleSearch(q: string): {
   return { hits, loading, error };
 }
 
+// ── Dán link / page id vào cùng ô tìm ───────────────────────────────────────
+
+/** Chuỗi trong ô tìm là LINK hoặc PAGE ID (không phải tên trang): bắt đầu
+ *  `http(s)://` hoặc toàn chữ số. Một chữ số đơn vẫn là ref (id) — khác với
+ *  tìm theo tên cần ≥2 ký tự. */
+export function looksLikeConfluenceRef(text: string): boolean {
+  const t = text.trim();
+  return /^https?:\/\//i.test(t) || /^\d+$/.test(t);
+}
+
+/** Tách nhiều ref dán cùng lúc: cách nhau bởi khoảng trắng / xuống dòng. Cũng
+ *  cắt ở ranh giới `http(s)://` vì `<input type="text">` trên Chromium XOÁ
+ *  ký tự xuống dòng khi dán (hai link dính liền nhau thành một chuỗi). Bỏ
+ *  trùng, giữ thứ tự. */
+export function splitConfluenceRefs(text: string): string[] {
+  return [...new Set(text.split(/\s+|(?=https?:\/\/)/i).map((s) => s.trim()).filter(Boolean))];
+}
+
+export const CONFLUENCE_REF_FORMS_HINT = 'Dạng hỗ trợ: …/pages/<id>, ?pageId=<id>, /display/SPACE/Tên, /x/<tiny>, id số.';
+
+/** Rút gọn ref để in trong dòng lỗi (link Confluence thường dài vài trăm ký tự). */
+export function shortConfluenceRef(ref: string, max = 56): string {
+  if (ref.length <= max) return ref;
+  const head = Math.ceil((max - 1) * 0.6);
+  return `${ref.slice(0, head)}…${ref.slice(ref.length - (max - 1 - head))}`;
+}
+
+type ConfluenceResolveResult = { page: ConfluencePageHit } | { error: string };
+
+/** Một lượt tra `GET /api/pipelines/confluence/resolve?ref=` (executor A).
+ *  Không bao giờ reject: lỗi trả về `{ error }` để hook gom theo ref. 400 (dạng
+ *  link không hiểu) kèm gợi ý các dạng hỗ trợ. */
+async function resolveConfluenceRef(ref: string): Promise<ConfluenceResolveResult> {
+  try {
+    const res = await fetch(`/api/pipelines/confluence/resolve?ref=${encodeURIComponent(ref)}`);
+    const j = (await res.json().catch(() => ({}))) as { page?: ConfluencePageHit; error?: string };
+    if (!res.ok) {
+      const base = j.error || `HTTP ${res.status}`;
+      return { error: res.status === 400 ? `${base} ${CONFLUENCE_REF_FORMS_HINT}` : base };
+    }
+    if (!j.page || !j.page.id) return { error: 'Daemon không trả về trang nào.' };
+    return { page: j.page };
+  } catch (cause) {
+    return { error: cause instanceof Error ? cause.message : String(cause) };
+  }
+}
+
+/** Tra song song mọi ref đã dán → `hits` (theo thứ tự ref) + `errors` theo ref.
+ *  Cache theo ref trong `useRef(Map<ref, Promise>)` — cả lượt đang bay lẫn đã
+ *  xong — nên đổi input rồi quay lại cùng ref không gọi lại daemon; lỗi
+ *  KHÔNG cache (mạng chập chờn thì lần sau tra lại). Đổi input giữa chừng chỉ
+ *  bỏ qua kết quả cũ (không set state), không huỷ fetch để cache vẫn đầy. */
+export function useConfluenceRefResolve(refs: readonly string[]): {
+  hits: ConfluencePageHit[];
+  errors: Record<string, string>;
+  loading: boolean;
+} {
+  const cache = useRef<Map<string, Promise<ConfluenceResolveResult>>>(new Map());
+  const [state, setState] = useState<{ hits: ConfluencePageHit[]; errors: Record<string, string>; loading: boolean }>({
+    hits: [],
+    errors: {},
+    loading: false,
+  });
+  const key = refs.join('\n');
+
+  useEffect(() => {
+    const list = key ? key.split('\n') : [];
+    if (list.length === 0) {
+      setState((prev) => (prev.hits.length === 0 && Object.keys(prev.errors).length === 0 && !prev.loading ? prev : { hits: [], errors: {}, loading: false }));
+      return undefined;
+    }
+    let cancelled = false;
+    const settled = new Map<string, ConfluenceResolveResult>();
+    const publish = () => {
+      const hits: ConfluencePageHit[] = [];
+      const errors: Record<string, string> = {};
+      const seen = new Set<string>();
+      for (const ref of list) {
+        const r = settled.get(ref);
+        if (!r) continue;
+        if ('page' in r) {
+          if (seen.has(r.page.id)) continue;
+          seen.add(r.page.id);
+          hits.push(r.page);
+        } else errors[ref] = r.error;
+      }
+      setState({ hits, errors, loading: settled.size < list.length });
+    };
+    publish();
+    for (const ref of list) {
+      let pending = cache.current.get(ref);
+      if (!pending) {
+        pending = resolveConfluenceRef(ref).then((result) => {
+          if ('error' in result) cache.current.delete(ref);
+          return result;
+        });
+        cache.current.set(ref, pending);
+      }
+      void pending.then((result) => {
+        if (cancelled) return;
+        settled.set(ref, result);
+        publish();
+      });
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [key]);
+
+  return state;
+}
+
 /** "SPACE · <ancestor path> · id" meta line for one row — the ancestor
  *  segment renders only the last 1-2 ancestors (the direct parent, prefixed
  *  "… / " when the real path is deeper) so the one-line, ellipsis-truncated
@@ -445,14 +561,22 @@ export function ConfluenceTreePicker({
   const [descByHit, setDescByHit] = useState<Record<string, ConfluenceDescNode | 'loading' | 'error'>>({});
 
   const trimmed = query.trim();
-  const { hits, loading, error } = useConfluenceTitleSearch(query);
+  // Link / page id dán vào CÙNG ô: không chạy tìm theo tên (q rỗng → hook
+  // idle), thay bằng tra từng ref; kết quả đổ vào cùng danh sách qua
+  // `renderHitRow` nên tick/mở cây con y hệt hit tìm.
+  const isRef = looksLikeConfluenceRef(trimmed);
+  const refs = useMemo(() => (isRef ? splitConfluenceRefs(trimmed) : []), [isRef, trimmed]);
+  const { hits, loading, error } = useConfluenceTitleSearch(isRef ? '' : query);
+  const resolved = useConfluenceRefResolve(refs);
+  const visibleHits = isRef ? resolved.hits : hits;
   // Kết quả tìm hiện NGAY TRONG vùng danh sách của panel, không phải một
   // dropdown nổi. Dropdown cũ phải render qua portal vào document.body kèm
   // toán flip-above để thoát `overflow-y: auto` của modal — và đổi lại, nó che
   // mất chính cái panel đang chọn, không cuộn cùng modal, và trên màn hẹp thì
   // đè lên cả footer. Cùng một khung nhìn cho "đang tìm" và "đã tick" bỏ hết
   // các vấn đề đó, không cần một mét vuông định vị nào.
-  const searching = trimmed.length >= 2;
+  // Ref (kể cả id 1 chữ số) luôn là "đang tìm"; tên trang cần ≥2 ký tự.
+  const searching = trimmed.length >= 2 || isRef;
 
   // ── Tài liệu liên quan (depth-1, opt-in) ─────────────────────────────────
   // Import pool KHÔNG tự follow link nữa (kéo nhầm trang nhánh wiki khác);
@@ -525,12 +649,12 @@ export function ConfluenceTreePicker({
   // !== false) gets its sub-tree fetched in parallel as soon as the hit list
   // renders — bounded by the search result size, no extra throttling needed.
   useEffect(() => {
-    if (!hits) return;
-    for (const h of hits) {
+    if (!visibleHits) return;
+    for (const h of visibleHits) {
       if (h.hasChildren === false) continue;
       fetchHitSubtree(h);
     }
-  }, [hits, fetchHitSubtree]);
+  }, [visibleHits, fetchHitSubtree]);
 
   const toggleExpandedNode = (nodeId: string) => {
     setExpandedNode((s) => {
@@ -557,12 +681,12 @@ export function ConfluenceTreePicker({
         next[id] = title;
         grew = true;
       };
-      for (const h of hits ?? []) put(h.id, h.title);
+      for (const h of visibleHits ?? []) put(h.id, h.title);
       for (const [id, node] of nodeIndex) put(id, node.title);
       for (const r of related ?? []) put(r.pageId, r.title);
       return grew ? next : prev;
     });
-  }, [hits, nodeIndex, related]);
+  }, [visibleHits, nodeIndex, related]);
 
   // Checkbox cho phép chọn nhiều tài liệu; chọn trang cha sẽ chọn cả cây con
   // đã nạp để khi nhập không mất các trang liên quan trong cùng nhánh.
@@ -640,8 +764,9 @@ export function ConfluenceTreePicker({
     return true;
   };
 
-  const renderHitRow = (h: ConfluencePageHit): JSX.Element => {
+  const renderHitRow = (h: ConfluencePageHit, opts?: { fromLink?: boolean }): JSX.Element => {
     const meta = confluenceHitMeta(h);
+    const metaText = opts?.fromLink ? `${meta.text} · Từ link đã dán` : meta.text;
     const on = ticked.has(h.id);
     const isExpanded = expandedNode.has(h.id);
     const desc = descByHit[h.id];
@@ -662,7 +787,7 @@ export function ConfluenceTreePicker({
           {renderTickBox(h.id, h.title, () => toggleNode(h.id))}
           <span className={styles.optionBody}>
             <span className={styles.optionTitle}>{h.title}</span>
-            <span className={styles.optionMeta}>{meta.text}</span>
+            <span className={styles.optionMeta}>{metaText}</span>
           </span>
           {showChevron ? (
             <button
@@ -752,7 +877,7 @@ export function ConfluenceTreePicker({
             aria-controls={`${id ?? 'confluence-picker'}-results`}
             autoComplete="off"
             className={styles.searchInput}
-            placeholder={placeholder ?? 'Tìm trang Confluence theo tên…'}
+            placeholder={placeholder ?? 'Tìm theo tên hoặc dán link/page id…'}
             autoFocus={autoFocus}
             disabled={disabled}
             value={query}
@@ -786,7 +911,18 @@ export function ConfluenceTreePicker({
           đã tick (+ tài liệu liên quan nếu đã quét). Chip đếm ở đầu panel luôn
           hiện tổng, nên chuyển chế độ không bao giờ làm mất dấu con số. */}
       <div className={styles.pickerBody} id={`${id ?? 'confluence-picker'}-results`} role="listbox" aria-label="Chọn tài liệu Confluence">
-        {searching ? (
+        {searching && isRef ? (
+          <>
+            {resolved.hits.map((h) => renderHitRow(h, { fromLink: true }))}
+            {Object.entries(resolved.errors).map(([ref, message]) => (
+              <p key={ref} className={styles.msg} title={ref}>
+                Không tra được «{shortConfluenceRef(ref)}»: {message}
+              </p>
+            ))}
+            {resolved.loading ? <p className={styles.msg}>Đang tra trang từ link…</p> : null}
+          </>
+        ) : null}
+        {searching && !isRef ? (
           loading ? (
             <p className={styles.msg}>Đang tìm…</p>
           ) : error ? (
@@ -799,7 +935,7 @@ export function ConfluenceTreePicker({
         ) : null}
         {!searching && ticked.size === 0 && !related?.length ? (
           <p className={styles.pickerEmpty}>
-            Gõ tên trang vào ô trên để tìm, rồi chọn các tài liệu cần dùng.
+            Gõ tên trang vào ô trên để tìm (hoặc dán link/page id), rồi chọn các tài liệu cần dùng.
           </p>
         ) : null}
         {!searching && ticked.size > 0 ? (

@@ -226,6 +226,11 @@ export interface PipelineDeps {
     // tiếp (CONFLUENCE_URL/_PERSONAL_TOKEN) ưu tiên, else gateway
     // confluence_search. Wired in server.ts.
     searchConfluencePages(q: string): Promise<import('@open-design/contracts').ConfluencePageHit[]>;
+    /** Tra MỘT trang từ link/page id dán vào ô tìm (WP confluence-paste-link):
+     *  `…/pages/<id>`, `?pageId=`, id số, `/display/<SPACE>/<Title>`, `/x/<tiny>`.
+     *  PAT trước, BAS gateway fallback (id-only). Throw ConfluenceResolveError
+     *  (status 400/404/502) để route map thẳng. Wired in server.ts. */
+    resolveConfluencePage(ref: string): Promise<import('@open-design/contracts').ConfluencePageHit>;
     /** All descendant pages (every level, flat + treePath) under one page — the
      *  tree picker expands a search hit into its sub-tree. Wired in server.ts. */
     confluenceDescendants(ref: string): Promise<import('./bas/bas-client.js').DescendantPage[]>;

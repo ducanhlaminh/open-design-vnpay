@@ -277,6 +277,7 @@ import { readAllFeedbackSubmissions, submitFeedback, uploadFeedbackImage } from 
 import { getMachineUser } from './auth-routes.js';
 import { isPackagedRuntime } from './app-version.js';
 import { publishPipelineEvaluation, readPipelineEvaluations } from './feedback.js';
+import { ConfluenceResolveError } from './bas/bas-client.js';
 
 // A pipeline's "project" is a KGS app: either pulled from the central KGS
 // (`od kg pull`, metadata.source === 'kg-pull') OR created fresh for pipelines
@@ -2038,6 +2039,23 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
       res.json({ pages });
     } catch (err: any) {
       res.status(502).json({ error: String(err?.message ?? err) });
+    }
+  });
+
+  // GET /api/pipelines/confluence/resolve?ref=… — tra MỘT trang từ link/page id
+  // dán vào cùng ô tìm (WP confluence-paste-link) → `{ page: ConfluencePageHit }`
+  // y hệt một hit của /confluence/pages. Status theo ConfluenceResolveError:
+  // 400 = ref không đọc được, 404 = không tồn tại/không quyền, 502 = thiếu
+  // cấu hình / upstream; lỗi lạ → 502.
+  app.get('/api/pipelines/confluence/resolve', async (req, res) => {
+    const ref = typeof req.query.ref === 'string' ? req.query.ref.trim() : '';
+    if (!ref) return res.status(400).json({ error: 'ref (Confluence URL/id) is required' });
+    try {
+      const page = await ctx.pipelines.bas.resolveConfluencePage(ref);
+      res.json({ page });
+    } catch (err: any) {
+      const status = err instanceof ConfluenceResolveError ? err.status : 502;
+      res.status(status).json({ error: String(err?.message ?? err) });
     }
   });
 
