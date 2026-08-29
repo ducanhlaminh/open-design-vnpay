@@ -23,6 +23,7 @@
 // qua alias để không phá test WP13b đã viết theo tên đó.
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
+import { isDocsReviewSnapshotProjectId } from '@open-design/contracts';
 import type {
   ScreenOrigin,
   ScreensManifest,
@@ -222,6 +223,9 @@ function pendingActionFor(
 }
 
 export function ScreenListManager({ projectId, onClose }: { projectId: string; onClose: () => void }) {
+  // wp-docs-review-report-quick-result: dự án ảo `drsnap.*` (báo cáo xác nhận)
+  // chỉ đọc — daemon 405 mọi PUT, nên ẩn hẳn Đổi tên/Bỏ/Hoàn tác + form Thêm màn.
+  const readOnly = isDocsReviewSnapshotProjectId(projectId);
   const [loading, setLoading] = useState(true);
   const [manifest, setManifest] = useState<ScreensManifest | null>(null);
   const [overrides, setOverrides] = useState<ScreensOverrideEntry[]>([]);
@@ -320,6 +324,7 @@ export function ScreenListManager({ projectId, onClose }: { projectId: string; o
 
   // Ghi ĐÈ toàn bộ overrides (không PATCH) — xem giải thích ở đầu file.
   async function putOverrides(next: ScreensOverrideEntry[]) {
+    if (readOnly) return;
     setOverrides(next);
     setBanner(null);
     setSaveError(null);
@@ -446,7 +451,9 @@ export function ScreenListManager({ projectId, onClose }: { projectId: string; o
           {platformBadge}
         </td>
         <td style={{ padding: '6px' }}>
-          {isRemoved ? (
+          {readOnly ? (
+            <em style={{ color: M.soft }}>{isRemoved ? 'Sẽ bỏ (chờ chạy lại)' : '—'}</em>
+          ) : isRemoved ? (
             <span>
               <em style={{ color: M.soft }}>Sẽ bỏ (chờ chạy lại)</em>{' '}
               <button type="button" onClick={() => undoRemove(entry.key)} data-testid={`undo-remove-${entry.key}`}>
@@ -608,15 +615,18 @@ export function ScreenListManager({ projectId, onClose }: { projectId: string; o
                     <code>{a.code}</code>
                     <span>{a.name}</span>
                     <span style={{ color: M.soft }}>{a.source || '—'}</span>
-                    <button type="button" onClick={() => undoAdd(i)} data-testid={`undo-add-${i}`} style={{ marginLeft: 'auto' }}>
-                      Hoàn tác
-                    </button>
+                    {readOnly ? null : (
+                      <button type="button" onClick={() => undoAdd(i)} data-testid={`undo-add-${i}`} style={{ marginLeft: 'auto' }}>
+                        Hoàn tác
+                      </button>
+                    )}
                   </li>
                 ))}
               </ul>
             </div>
           ) : null}
 
+          {readOnly ? null : (
           <div style={{ borderTop: `1px solid ${M.border}`, paddingTop: 10 }}>
             <div style={{ fontSize: 12.5, fontWeight: 700, color: M.ink, marginBottom: 6 }}>Thêm màn</div>
             <div style={{ display: 'grid', gap: 8 }}>
@@ -688,6 +698,7 @@ export function ScreenListManager({ projectId, onClose }: { projectId: string; o
               </button>
             </div>
           </div>
+          )}
 
           {banner ? (
             <div data-testid="save-banner" style={{ fontSize: 12.5, color: M.green, background: M.greenBg, border: `1px solid ${M.greenBorder}`, borderRadius: 8, padding: '8px 10px' }}>

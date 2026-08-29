@@ -69,19 +69,11 @@
 .stageTab[data-active='yes'] .stageNum { background: var(--accent); color: #fff; }
 .stageBadge { color: var(--text-soft); font-size: 11px; font-weight: 500; }
 
-.stageBody { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 16px; align-items: start; }
-.col { display: grid; gap: 14px; min-width: 0; }
-.fileList { display: flex; flex-wrap: wrap; gap: 6px; }
-.fileBtn { padding: 5px 10px; border: 1px solid var(--border); border-radius: var(--radius-pill, 999px); background: var(--bg-subtle); color: var(--text); font-size: 12px; cursor: pointer; }
-.fileBtn[data-active='yes'] { border-color: var(--accent); background: var(--accent-tint, color-mix(in srgb, var(--accent) 10%, transparent)); color: var(--accent-strong, var(--accent)); }
-.fileHead { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; font-size: 12.5px; color: var(--text-muted); }
-.fileHead code { color: var(--text-strong); font-size: 12px; }
-.downloadLink { color: var(--accent-strong, var(--accent)); font-size: 12px; font-weight: 600; text-decoration: none; }
-.viewer { min-height: 120px; }
-.frame { width: 100%; height: 720px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: #fff; }
-.image { max-width: 100%; border: 1px solid var(--border); border-radius: var(--radius-sm); background: #fff; }
-.plainFile { display: flex; align-items: center; gap: 12px; padding: 12px; border: 1px dashed var(--border-strong); border-radius: var(--radius-sm); color: var(--text-muted); font-size: 13px; }
-.skipped { color: var(--text-soft); font-size: 12px; }
+/* Số liệu bước: khối gập ngay dưới thanh tab (thân tab là Quick result). */
+.metricsFold { padding: 10px 14px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-panel); color: var(--text-muted); font-size: 12.5px; }
+.metricsFold > summary { cursor: pointer; font-weight: 600; color: var(--text-strong); }
+.metricsFold[open] > summary { margin-bottom: 10px; }
+.skipped { margin: 8px 0 0; color: var(--text-soft); font-size: 12px; }
 
 .metrics { display: grid; gap: 8px; font-size: 13px; }
 .metricRow { display: flex; justify-content: space-between; gap: 12px; }
@@ -91,11 +83,7 @@
 .metricTable th, .metricTable td { padding: 6px 8px; border-bottom: 1px solid var(--border); text-align: left; white-space: nowrap; }
 .metricTable th { color: var(--text-soft); font-size: 10.5px; font-weight: 650; letter-spacing: .05em; text-transform: uppercase; }
 
-.comments { display: grid; gap: 10px; }
-.comment { display: grid; gap: 4px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-subtle); }
-.commentMeta { display: flex; flex-wrap: wrap; gap: 6px; color: var(--text-soft); font-size: 11.5px; }
-.commentMeta b { color: var(--text-strong); font-weight: 600; }
-.commentText { color: var(--text); font-size: 13px; white-space: pre-wrap; }
-.commentTarget { display: inline-flex; align-self: flex-start; padding: 1px 8px; border-radius: var(--radius-pill, 999px); background: var(--accent-tint, color-mix(in srgb, var(--accent) 10%, transparent)); color: var(--accent-strong, var(--accent)); font-size: 11px; }
-
-@media (max-width: 900px) { .stageBody { grid-template-columns: 1fr; } .frame { height: 520px; } }
+/* Quick result nhúng: khung `.pl-result-page` (pipelines.css) đặt height theo
+   viewport trừ header app; ở đây còn header báo cáo + tab + số liệu nên trừ
+   nhiều hơn. Selector 2 lớp để thắng `.pl-result-page` bất kể thứ tự nạp CSS. */
+.detailPage .quick { height: calc(100vh - 300px); height: calc(100dvh - 300px); min-height: 520px; }

@@ -3409,7 +3409,7 @@ export function isUiPreviewFile(name: string, pipelineId?: string): boolean {
 // PipelineResultView render the SAME rail + FileViewer from this state.
 type PipelineResultState = ReturnType<typeof usePipelineResultFiles>;
 
-function usePipelineResultFiles(projectId: string, pipeline: PipelineView, workflowId?: string) {
+export function usePipelineResultFiles(projectId: string, pipeline: PipelineView, workflowId?: string) {
   const [files, setFiles] = useState<ProjectFile[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [activeName, setActiveName] = useState<string | null>(null);

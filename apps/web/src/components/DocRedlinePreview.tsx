@@ -36,6 +36,7 @@ import type {
   DocReviewAnnotationEvent,
   DocReviewAnnotationFileV2,
 } from '@open-design/contracts';
+import { isDocsReviewSnapshotProjectId } from '@open-design/contracts';
 import { getCurrentUserName } from './docs-review/current-user';
 import { StageCommentPanel } from './docs-review/StageCommentPanel';
 import type { ProjectFile } from '../types';
@@ -1200,6 +1201,10 @@ export function DocRedlinePreview({
   // Trang đang review, tương đối so với `<wf>/review/` (vd `docs/urd.md`) —
   // key neo bình luận cấp bước dr-review (wp-docs-review-confirm-v2).
   const reviewPage = file.name.slice(workflowPrefix.length + '/review/'.length);
+  // wp-docs-review-report-quick-result: dự án ảo `drsnap.*` (báo cáo xác nhận)
+  // chỉ đọc — daemon 405 mọi POST /files nên ẩn toolbar "Tự chỉnh" + mọi nút
+  // ghi trong panel chi tiết (Bỏ/Hoàn tác/Chỉnh đề xuất/bình luận annotation).
+  const readOnly = isDocsReviewSnapshotProjectId(projectId);
   const [editedText, setEditedText] = useState<string | null>(null);
   const [changesState, setChangesState] = useState<ChangesState>({ status: 'loading' });
   const [notesState, setNotes] = useState<DocRedlineNote[]>(NO_NOTES);
@@ -2152,6 +2157,8 @@ export function DocRedlinePreview({
   // lại `file.name` — đây là bất biến bắt buộc của toàn bộ component.
   /** Trả `true` khi lưu thành công, `false` khi bị chặn (đang bận) hoặc lỗi. */
   async function saveAction(id: string, action: () => { changes?: DocRedlineChange[]; events?: DocReviewAnnotationEvent[]; notes?: DocRedlineNote[] }): Promise<boolean> {
+    // Chỉ đọc: chặn ở cổng ghi duy nhất — mọi nút/phím tắt lỡ lọt đều no-op.
+    if (readOnly) return false;
     if (busyId) return false;
     setBusyId(id); setErrorById((prev) => ({ ...prev, [id]: '' }));
     const beforeChanges = changesState; const beforeNotes = notes;
@@ -2699,7 +2706,7 @@ export function DocRedlinePreview({
                 </span>
               </div>
             )}
-            {!userEditMode ? (
+            {readOnly ? null : !userEditMode ? (
               <div className={styles.userToolbar}>
                 <button type="button" className={styles.editModeToggle ?? ''} onClick={() => setUserEditMode(true)}>
                   <span aria-hidden="true">✎</span> Tự chỉnh
@@ -3039,6 +3046,7 @@ export function DocRedlinePreview({
               return (
                 <AnnotationDetailPanel
                   target={target}
+                  readOnly={readOnly}
                   busy={busyId === id}
                   error={errorById[id]}
                   undoable={undoableIds.has(id)}
@@ -3298,6 +3306,7 @@ const FINDING_CHANGE_CLASS: Record<'added' | 'modified' | 'removed', string> = {
 
 function AnnotationDetailPanel({
   target,
+  readOnly = false,
   busy,
   error,
   undoable,
@@ -3316,6 +3325,9 @@ function AnnotationDetailPanel({
   screenFlow,
 }: {
   target: AnnotationDetailTarget;
+  /** Chỉ xem (báo cáo xác nhận): không footer Bỏ/Hoàn tác/Chỉnh đề xuất,
+   *  không composer/xoá bình luận — danh sách bình luận vẫn hiện. */
+  readOnly?: boolean;
   busy: boolean;
   error?: string;
   undoable: boolean;
@@ -3534,21 +3546,24 @@ function AnnotationDetailPanel({
                 <p className={styles.commentText ?? ''}>{comment.text}</p>
                 <div className={styles.commentMeta ?? ''}>
                   <span>{comment.by ? `${comment.by} · ` : ''}{new Date(comment.at).toLocaleString('vi-VN')}</span>
-                  <button
-                    type="button"
-                    className={styles.commentDelete ?? ''}
-                    disabled={busy}
-                    aria-label="Xoá bình luận"
-                    title="Xoá bình luận"
-                    onClick={() => void onDeleteComment(comment.id)}
-                  >
-                    ×
-                  </button>
+                  {readOnly ? null : (
+                    <button
+                      type="button"
+                      className={styles.commentDelete ?? ''}
+                      disabled={busy}
+                      aria-label="Xoá bình luận"
+                      title="Xoá bình luận"
+                      onClick={() => void onDeleteComment(comment.id)}
+                    >
+                      ×
+                    </button>
+                  )}
                 </div>
               </li>
             ))}
           </ul>
         ) : null}
+        {readOnly ? null : (
         <div className={styles.commentComposer ?? ''}>
           <textarea
             className={styles.commentInput ?? ''}
@@ -3567,8 +3582,10 @@ function AnnotationDetailPanel({
             {busy ? 'Đang lưu...' : 'Gửi'}
           </button>
         </div>
+        )}
         {error ? <p className={styles.error}>{error}</p> : null}
       </div>
+      {readOnly ? null : (
       <div className={`${styles.modalActions} ${styles.panelFooter ?? ''}`}>
         {editing ? (
           <>
@@ -3602,6 +3619,7 @@ function AnnotationDetailPanel({
           </>
         )}
       </div>
+      )}
     </aside>
   );
 }

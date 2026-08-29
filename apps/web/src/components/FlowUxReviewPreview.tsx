@@ -71,6 +71,7 @@
 
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
+import { isDocsReviewSnapshotProjectId } from '@open-design/contracts';
 import type { ProjectFile } from '../types';
 
 import { fetchProjectFileText } from '../providers/registry';
@@ -460,6 +461,9 @@ export function FlowUxReviewPreview({
 }) {
   const loc = useMemo(() => flowUxLocationOf(file.name), [file.name]);
   const presentation = flowPresentationOf(file.name);
+  // wp-docs-review-report-quick-result: dự án ảo `drsnap.*` (báo cáo xác nhận)
+  // chỉ đọc — không Chỉnh sửa (POST screen-flow), không đổi bản (PUT selection).
+  const readOnly = isDocsReviewSnapshotProjectId(projectId);
   const [data, setData] = useState<LoadedFlow | null>(null);
   const [failed, setFailed] = useState(false);
   const [mode, setMode] = useState<ViewMode>('as-is');
@@ -869,7 +873,7 @@ export function FlowUxReviewPreview({
   // đổi radio trước, thất bại thì trả về bản cũ + báo lỗi. Thành công: tăng
   // screensGen để tab Danh sách màn tải lại danh sách theo bản mới.
   const changeVariant = async (variant: FlowVariant) => {
-    if (variant === selVariant || selSaving) return;
+    if (readOnly || variant === selVariant || selSaving) return;
     const prev = selVariant;
     setSelVariant(variant);
     setSelSaving(true);
@@ -907,7 +911,7 @@ export function FlowUxReviewPreview({
   // KHÔNG nạp lại file sau lưu (sẽ remount iframe, mất viewport/undo) — chỉ
   // cập nhật drawioXml tại chỗ cho link Tải + viewer; số trang tính lại từ
   // bản mới (người dùng xoá trang Cải thiện trong editor → hết proposal).
-  const editable = isScreenFlow && kind === 'drawio' && !!data.drawioXml;
+  const editable = isScreenFlow && kind === 'drawio' && !!data.drawioXml && !readOnly;
   const applyEditedXml = (xml: string) =>
     setData((prev) => (prev ? { ...prev, drawioXml: xml, drawioHasProposal: drawioPageCount(xml) >= 2 } : prev));
   const finishEditing = () => {
@@ -937,6 +941,7 @@ export function FlowUxReviewPreview({
     setScreensTab(true);
   };
   const saveScreenFlow = async (editedXml: string) => {
+    if (readOnly) throw new Error('Bản xác nhận chỉ đọc');
     const res = await fetch(screenFlowApiUrl(projectId, screenFlowId, ''), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1249,7 +1254,14 @@ export function FlowUxReviewPreview({
                 Ẩn ]
               </button>
             </div>
-            {showVariantSelect ? (
+            {showVariantSelect && readOnly ? (
+              // Báo cáo chỉ đọc: chỉ nói bản đang dùng, không radio/PUT.
+              <div className={styles.selectBlock} data-testid="variant-select-readonly">
+                <div className={styles.selectTitle}>
+                  Bản đang dùng: {selVariant === 'improved' ? 'Cải thiện' : 'Nguyên bản'}
+                </div>
+              </div>
+            ) : showVariantSelect ? (
               // Khối chọn bản chạy tiếp (WP dr-flow-improve mục 2) — ở ĐẦU panel,
               // trên cả danh sách finding: đây là quyết định của người duyệt.
               <div className={styles.selectBlock} data-testid="variant-select">

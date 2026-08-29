@@ -77,3 +77,34 @@ export interface DocsReviewReportDetailResponse {
   /** Mọi bản xác nhận của cùng projectId, mới nhất trước. */
   history: DocsReviewReportHistoryEntry[];
 }
+
+// ── Snapshot project id (chỉ đọc) ───────────────────────────────────────────
+// Trang chi tiết báo cáo (`/feedback/docs-review/:projectId/:confirmationId`)
+// dựng lại đúng Quick result của từng bước bằng CÙNG các viewer của pipeline
+// (FileViewer → FlowUxReviewPreview / MockupsPreview / DocRedlinePreview…).
+// Các viewer đó đọc file qua `/api/projects/:id/raw/<name>` + comment qua
+// `/api/projects/:id/docs-review/comments/:stageId`, nên daemon phục vụ một
+// "dự án ảo" chỉ đọc có id dạng `drsnap.<confirmationId>.<projectId>` — file
+// lấy từ snapshot output của bản xác nhận trên media, comment từ report.json,
+// mọi request ghi → 405. Id hợp lệ theo `isSafeId` (chữ/số/`.`/`_`/`-`):
+// confirmationId là hex nên không chứa `.`, projectId là phần còn lại.
+export const DOCS_REVIEW_SNAPSHOT_PROJECT_PREFIX = 'drsnap.';
+
+export function docsReviewSnapshotProjectId(projectId: string, confirmationId: string): string {
+  return `${DOCS_REVIEW_SNAPSHOT_PROJECT_PREFIX}${confirmationId}.${projectId}`;
+}
+
+export function parseDocsReviewSnapshotProjectId(id: string): { projectId: string; confirmationId: string } | null {
+  if (!id.startsWith(DOCS_REVIEW_SNAPSHOT_PROJECT_PREFIX)) return null;
+  const rest = id.slice(DOCS_REVIEW_SNAPSHOT_PROJECT_PREFIX.length);
+  const dot = rest.indexOf('.');
+  if (dot <= 0 || dot === rest.length - 1) return null;
+  const confirmationId = rest.slice(0, dot);
+  const projectId = rest.slice(dot + 1);
+  if (!/^[A-Za-z0-9_-]+$/.test(confirmationId)) return null;
+  return { projectId, confirmationId };
+}
+
+export function isDocsReviewSnapshotProjectId(id: string): boolean {
+  return parseDocsReviewSnapshotProjectId(id) !== null;
+}

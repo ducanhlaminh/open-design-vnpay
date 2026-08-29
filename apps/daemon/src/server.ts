@@ -595,7 +595,8 @@ import { registerProjectRoutes, registerProjectArtifactRoutes, registerProjectFi
 import { registerFinalizeRoutes, registerImportRoutes, registerProjectExportRoutes } from './import-export-routes.js';
 import { registerRemoteProjectsRoutes } from './remote-projects-routes.js';
 import { registerProjectSyncRoutes } from './project-sync-routes.js';
-import { registerDocsReviewReportRoutes } from './docs-review-reports.js';
+import { DocsReviewReportsCollector, registerDocsReviewReportRoutes } from './docs-review-reports.js';
+import { registerDocsReviewSnapshotRoutes } from './docs-review-snapshot-routes.js';
 import { registerHandoffRoutes } from './handoff-routes.js';
 import { EmptyTranscriptError, synthesizeHandoffPrompt } from './handoff-design.js';
 import { TranscriptExportLockedError } from './transcript-export.js';
@@ -6816,6 +6817,12 @@ export async function startServer({
     projectStore: projectStoreDeps,
     projectFiles: projectFileDeps,
   });
+  // Dự án ảo chỉ đọc `drsnap.<confirmId>.<projectId>` cho trang báo cáo
+  // docs-review (/feedback): phải đứng TRƯỚC registerProjectRoutes vì route
+  // thật reject id không tồn tại; sau 2 middleware auth `app.use('/api', …)`.
+  // Cùng một collector (cache 60 s) với registerDocsReviewReportRoutes bên dưới.
+  const docsReviewReportsCollector = new DocsReviewReportsCollector();
+  registerDocsReviewSnapshotRoutes(app, { collector: docsReviewReportsCollector, mimeFor });
   registerProjectRoutes(app, {
     db,
     design,
@@ -24871,7 +24878,7 @@ export async function startServer({
   });
   registerProjectSyncRoutes(app, { db, http: httpDeps, paths: pathDeps });
   // Báo cáo docs-review tổng hợp cho /feedback (đọc media, cache 60 s).
-  registerDocsReviewReportRoutes(app, { mimeFor });
+  registerDocsReviewReportRoutes(app, { collector: docsReviewReportsCollector, mimeFor });
 
   // proxy routes (anthropic / openai / azure / google / ollama) live
   // in chat-routes.ts now — garnet had a partial duplicate here that

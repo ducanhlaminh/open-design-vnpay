@@ -208,6 +208,15 @@ function addOutcome(target: DocsReviewAiOutcome, source: DocsReviewAiOutcome): v
   target.dismissed += source.dismissed;
 }
 
+/** dr-confirm v2 vẫn ghi file v1 `<confirmId>.json` cạnh `<confirmId>/report.json`
+ *  (tương thích reader cũ) → cùng một lần xác nhận xuất hiện 2 lần. Bỏ bản v1
+ *  khi đã có v2 cùng (projectId, confirmationId) để không đếm đôi lượt xác
+ *  nhận và không lặp dòng trong Lịch sử. */
+export function dropShadowedV1(records: readonly DocsReviewReportRecord[]): DocsReviewReportRecord[] {
+  const v2Keys = new Set(records.filter((r) => !r.legacy).map((r) => `${r.projectId} ${r.confirmationId}`));
+  return records.filter((r) => !r.legacy || !v2Keys.has(`${r.projectId} ${r.confirmationId}`));
+}
+
 /** Bản mới nhất mỗi projectId (confirmedAt lớn nhất; hoà → confirmationId lớn hơn). */
 export function latestPerProject(records: readonly DocsReviewReportRecord[]): DocsReviewReportRecord[] {
   const latest = new Map<string, DocsReviewReportRecord>();
@@ -412,7 +421,7 @@ export class DocsReviewReportsCollector {
         });
       }
     }
-    return { storeReachable: true, records, skippedFiles, projects, loadedAt, client };
+    return { storeReachable: true, records: dropShadowedV1(records), skippedFiles, projects, loadedAt, client };
   }
 
   async reports(opts: { refresh?: boolean } = {}): Promise<DocsReviewReportsResponse> {

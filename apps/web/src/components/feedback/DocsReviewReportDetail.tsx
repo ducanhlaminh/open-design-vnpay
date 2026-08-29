@@ -1,30 +1,23 @@
 // Chi tiết một bản xác nhận docs-review v2: `/feedback/docs-review/:projectId/:confirmationId`.
 // Header App › Tính năng + chip nền tảng/người/ngày + dropdown "Lịch sử xác
-// nhận"; tab theo `report.stages[]`; mỗi tab: cột trái = output (md render
-// markdown, html mockup = iframe sandbox qua route output, ảnh = <img>, khác =
-// dòng file + Tải) + khối metrics của bước; cột phải = comment của bước.
+// nhận"; tab theo `report.stages[]`; thân tab = ĐÚNG Quick result của bước
+// (cùng rail + FileViewer của route Quick result) nhưng chỉ đọc: file và bình
+// luận đi qua "dự án ảo" `drsnap.<confirmationId>.<projectId>` mà daemon phục
+// vụ từ snapshot trên media (docs-review-snapshot-routes.ts) — không có route
+// ghi, và các viewer tự ẩn UI ghi khi `isDocsReviewSnapshotProjectId`.
 import { useEffect, useMemo, useState } from 'react';
 import type {
-  DocsReviewOutputRef,
   DocsReviewReportDetailResponse,
-  DocsReviewStageComment,
   DocsReviewStageMetrics,
   DocsReviewStageReport,
+  PipelineView,
+  PipelinesResponse,
 } from '@open-design/contracts';
-import { renderMarkdownToSafeHtml } from '../../artifacts/markdown';
+import { docsReviewSnapshotProjectId } from '@open-design/contracts';
+import { PipelineResultBody, usePipelineResultFiles } from '../pipelines/PipelineModals';
 import { navigate, navigateBack } from '../../router';
-import { DOCS_REVIEW_REPORTS_API, formatDateTime, outputUrl, platformLabel, reportDetailRoute } from './DocsReviewReportHome';
+import { DOCS_REVIEW_REPORTS_API, formatDateTime, platformLabel, reportDetailRoute } from './DocsReviewReportHome';
 import styles from './DocsReviewReport.module.css';
-
-type OutputKind = 'markdown' | 'html' | 'image' | 'other';
-
-export function outputKindOf(outputPath: string): OutputKind {
-  const lower = outputPath.toLowerCase();
-  if (lower.endsWith('.md') || lower.endsWith('.markdown')) return 'markdown';
-  if (lower.endsWith('.html') || lower.endsWith('.htm')) return 'html';
-  if (/\.(png|svg|jpe?g|gif|webp)$/.test(lower)) return 'image';
-  return 'other';
-}
 
 export function formatBytes(size: number): string {
   if (!Number.isFinite(size) || size <= 0) return '0 B';
@@ -75,168 +68,123 @@ export function metricRows(metrics: DocsReviewStageMetrics): Array<[string, stri
 function StageMetrics({ metrics }: { metrics: DocsReviewStageMetrics }) {
   const rows = metricRows(metrics);
   return (
-    <section className={styles.panel}>
-      <div className={styles.panelHead}>
-        <h3 className={styles.panelTitle}>Số liệu bước</h3>
-      </div>
-      <div className={styles.metrics}>
-        {rows.map(([label, value]) => (
-          <div key={label} className={styles.metricRow}>
-            <span>{label}</span>
-            <b>{value}</b>
-          </div>
-        ))}
-        {metrics.kind === 'dr-flow-improve' && metrics.flows.length ? (
-          <div className={styles.tableWrap}>
-            <table className={styles.metricTable}>
-              <thead>
-                <tr>
-                  <th>Luồng</th>
-                  <th>Chọn</th>
-                  <th>Nguồn</th>
-                  <th>Phát hiện</th>
-                  <th>Patch</th>
-                  <th>Màn +/−</th>
-                  <th>Sửa đề xuất</th>
-                </tr>
-              </thead>
-              <tbody>
-                {metrics.flows.map((flow) => (
-                  <tr key={flow.flowId}>
-                    <td>{flow.flowId}</td>
-                    <td>{VARIANT_LABEL[flow.variant] ?? flow.variant}</td>
-                    <td>{SOURCE_LABEL[flow.source] ?? flow.source}</td>
-                    <td>{flow.findings}</td>
-                    <td>{flow.patchOps}</td>
-                    <td>+{flow.proposedScreens} / −{flow.removedScreens}</td>
-                    <td>{yesNo(flow.proposedEdited)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : null}
-      </div>
-    </section>
-  );
-}
-
-function MarkdownOutput({ url }: { url: string }) {
-  const [state, setState] = useState<{ status: 'loading' } | { status: 'error'; message: string } | { status: 'ok'; html: string }>({ status: 'loading' });
-  useEffect(() => {
-    let cancelled = false;
-    setState({ status: 'loading' });
-    void (async () => {
-      try {
-        const res = await fetch(url);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const text = await res.text();
-        if (!cancelled) setState({ status: 'ok', html: renderMarkdownToSafeHtml(text) });
-      } catch (err) {
-        if (!cancelled) setState({ status: 'error', message: err instanceof Error ? err.message : String(err) });
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [url]);
-  if (state.status === 'loading') return <p className={styles.note}>Đang tải…</p>;
-  if (state.status === 'error') return <p className={styles.error}>Không tải được file: {state.message}</p>;
-  return <article className="markdown-rendered" dangerouslySetInnerHTML={{ __html: state.html }} />;
-}
-
-function OutputViewer({ projectId, confirmationId, output }: { projectId: string; confirmationId: string; output: DocsReviewOutputRef }) {
-  const url = outputUrl(projectId, confirmationId, output.path);
-  const kind = outputKindOf(output.path);
-  return (
-    <section className={styles.panel}>
-      <div className={styles.fileHead}>
-        <span><code>{output.path}</code> · {formatBytes(output.size)}</span>
-        <a className={styles.downloadLink} href={outputUrl(projectId, confirmationId, output.path, { download: true })} download>Tải</a>
-      </div>
-      <div className={styles.viewer} data-kind={kind}>
-        {kind === 'markdown' ? <MarkdownOutput url={url} /> : null}
-        {kind === 'html' ? <iframe className={styles.frame} sandbox="allow-scripts" src={url} title={output.path} /> : null}
-        {kind === 'image' ? <img className={styles.image} src={url} alt={output.path} /> : null}
-        {kind === 'other' ? (
-          <div className={styles.plainFile}>
-            <span>Không xem trước được định dạng này.</span>
-            <a className={styles.downloadLink} href={outputUrl(projectId, confirmationId, output.path, { download: true })} download>Tải file</a>
-          </div>
-        ) : null}
-      </div>
-    </section>
-  );
-}
-
-function StageComments({ comments }: { comments: DocsReviewStageComment[] }) {
-  return (
-    <section className={styles.panel}>
-      <div className={styles.panelHead}>
-        <h3 className={styles.panelTitle}>Bình luận</h3>
-        <span className={styles.panelHint}>{comments.length}</span>
-      </div>
-      {comments.length ? (
-        <div className={styles.comments}>
-          {[...comments].sort((a, b) => a.at - b.at).map((comment) => (
-            <div key={comment.id} className={styles.comment}>
-              <div className={styles.commentMeta}>
-                <b>{comment.by || '—'}</b>
-                <span>·</span>
-                <span>{formatDateTime(comment.at)}</span>
-              </div>
-              <div className={styles.commentText}>{comment.text}</div>
-              {comment.target ? (
-                <span className={styles.commentTarget}>{comment.target.label ?? comment.target.key}</span>
-              ) : null}
-            </div>
-          ))}
+    <div className={styles.metrics}>
+      {rows.map(([label, value]) => (
+        <div key={label} className={styles.metricRow}>
+          <span>{label}</span>
+          <b>{value}</b>
         </div>
-      ) : (
-        <p className={styles.note}>Chưa có bình luận ở bước này.</p>
-      )}
-    </section>
-  );
-}
-
-function StagePanel({ projectId, confirmationId, stage }: { projectId: string; confirmationId: string; stage: DocsReviewStageReport }) {
-  const [selected, setSelected] = useState(0);
-  useEffect(() => { setSelected(0); }, [stage.stageId]);
-  const output = stage.outputs[Math.min(selected, Math.max(0, stage.outputs.length - 1))];
-  const skipped = stage.skipped?.length ?? 0;
-  return (
-    <div className={styles.stageBody}>
-      <div className={styles.col}>
-        {stage.outputs.length > 1 ? (
-          <div className={styles.fileList} role="tablist" aria-label="File output">
-            {stage.outputs.map((item, index) => (
-              <button
-                key={item.path}
-                type="button"
-                className={styles.fileBtn}
-                data-active={index === selected ? 'yes' : 'no'}
-                onClick={() => setSelected(index)}
-              >
-                {item.path}
-              </button>
-            ))}
-          </div>
-        ) : null}
-        {output ? (
-          <OutputViewer projectId={projectId} confirmationId={confirmationId} output={output} />
-        ) : (
-          <div className={styles.empty}>Bước này không đính kèm output.</div>
-        )}
-        {skipped ? (
-          <p className={styles.skipped} title={stage.skipped!.map((s) => `${s.path} — ${s.reason}`).join('\n')}>
-            {skipped} file không đính kèm (quá 5 MB)
-          </p>
-        ) : null}
-        <StageMetrics metrics={stage.metrics} />
-      </div>
-      <div className={styles.col}>
-        <StageComments comments={stage.comments} />
-      </div>
+      ))}
+      {metrics.kind === 'dr-flow-improve' && metrics.flows.length ? (
+        <div className={styles.tableWrap}>
+          <table className={styles.metricTable}>
+            <thead>
+              <tr>
+                <th>Luồng</th>
+                <th>Chọn</th>
+                <th>Nguồn</th>
+                <th>Phát hiện</th>
+                <th>Patch</th>
+                <th>Màn +/−</th>
+                <th>Sửa đề xuất</th>
+              </tr>
+            </thead>
+            <tbody>
+              {metrics.flows.map((flow) => (
+                <tr key={flow.flowId}>
+                  <td>{flow.flowId}</td>
+                  <td>{VARIANT_LABEL[flow.variant] ?? flow.variant}</td>
+                  <td>{SOURCE_LABEL[flow.source] ?? flow.source}</td>
+                  <td>{flow.findings}</td>
+                  <td>{flow.patchOps}</td>
+                  <td>+{flow.proposedScreens} / −{flow.removedScreens}</td>
+                  <td>{yesNo(flow.proposedEdited)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
     </div>
   );
+}
+
+// ── Quick result trên dự án ảo ────────────────────────────────────────────
+
+const DOCS_REVIEW_WORKFLOW_ID = 'docs-review';
+
+/** Outputs từng bước, chép từ registry daemon (apps/daemon/src/pipelines.ts,
+ *  workflow docs-review). Dùng khi `GET /api/pipelines` không trả được — báo
+ *  cáo đến từ media store nên dự án có thể không tồn tại trên máy này. */
+const FALLBACK_OUTPUTS: Record<string, string[]> = {
+  'dr-docs': ['docs/', 'docs-feature/'],
+  'dr-flow': ['flows/', 'screens-discovered.json', 'screens-discovered.md', 'comp/_screens.json'],
+  'dr-flow-improve': ['SCREEN-FLOW', 'SCREEN-FLOW--app', 'SCREEN-FLOW--web'].flatMap((id) =>
+    ['patch.json', 'ux-review.json', 'proposed.drawio', 'proposed.edited.json', 'screens.improved.json'].map((f) => `flows/${id}/${f}`),
+  ),
+  'dr-mockup': ['mockups/'],
+  'dr-review': ['review/'],
+  'dr-confirm': ['confirmation/'],
+};
+
+/** Định nghĩa bước cho `usePipelineResultFiles`: chỉ `id` + `outputs` có ý
+ *  nghĩa; lấy outputs từ registry khi có, không thì bảng fallback ở trên. */
+export function stagePipelineView(stage: Pick<DocsReviewStageReport, 'stageId' | 'name'>, registry: PipelineView[] | null): PipelineView {
+  const found = registry?.find((p) => p.id === stage.stageId);
+  return {
+    id: stage.stageId,
+    name: stage.name,
+    dependsOn: [],
+    status: 'succeeded',
+    active: true,
+    outputs: found?.outputs?.length ? found.outputs : FALLBACK_OUTPUTS[stage.stageId] ?? [],
+  };
+}
+
+/** Registry docs-review của dự án thật (outputs thật của từng bước). Lỗi/404
+ *  → null: caller dùng fallback, không chặn hiển thị. */
+async function fetchDocsReviewRegistry(projectId: string): Promise<PipelineView[] | null> {
+  try {
+    const res = await fetch(`/api/pipelines?projectId=${encodeURIComponent(projectId)}&workflowId=${DOCS_REVIEW_WORKFLOW_ID}`);
+    if (!res.ok) return null;
+    const data = (await res.json()) as Partial<PipelinesResponse>;
+    return Array.isArray(data.pipelines) ? data.pipelines : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Thân tab = Quick result thật (rail + FileViewer) trên dự án ảo. Caller
+ *  mount với `key={stageId}` vì hook giữ state theo project/pipeline. */
+function StageQuickResult({ snapId, pipeline }: { snapId: string; pipeline: PipelineView }) {
+  const state = usePipelineResultFiles(snapId, pipeline, DOCS_REVIEW_WORKFLOW_ID);
+  return (
+    // Cùng khung `.pl-result-page` của route Quick result (rail + stage cao cố
+    // định, cuộn nội bộ); không kéo header/back của PipelineResultView vì trang
+    // này đã có header riêng. `.quick` chỉ chỉnh chiều cao cho vừa trang.
+    <section className={`pl-result-page ${styles.quick}`} aria-label={`Quick result · ${pipeline.name}`}>
+      <div className="pl-result-page__body">
+        {/* projectKind "other" = đúng giá trị PipelinesView truyền cho route Quick result. */}
+        <PipelineResultBody projectId={snapId} projectKind="other" state={state} />
+      </div>
+    </section>
+  );
+}
+
+/** Chữ nhỏ trên tab bước: số thứ có nghĩa (màn / trang / luồng) + số bình luận. */
+export function stageBadgeText(stage: DocsReviewStageReport): string {
+  const m = stage.metrics;
+  const head = (() => {
+    switch (m.kind) {
+      case 'dr-docs': return `${m.pages} trang`;
+      case 'dr-flow': return `${m.flows} luồng · ${m.screens} màn`;
+      case 'dr-flow-improve': return `${m.flows.reduce((sum, f) => sum + f.findings, 0)} phát hiện`;
+      case 'dr-mockup': return `${m.screens} màn`;
+      case 'dr-review': return `${m.agent.total + m.userChanges.total} đề xuất`;
+      default: return `${stage.outputs.length} file`;
+    }
+  })();
+  return `${head} · ${stage.comments.length} bl`;
 }
 
 export interface DocsReviewReportDetailViewProps {
@@ -248,11 +196,23 @@ export interface DocsReviewReportDetailViewProps {
 export function DocsReviewReportDetailView({ projectId, confirmationId, data }: DocsReviewReportDetailViewProps) {
   const { report, history } = data;
   const [activeStage, setActiveStage] = useState(0);
+  // undefined = đang tải registry; null = không có (dùng fallback outputs).
+  const [registry, setRegistry] = useState<PipelineView[] | null | undefined>(undefined);
+  useEffect(() => {
+    let cancelled = false;
+    setRegistry(undefined);
+    void fetchDocsReviewRegistry(projectId).then((next) => {
+      if (!cancelled) setRegistry(next);
+    });
+    return () => { cancelled = true; };
+  }, [projectId]);
+  const snapId = docsReviewSnapshotProjectId(projectId, confirmationId);
   const stage = report.stages[Math.min(activeStage, Math.max(0, report.stages.length - 1))];
   const historyOptions = useMemo(() => history.map((entry) => ({
     ...entry,
     label: `${formatDateTime(entry.confirmedAt)} · ${entry.user || '—'}${entry.legacy ? ' (bản cũ)' : ''}`,
   })), [history]);
+  const skipped = stage?.skipped?.length ?? 0;
 
   return (
     <div className={styles.detailPage}>
@@ -305,13 +265,29 @@ export function DocsReviewReportDetailView({ projectId, confirmationId, data }: 
           >
             <span className={styles.stageNum}>{index + 1}</span>
             {item.name}
-            <span className={styles.stageBadge}>{item.outputs.length} file · {item.comments.length} bl</span>
+            <span className={styles.stageBadge}>{stageBadgeText(item)}</span>
           </button>
         ))}
       </div>
 
       {stage ? (
-        <StagePanel key={stage.stageId} projectId={projectId} confirmationId={confirmationId} stage={stage} />
+        <>
+          <details className={styles.metricsFold}>
+            <summary>Số liệu bước</summary>
+            <StageMetrics metrics={stage.metrics} />
+            {skipped ? (
+              <p className={styles.skipped} title={stage.skipped!.map((s) => `${s.path} — ${s.reason}`).join('\n')}>
+                {skipped} file không đính kèm (quá 5 MB)
+              </p>
+            ) : null}
+          </details>
+          {registry === undefined ? (
+            <p className={styles.note}>Đang tải kết quả bước…</p>
+          ) : (
+            // key theo bước: đổi tab là mount hook mới (state files/active theo pipeline).
+            <StageQuickResult key={stage.stageId} snapId={snapId} pipeline={stagePipelineView(stage, registry)} />
+          )}
+        </>
       ) : (
         <div className={styles.empty}>Bản xác nhận không có bước nào.</div>
       )}

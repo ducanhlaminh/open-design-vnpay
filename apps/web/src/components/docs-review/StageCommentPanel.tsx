@@ -16,6 +16,7 @@
 // trong sidecar .changes.json/.notes.json) — hai tầng khác nhau: annotation là
 // hội thoại trên MỘT chỗ sửa, panel này là nhận xét cho cả trang/bước.
 import { useCallback, useEffect, useState, type KeyboardEvent } from 'react';
+import { isDocsReviewSnapshotProjectId } from '@open-design/contracts';
 import type {
   CreateDocsReviewStageCommentRequest,
   CreateDocsReviewStageCommentResponse,
@@ -90,6 +91,7 @@ export function StageCommentPanel({
   stageId,
   target,
   collapsedByDefault = false,
+  readOnly: readOnlyProp,
 }: {
   projectId: string;
   stageId: DocsReviewStageId;
@@ -97,7 +99,14 @@ export function StageCommentPanel({
    *  danh sách mặc định lọc theo mục (toggle "Chỉ mục này / Tất cả bước"). */
   target?: StageCommentTarget;
   collapsedByDefault?: boolean;
+  /** Chỉ xem: không composer, không nút xoá — danh sách + lọc giữ nguyên.
+   *  Mặc định suy từ `projectId` (dự án ảo `drsnap.*` của báo cáo docs-review
+   *  chỉ đọc); truyền tường minh để override/test. */
+  readOnly?: boolean;
 }) {
+  // wp-docs-review-report-quick-result: báo cáo xác nhận xem qua dự án ảo
+  // chỉ đọc — daemon trả 405 cho POST/DELETE nên UI ghi phải ẩn hẳn.
+  const readOnly = readOnlyProp ?? isDocsReviewSnapshotProjectId(projectId);
   const [comments, setComments] = useState<DocsReviewStageComment[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState(collapsedByDefault);
@@ -147,7 +156,7 @@ export function StageCommentPanel({
 
   async function submit() {
     const trimmed = text.trim();
-    if (!trimmed || busy) return;
+    if (readOnly || !trimmed || busy) return;
     setBusy(true);
     setActionError(null);
     try {
@@ -173,7 +182,7 @@ export function StageCommentPanel({
   }
 
   async function remove(commentId: string) {
-    if (busy) return;
+    if (readOnly || busy) return;
     setBusy(true);
     setActionError(null);
     try {
@@ -225,7 +234,10 @@ export function StageCommentPanel({
   return (
     <aside className={styles.panel} aria-label="Bình luận bước" {...dataAttrs} data-collapsed="false">
       <div className={styles.head}>
-        <span className={styles.title}>Bình luận ({count})</span>
+        <span className={styles.title}>
+          Bình luận ({count})
+          {readOnly ? <span className={styles.hint} data-testid="stage-comment-readonly"> · chỉ xem</span> : null}
+        </span>
         <button
           type="button"
           className={styles.toggle}
@@ -280,7 +292,7 @@ export function StageCommentPanel({
                       {c.target.label ?? c.target.key}
                     </span>
                   ) : null}
-                  {confirmDeleteId === c.id ? (
+                  {readOnly ? null : confirmDeleteId === c.id ? (
                     <span className={styles.confirm}>
                       <span>Xoá?</span>
                       <button type="button" className={styles.confirmYes} disabled={busy} onClick={() => void remove(c.id)}>
@@ -309,6 +321,7 @@ export function StageCommentPanel({
           </ul>
         )}
       </div>
+      {readOnly ? null : (
       <div className={styles.composer}>
         <textarea
           className={styles.input}
@@ -333,6 +346,7 @@ export function StageCommentPanel({
         </div>
         {actionError ? <p className={styles.error} role="alert">{actionError}</p> : null}
       </div>
+      )}
     </aside>
   );
 }

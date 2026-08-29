@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   DocsReviewReportsCollector,
   buildReportsResponse,
+  dropShadowedV1,
   latestPerProject,
   registerDocsReviewReportRoutes,
   summaryFromV1,
@@ -156,6 +157,17 @@ describe('docs-review reports collector', () => {
       'docs-review-feedback/inst-a/broken.json',
       'docs-review-feedback/inst-b/c-bad/report.json',
     ]);
+  });
+
+  it('dropShadowedV1 removes the v1 twin of a confirmation that also has a v2 report (no double count, no duplicate history row)', () => {
+    const base = { installationId: 'i', user: 'u', app: null, feature: { id: 'p', name: 'p' }, screenPlatform: null, summary: summaryFromV1({ agent: { total: 0, accepted: 0, editedByUser: 0, dismissed: 0 }, userChanges: { total: 0 } }), report: null };
+    const kept = dropShadowedV1([
+      { ...base, projectId: 'a', confirmationId: 'x', confirmedAt: 5, legacy: true },
+      { ...base, projectId: 'a', confirmationId: 'x', confirmedAt: 5, legacy: false },
+      { ...base, projectId: 'a', confirmationId: 'old', confirmedAt: 1, legacy: true },
+      { ...base, projectId: 'b', confirmationId: 'x', confirmedAt: 2, legacy: true },
+    ]);
+    expect(kept.map((r) => `${r.projectId}:${r.confirmationId}:${r.legacy ? 'v1' : 'v2'}`)).toEqual(['a:x:v2', 'a:old:v1', 'b:x:v1']);
   });
 
   it('latestPerProject breaks ties on confirmationId and sorts newest first', () => {
