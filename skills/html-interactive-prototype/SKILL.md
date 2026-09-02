@@ -29,6 +29,7 @@ od:
       - animation-discipline
       - state-coverage
       - accessibility-baseline
+      - layout-primitives
 ---
 
 # html-interactive-prototype — UX Spec → clickable HTML/CSS prototype
@@ -110,6 +111,14 @@ On the FIRST screen, author one clean, modern stylesheet and keep it in a
 `<style>` tag; **reuse the exact same block, inlined, in every screen file** so
 all screens look consistent and each file stays self-contained (zero external
 requests). Add only small screen-specific tweaks after the shared block.
+
+**The shared block STARTS with the `OD-LAYOUT-PRIMITIVES v1` CSS** quoted in the
+`layout-primitives` craft section of this prompt — pasted verbatim, marker
+comments kept, before your `:root` tokens. Compose stacked text, truncation,
+chip rails and the screen skeleton from its `od-*` classes (`.od-stat`,
+`.od-field`, `.od-truncate`, `.od-clamp-2`, `.od-nowrap`, `.od-rail`,
+`.od-screen > header + .od-scroll + footer`) instead of re-deriving them per
+card; your own classes carry the look, `od-*` carries only the structure.
 
 Make the CSS genuinely good, not skeletal — include:
 - **Design tokens** in `:root` (CSS custom properties): bg / surface / border /

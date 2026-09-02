@@ -32,6 +32,7 @@ od:
       - animation-discipline
       - state-coverage
       - accessibility-baseline
+      - layout-primitives
 ---
 
 # ui-react — UX Spec → real, buildable shadcn/ui React app
@@ -126,6 +127,12 @@ stay intact):
 
 If no active design system is present, keep the **default shadcn neutral theme**
 already in `src/index.css` (do not invent a brand palette).
+
+`src/index.css` also ships the `OD-LAYOUT-PRIMITIVES v1` block (`@layer od-layout`,
+declared before the Tailwind import so every utility wins over it). Use its
+`od-*` classes for stacked information, data-text truncation / clamping, chip
+rails and the screen skeleton as the `layout-primitives` craft section
+describes — keep the block intact and never redefine those classes.
 
 ## Design quality & creativity — be bold
 

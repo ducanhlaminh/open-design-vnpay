@@ -81,6 +81,7 @@ A purely behavioral craft file (state-coverage, animation-discipline) is guidanc
 | `rtl-and-bidi.md` | `rtl-and-bidi` | Any skill that ships localized text or layout: blogs, docs, financial tables, mobile apps, anything that may render Arabic / Hebrew / Persian |
 | `form-validation.md` | `form-validation` | Any skill whose primary artifact contains an interactive form: lead capture, sign-in, signup, settings, multi-step intake |
 | `laws-of-ux.md` | `laws-of-ux` | Any skill whose composition decisions hit named cognitive limits: pricing pages (Hick's, Choice Overload, Von Restorff), dashboards (Pareto, Selective Attention, Working Memory), onboarding (Goal-Gradient, Zeigarnik, Peak-End), modals (Fitts's, Tesler's). Sibling axis to the rendering-rule files above — covers what to compose, not how to render. |
+| `layout-primitives.md` | `layout-primitives` | Any skill that writes HTML/CSS or JSX layout by hand: prototypes, React screens, mockups with real content. Ships the copyable `OD-LAYOUT-PRIMITIVES v1` block (structure-only `od-*` classes, `@layer od-layout`) plus action-level rules for stacked information, variable-length text (three fates), screen chrome, image geometry, and flow-first positioning. Ported from upstream OD Next (#7327). |
 
 **Partial-stateful skills.** A skill that's mostly static but contains an embedded form, data table, or query surface should opt in. State-coverage rules apply to the stateful component, not the whole page.
 

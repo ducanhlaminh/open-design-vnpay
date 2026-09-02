@@ -26,6 +26,7 @@ od:
       - laws-of-ux
       - state-coverage
       - accessibility-baseline
+      - layout-primitives
 ---
 
 # ui-react-ds — UX Spec → React app trên bộ design system đã import
@@ -267,9 +268,13 @@ lost. Rules (mirrors design-v3's `fig-playwright`):
   `./react-ds/layout.json`**. Do NOT edit `package.json` / `vite.config.ts`
   (keep `base: './'`) / `tsconfig.json` / `index.html` / anything under
   `src/ds/` or `public/` / the generated `screens/` entries.
-- `src/index.css` stays as shipped (it imports the ds globals + layout.css) —
-  theming is mode classes; the ONLY editable stylesheet is
-  `src/styles/layout.css` (layout-only, rule 5 above).
+- `src/index.css` stays as shipped (it imports the ds globals + layout.css and
+  carries the `OD-LAYOUT-PRIMITIVES v1` block) — theming is mode classes; the
+  ONLY editable stylesheet is `src/styles/layout.css` (layout-only, rule 5
+  above). The shipped `od-*` structure classes (`.od-stat`, `.od-truncate`,
+  `.od-nowrap`, `.od-rail`, `.od-screen`…) are allowed in `className` and pass
+  verify; use them per the `layout-primitives` craft section before writing a
+  new `ly-*` rule for the same shape.
 - **Dependencies:** `react`, `react-dom`, `react-router-dom` only. Do NOT run
   `npm`/`pnpm install`; do NOT import anything else — the ds components are
   dependency-free by construction.
