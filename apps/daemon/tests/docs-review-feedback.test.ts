@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs/promises';
-import { aggregateDocsReviewMetrics, assertDocsReviewCoverageComplete, buildDocsReviewReport, computeDocsReviewConfirmationDigest, confirmDocsReview, countNotesFile, docsReviewConfirmContextOf, readDocsReviewMetricsPages } from '../src/docs-review-feedback.js';
+import { DocsReviewRevokeError, aggregateDocsReviewMetrics, assertDocsReviewCoverageComplete, buildDocsReviewReport, computeDocsReviewConfirmationDigest, confirmDocsReview, countNotesFile, docsReviewConfirmContextOf, readDocsReviewConfirmationState, readDocsReviewMetricsPages, revokeDocsReviewConfirmation } from '../src/docs-review-feedback.js';
 import { addDocsReviewStageComment } from '../src/docs-review-comments.js';
 import { parseDocReviewAnnotationFile } from '@open-design/contracts';
 import { closeDatabase, insertProject, openDatabase } from '../src/db.js';
@@ -555,5 +555,113 @@ describe('docs-review confirm v2 (report.json + output snapshot)', () => {
       { id: 'a', status: 'dismissed', comments: [{ id: 'c', text: 't', at: 1 }, { id: 'bad', text: '', at: 1 }] },
       { id: 'b', origin: 'user' }, null, 'junk',
     ]))).toEqual({ notes: { total: 2, dismissed: 1, user: 1 }, comments: 1 });
+  });
+});
+
+// ─── Thu hồi xác nhận (wp-docs-review-confirm-revoke) ───────────────────────
+describe('docs-review revoke confirmation', () => {
+  async function writeReceipt(root: string, id: string, confirmedAt: number, installationId = 'inst-a'): Promise<void> {
+    await writeJson(root, `confirmation/${id}.json`, { schemaVersion: 2, confirmationId: id, installationId, confirmedAt });
+  }
+
+  function recordingClient() {
+    const uploads: Array<{ stage: string; filePath: string; body: string }> = [];
+    return {
+      uploads,
+      client: {
+        uploadFile: async (_project: string, stage: string, filePath: string, _mime: string, body: Buffer) => {
+          uploads.push({ stage, filePath, body: body.toString() });
+        },
+      } as never,
+    };
+  }
+
+  it('revokes the LATEST local confirmation: 2 media markers first, then the local marker; second revoke → 409', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'od-dr-revoke-'));
+    dirs.push(root);
+    await writeReceipt(root, 'c1', 100);
+    await writeReceipt(root, 'c2', 200);
+    const { uploads, client } = recordingClient();
+    const input = { projectId: 'p1', workflowRoot: root, installationId: 'fallback-install', user: 'u@vnpay.vn', reason: 'bổ sung bình luận', now: 999, client };
+    const result = await revokeDocsReviewConfirmation(input);
+    expect(result).toEqual({ ok: true, confirmationId: 'c2', revokedAt: 999 });
+    // v2 (cạnh report.json) rồi v1 (cạnh <confirmId>.json), install lấy từ receipt.
+    expect(uploads.map((u) => [u.filePath, u.stage])).toEqual([
+      ['docs-review-feedback/inst-a/c2/revoked.json', 'docs-review-feedback/inst-a/c2'],
+      ['docs-review-feedback/inst-a/c2.revoked.json', 'docs-review-feedback/inst-a'],
+    ]);
+    const marker = JSON.parse(await readFile(path.join(root, 'confirmation', 'c2.revoked.json'), 'utf8'));
+    expect(marker).toEqual({ schemaVersion: 1, confirmationId: 'c2', projectId: 'p1', revokedAt: 999, user: 'u@vnpay.vn', reason: 'bổ sung bình luận' });
+    expect(JSON.parse(uploads[0]!.body)).toEqual(marker);
+    // Thu hồi lần 2 (bản mới nhất đã revoked) → 409.
+    await expect(revokeDocsReviewConfirmation(input)).rejects.toMatchObject({ status: 409 });
+    await expect(revokeDocsReviewConfirmation(input)).rejects.toBeInstanceOf(DocsReviewRevokeError);
+    // Bản cũ hơn vẫn thu hồi được khi trỏ đích danh.
+    await expect(revokeDocsReviewConfirmation({ ...input, confirmationId: 'c1' })).resolves.toMatchObject({ ok: true, confirmationId: 'c1' });
+  });
+
+  it('404 when there is nothing to revoke or the id is unknown; upload failure leaves NO local marker', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'od-dr-revoke-'));
+    dirs.push(root);
+    const { client } = recordingClient();
+    const base = { projectId: 'p1', workflowRoot: root, installationId: 'inst-a', user: 'u', client };
+    await expect(revokeDocsReviewConfirmation(base)).rejects.toMatchObject({ status: 404, message: 'Chưa có bản xác nhận nào để thu hồi' });
+    await writeReceipt(root, 'c1', 100);
+    await expect(revokeDocsReviewConfirmation({ ...base, confirmationId: 'nope' })).rejects.toMatchObject({ status: 404 });
+    // Media là nguồn sự thật: upload lỗi → 502 (route), KHÔNG ghi local marker.
+    const offline = { uploadFile: async () => { throw new Error('offline'); } } as never;
+    await expect(revokeDocsReviewConfirmation({ ...base, client: offline })).rejects.toThrow('offline');
+    await expect(fs.access(path.join(root, 'confirmation', 'c1.revoked.json'))).rejects.toThrow();
+    // Marker `.revoked.json` KHÔNG được đếm là một bản xác nhận.
+    await writeJson(root, 'confirmation/ghost.revoked.json', { schemaVersion: 1, confirmationId: 'ghost', revokedAt: 1, user: 'u' });
+    await expect(revokeDocsReviewConfirmation({ ...base, confirmationId: 'ghost' })).rejects.toMatchObject({ status: 404 });
+  });
+
+  it('confirm again with the same id removes the revoke markers (media deleteByPath + local rm)', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'od-dr-revoke-reconfirm-'));
+    dirs.push(root);
+    await writeFullWorkflow(root);
+    await writeJson(root, 'confirmation/confirm-1.revoked.json', { schemaVersion: 1, confirmationId: 'confirm-1', projectId: 'p1', revokedAt: 5, user: 'u' });
+    const deletes: string[] = [];
+    const client = {
+      uploadFile: async () => { throw new Error('phải đi qua session'); },
+      openFolderSession: async () => ({
+        upload: async () => {},
+        deleteByPath: async (filePath: string) => { deletes.push(filePath); return 1; },
+      }),
+    } as never;
+    await confirmDocsReview({
+      projectId: 'p1', workflowRoot: root, installationId: 'install-1', user: 'u', channel: 'dev',
+      confirmationId: 'confirm-1', now: 123, client,
+    });
+    expect(deletes).toEqual([
+      'docs-review-feedback/install-1/confirm-1/revoked.json',
+      'docs-review-feedback/install-1/confirm-1.revoked.json',
+    ]);
+    await expect(fs.access(path.join(root, 'confirmation', 'confirm-1.revoked.json'))).rejects.toThrow();
+    await expect(fs.access(path.join(root, 'confirmation', 'confirm-1.json'))).resolves.toBeUndefined();
+    // Trạng thái sống lại sạch sẽ: latest không còn revoked.
+    const state = await readDocsReviewConfirmationState(root);
+    expect(state.latest).toMatchObject({ confirmationId: 'confirm-1', confirmedAt: 123 });
+    expect(state.latest?.revoked).toBeUndefined();
+  });
+
+  it('GET state: null / latest / latest+revoked; broken receipt and broken marker are tolerated', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'od-dr-state-'));
+    dirs.push(root);
+    expect(await readDocsReviewConfirmationState(root)).toEqual({ latest: null });
+    await writeReceipt(root, 'c1', 100);
+    await writeReceipt(root, 'c2', 200);
+    expect(await readDocsReviewConfirmationState(root)).toEqual({ latest: { confirmationId: 'c2', confirmedAt: 200 } });
+    // Marker hỏng → coi như KHÔNG revoked (không ghim trạng thái vì file rác).
+    await writeJson(root, 'confirmation/c2.revoked.json', '{broken');
+    expect((await readDocsReviewConfirmationState(root)).latest?.revoked).toBeUndefined();
+    await writeJson(root, 'confirmation/c2.revoked.json', { schemaVersion: 1, confirmationId: 'c2', projectId: 'p1', revokedAt: 999, user: 'u', reason: 'r' });
+    expect(await readDocsReviewConfirmationState(root)).toEqual({
+      latest: { confirmationId: 'c2', confirmedAt: 200, revoked: { revokedAt: 999, user: 'u', reason: 'r' } },
+    });
+    // Receipt hỏng vẫn là MỘT bản (id từ tên file, confirmedAt 0) — không chết.
+    await writeJson(root, 'confirmation/c3.json', '{broken');
+    expect((await readDocsReviewConfirmationState(root)).latest?.confirmationId).toBe('c2');
   });
 });

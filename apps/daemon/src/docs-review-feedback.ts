@@ -8,14 +8,17 @@ import type {
   DocReviewFeedbackPageMetrics,
   DocReviewOperationCounts,
   DocsReviewAiOutcome,
+  DocsReviewConfirmationState,
   DocsReviewEnrichMetrics,
   DocsReviewFeedbackArtifact,
   DocsReviewFeedbackArtifactV2,
   DocsReviewOutputRef,
+  DocsReviewRevocation,
   DocsReviewStageComment,
   DocsReviewStageId,
   DocsReviewStageMetrics,
   DocsReviewStageReport,
+  RevokeDocsReviewConfirmationResponse,
   ScreenPlatformScope,
 } from '@open-design/contracts';
 import { parseDocReviewAnnotationFile } from '@open-design/contracts';
@@ -384,9 +387,14 @@ function isInternalSegment(segment: string): boolean {
   return segment.startsWith('.') || (segment.startsWith('_') && segment !== '_manifest.json');
 }
 
+/** Thư mục biên nhận xác nhận local (`<workflowRoot>/confirmation/`) + đuôi
+ *  marker thu hồi cạnh biên nhận (`<confirmId>.revoked.json`). */
+const CONFIRMATION_DIR = 'confirmation';
+export const REVOKED_MARKER_SUFFIX = '.revoked.json';
+
 /** Thư mục ở gốc workflowRoot KHÔNG phải output của stage nào (daemon-owned):
  *  comment cấp bước + biên nhận xác nhận. */
-const NON_OUTPUT_ROOT_DIRS: ReadonlySet<string> = new Set([DOCS_REVIEW_COMMENTS_DIR, 'confirmation']);
+const NON_OUTPUT_ROOT_DIRS: ReadonlySet<string> = new Set([DOCS_REVIEW_COMMENTS_DIR, CONFIRMATION_DIR]);
 
 async function walkWorkflowFiles(workflowRoot: string): Promise<WalkedFile[]> {
   const out: WalkedFile[] = [];
@@ -830,8 +838,17 @@ export async function confirmDocsReview(input: {
   await upload(reportMediaPath, mediaDir, 'application/json', reportContent);
   await upload(v1MediaPath, v1Stage, 'application/json', v1Content);
 
-  const localDir = path.join(input.workflowRoot, 'confirmation');
+  // Thu hồi → confirm lại CÙNG digest = id cũ sống lại: gỡ marker thu hồi nếu
+  // có (wp-docs-review-confirm-revoke). Chỉ session thật có deleteByPath —
+  // client giả lập trong test (uploadFile trần) thì bỏ qua phần media.
+  if (session && typeof session.deleteByPath === 'function') {
+    await session.deleteByPath(`${mediaDir}/revoked.json`);
+    await session.deleteByPath(`docs-review-feedback/${installationId}/${confirmationId}${REVOKED_MARKER_SUFFIX}`);
+  }
+
+  const localDir = path.join(input.workflowRoot, CONFIRMATION_DIR);
   await fs.mkdir(localDir, { recursive: true });
+  await fs.rm(path.join(localDir, `${confirmationId}${REVOKED_MARKER_SUFFIX}`), { force: true });
   const localAbsolute = path.join(localDir, `${confirmationId}.json`);
   await fs.writeFile(localAbsolute, reportContent);
   return {
@@ -840,4 +857,137 @@ export async function confirmDocsReview(input: {
     mediaPath: reportMediaPath,
     localPath: toPosix(path.relative(input.workflowRoot, localAbsolute)),
   };
+}
+
+// ─── Thu hồi xác nhận (wp-docs-review-confirm-revoke) ───────────────────────
+// Marker append-only: KHÔNG xóa report cũ (giữ audit). Media là nguồn sự thật
+// (như confirm): upload 2 marker trước, upload lỗi → không ghi local (route
+// trả 502, người dùng bấm lại). Confirm lại cùng digest gỡ marker (xem trên).
+
+/** Lỗi có status HTTP cho route (404 chưa có bản xác nhận, 409 đã thu hồi) —
+ *  cùng khuôn DocsReviewCommentError. */
+export class DocsReviewRevokeError extends Error {
+  constructor(readonly status: number, message: string) {
+    super(message);
+    this.name = 'DocsReviewRevokeError';
+  }
+}
+
+interface LocalConfirmation { confirmationId: string; confirmedAt: number; installationId: string }
+
+/** Biên nhận local `confirmation/*.json` (bỏ marker `*.revoked.json`). Biên
+ *  nhận hỏng vẫn là MỘT bản xác nhận (id từ tên file, confirmedAt 0) — thu hồi
+ *  không được chết vì một file receipt lỗi. */
+async function readLocalConfirmations(workflowRoot: string): Promise<LocalConfirmation[]> {
+  const dir = path.join(workflowRoot, CONFIRMATION_DIR);
+  const out: LocalConfirmation[] = [];
+  for (const entry of await fs.readdir(dir, { withFileTypes: true }).catch(() => [])) {
+    if (!entry.isFile() || !entry.name.endsWith('.json') || entry.name.endsWith(REVOKED_MARKER_SUFFIX)) continue;
+    const confirmationId = entry.name.slice(0, -'.json'.length);
+    if (!confirmationId) continue;
+    const receipt = await readJsonObject(path.join(dir, entry.name));
+    out.push({
+      confirmationId,
+      confirmedAt: typeof receipt?.confirmedAt === 'number' && Number.isFinite(receipt.confirmedAt) ? receipt.confirmedAt : 0,
+      installationId: typeof receipt?.installationId === 'string' ? receipt.installationId : '',
+    });
+  }
+  return out;
+}
+
+/** Cùng luật "mới nhất" với latestPerProject (docs-review-reports.ts):
+ *  confirmedAt lớn nhất, hoà → confirmationId lớn hơn. */
+function latestLocalConfirmation(all: readonly LocalConfirmation[]): LocalConfirmation | null {
+  let latest: LocalConfirmation | null = null;
+  for (const item of all) {
+    if (!latest || item.confirmedAt > latest.confirmedAt
+      || (item.confirmedAt === latest.confirmedAt && item.confirmationId > latest.confirmationId)) {
+      latest = item;
+    }
+  }
+  return latest;
+}
+
+/** Parse marker thu hồi khoan dung — marker hỏng coi như KHÔNG revoked (spec):
+ *  một file rác không được làm feature "kẹt" ở trạng thái thu hồi. Dùng chung
+ *  cho GET state (local) và collector báo cáo (media). */
+export function parseDocsReviewRevocation(value: unknown): DocsReviewRevocation | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const rec = value as Record<string, unknown>;
+  if (typeof rec.revokedAt !== 'number' || !Number.isFinite(rec.revokedAt)) return null;
+  const reason = typeof rec.reason === 'string' && rec.reason.trim() ? rec.reason : undefined;
+  return {
+    revokedAt: rec.revokedAt,
+    user: typeof rec.user === 'string' ? rec.user : '',
+    ...(reason ? { reason } : {}),
+  };
+}
+
+/** `GET /api/projects/:id/docs-review/confirm/state` — chỉ đọc đĩa local,
+ *  không gọi media (chip trạng thái ở màn Pipelines phải rẻ). */
+export async function readDocsReviewConfirmationState(workflowRoot: string): Promise<DocsReviewConfirmationState> {
+  const latest = latestLocalConfirmation(await readLocalConfirmations(workflowRoot));
+  if (!latest) return { latest: null };
+  const marker = await readJsonObject(path.join(workflowRoot, CONFIRMATION_DIR, `${latest.confirmationId}${REVOKED_MARKER_SUFFIX}`));
+  const revoked = parseDocsReviewRevocation(marker);
+  return {
+    latest: {
+      confirmationId: latest.confirmationId,
+      confirmedAt: latest.confirmedAt,
+      ...(revoked ? { revoked } : {}),
+    },
+  };
+}
+
+export async function revokeDocsReviewConfirmation(input: {
+  projectId: string;
+  workflowRoot: string;
+  /** Fallback khi biên nhận (hỏng) không mang installationId. */
+  installationId: string;
+  user: string;
+  /** Bỏ trống = bản local MỚI NHẤT theo confirmedAt. */
+  confirmationId?: string;
+  reason?: string;
+  now?: number;
+  client?: UploadClient;
+}): Promise<RevokeDocsReviewConfirmationResponse> {
+  const all = await readLocalConfirmations(input.workflowRoot);
+  let target: LocalConfirmation | null;
+  if (input.confirmationId) {
+    target = all.find((c) => c.confirmationId === input.confirmationId) ?? null;
+    if (!target) throw new DocsReviewRevokeError(404, `Không tìm thấy bản xác nhận "${input.confirmationId}" để thu hồi`);
+  } else {
+    target = latestLocalConfirmation(all);
+    if (!target) throw new DocsReviewRevokeError(404, 'Chưa có bản xác nhận nào để thu hồi');
+  }
+  const confirmationId = cleanSegment(target.confirmationId);
+  const installationId = cleanSegment(target.installationId || input.installationId);
+  const markerLocal = path.join(input.workflowRoot, CONFIRMATION_DIR, `${confirmationId}${REVOKED_MARKER_SUFFIX}`);
+  if (await fileExists(markerLocal)) {
+    throw new DocsReviewRevokeError(409, `Bản xác nhận "${confirmationId}" đã được thu hồi trước đó`);
+  }
+  const revokedAt = input.now ?? Date.now();
+  const marker = {
+    schemaVersion: 1 as const,
+    confirmationId,
+    projectId: input.projectId,
+    revokedAt,
+    user: input.user,
+    ...(input.reason ? { reason: input.reason } : {}),
+  };
+  const content = Buffer.from(`${JSON.stringify(marker, null, 2)}\n`, 'utf8');
+  const mediaDir = `docs-review-feedback/${installationId}/${confirmationId}`;
+
+  const client = input.client ?? new MediaClient(mediaConfigFromEnv());
+  const session = typeof client.openFolderSession === 'function'
+    ? await client.openFolderSession(input.projectId, { create: true })
+    : null;
+  const upload = (filePath: string, stage: string, content2: Buffer) =>
+    session ? session.upload(filePath, stage, 'application/json', content2) : client.uploadFile(input.projectId, stage, filePath, 'application/json', content2);
+  // v2 (cạnh report.json) + v1 (cạnh <confirmId>.json) — collector nhận cả hai.
+  await upload(`${mediaDir}/revoked.json`, mediaDir, content);
+  await upload(`docs-review-feedback/${installationId}/${confirmationId}${REVOKED_MARKER_SUFFIX}`, `docs-review-feedback/${installationId}`, content);
+
+  await fs.writeFile(markerLocal, content);
+  return { ok: true, confirmationId, revokedAt };
 }

@@ -6,7 +6,7 @@
 //   GET /api/pipelines/docs-review/reports/:projectId/:confirmationId → DocsReviewReportDetailResponse
 //   GET .../reports/:projectId/:confirmationId/output?path=          → stream file output của bước
 import type { ScreenPlatformScope } from './pipelines.js';
-import type { DocsReviewAiOutcome, DocsReviewFeedbackArtifactV2 } from './docs-review-feedback.js';
+import type { DocsReviewAiOutcome, DocsReviewFeedbackArtifactV2, DocsReviewRevocation } from './docs-review-feedback.js';
 
 /** Số của MỘT bản xác nhận (v1 chỉ có phần dr-review nên `comments` = 0). */
 export interface DocsReviewReportSummary {
@@ -47,6 +47,10 @@ export interface DocsReviewCompletedRow {
   summary: DocsReviewReportSummary;
   /** v1 (`<confirmId>.json`): chỉ có số đếm dr-review, không có chi tiết. */
   legacy: boolean;
+  /** Có marker thu hồi. Trong thực tế `completed[]` đã LOẠI bản mới nhất bị
+   *  thu hồi (feature coi như chưa hoàn tất) nên field này thường vắng —
+   *  giữ trong shape để reader không phải đoán khi quy ước lọc đổi. */
+  revoked?: DocsReviewRevocation;
 }
 
 export interface DocsReviewSkippedFile {
@@ -70,12 +74,16 @@ export interface DocsReviewReportHistoryEntry {
   confirmedAt: number;
   user: string;
   legacy: boolean;
+  /** Bản này đã bị thu hồi (marker `revoked.json` trên media). */
+  revoked?: DocsReviewRevocation;
 }
 
 export interface DocsReviewReportDetailResponse {
   report: DocsReviewFeedbackArtifactV2;
   /** Mọi bản xác nhận của cùng projectId, mới nhất trước. */
   history: DocsReviewReportHistoryEntry[];
+  /** Bản đang xem đã bị thu hồi — snapshot vẫn xem được (audit). */
+  revoked?: DocsReviewRevocation;
 }
 
 // ── Snapshot project id (chỉ đọc) ───────────────────────────────────────────

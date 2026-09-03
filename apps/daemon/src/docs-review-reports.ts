@@ -28,11 +28,13 @@ import type {
   DocsReviewReportHistoryEntry,
   DocsReviewReportSummary,
   DocsReviewReportsResponse,
+  DocsReviewRevocation,
   DocsReviewSkippedFile,
   DocsReviewStageReport,
   ScreenPlatformScope,
 } from '@open-design/contracts';
 import { MediaClient, mediaConfigFromEnv, type MediaFile } from './kg-sync/media-client.js';
+import { parseDocsReviewRevocation } from './docs-review-feedback.js';
 import { studioConfigOf } from './kg-sync/push-dest.js';
 
 const FEEDBACK_PREFIX = 'docs-review-feedback/';
@@ -65,6 +67,8 @@ export interface DocsReviewReportRecord {
   summary: DocsReviewReportSummary;
   /** Chỉ v2. */
   report: DocsReviewFeedbackArtifactV2 | null;
+  /** Marker thu hồi (`revoked.json` / `<confirmId>.revoked.json`) nếu có. */
+  revoked?: DocsReviewRevocation;
 }
 
 interface ProjectIndex {
@@ -90,15 +94,35 @@ const isObject = (value: unknown): value is Record<string, unknown> =>
 const num = (value: unknown): number => (typeof value === 'number' && Number.isFinite(value) ? value : 0);
 const str = (value: unknown): string => (typeof value === 'string' ? value : '');
 
+const REVOKED_SUFFIX = '.revoked.json';
+
 function feedbackPathOf(filePath: string): { installationId: string; confirmationId: string; version: 1 | 2 } | null {
   if (!filePath.startsWith(FEEDBACK_PREFIX)) return null;
   const [installationId = '', second = '', third = '', ...more] = filePath.slice(FEEDBACK_PREFIX.length).split('/');
   if (!installationId || more.length) return null;
-  if (!third && second.endsWith('.json') && second.length > 5) {
+  // Marker thu hồi (`<confirmId>.revoked.json`) KHÔNG phải bản xác nhận v1 —
+  // nó đi qua revocationPathOf bên dưới, không được rơi vào skippedFiles.
+  if (!third && second.endsWith('.json') && !second.endsWith(REVOKED_SUFFIX) && second.length > 5) {
     return { installationId, confirmationId: second.slice(0, -5), version: 1 };
   }
   if (second && third === 'report.json') {
     return { installationId, confirmationId: second, version: 2 };
+  }
+  return null;
+}
+
+/** Marker thu hồi trên media (wp-docs-review-confirm-revoke), cả 2 chỗ:
+ *  `docs-review-feedback/<install>/<confirmId>/revoked.json` (cạnh report v2)
+ *  và `docs-review-feedback/<install>/<confirmId>.revoked.json` (cạnh file v1). */
+function revocationPathOf(filePath: string): { installationId: string; confirmationId: string } | null {
+  if (!filePath.startsWith(FEEDBACK_PREFIX)) return null;
+  const [installationId = '', second = '', third = '', ...more] = filePath.slice(FEEDBACK_PREFIX.length).split('/');
+  if (!installationId || more.length) return null;
+  if (!third && second.endsWith(REVOKED_SUFFIX) && second.length > REVOKED_SUFFIX.length) {
+    return { installationId, confirmationId: second.slice(0, -REVOKED_SUFFIX.length) };
+  }
+  if (second && third === 'revoked.json') {
+    return { installationId, confirmationId: second };
   }
   return null;
 }
@@ -231,7 +255,11 @@ export function latestPerProject(records: readonly DocsReviewReportRecord[]): Do
 }
 
 export function buildReportsResponse(snapshot: Pick<DocsReviewReportsSnapshot, 'storeReachable' | 'records' | 'skippedFiles'>): DocsReviewReportsResponse {
-  const completed = latestPerProject(snapshot.records);
+  // Bản MỚI NHẤT của feature bị thu hồi → feature KHÔNG vào completed, và
+  // KHÔNG fallback bản cũ hơn (thu hồi = feature chưa hoàn tất, spec
+  // wp-docs-review-confirm-revoke). `summary.confirmations` bên dưới vẫn đếm
+  // MỌI lượt xác nhận (kể cả revoked) như định nghĩa sẵn có.
+  const completed = latestPerProject(snapshot.records).filter((record) => !record.revoked);
   const confirmationsByProject = new Map<string, number>();
   for (const record of snapshot.records) {
     confirmationsByProject.set(record.projectId, (confirmationsByProject.get(record.projectId) ?? 0) + 1);
@@ -277,6 +305,7 @@ export function buildReportsResponse(snapshot: Pick<DocsReviewReportsSnapshot, '
     installationId: record.installationId,
     summary: record.summary,
     legacy: record.legacy,
+    ...(record.revoked ? { revoked: record.revoked } : {}),
   }));
   return { storeReachable: snapshot.storeReachable, summary, byApp, completed: rows, skippedFiles: snapshot.skippedFiles };
 }
@@ -285,7 +314,13 @@ export function historyOf(records: readonly DocsReviewReportRecord[], projectId:
   return records
     .filter((r) => r.projectId === projectId)
     .sort((a, b) => b.confirmedAt - a.confirmedAt)
-    .map((r) => ({ confirmationId: r.confirmationId, confirmedAt: r.confirmedAt, user: r.user, legacy: r.legacy }));
+    .map((r) => ({
+      confirmationId: r.confirmationId,
+      confirmedAt: r.confirmedAt,
+      user: r.user,
+      legacy: r.legacy,
+      ...(r.revoked ? { revoked: r.revoked } : {}),
+    }));
 }
 
 // ── collector ───────────────────────────────────────────────────────────────
@@ -356,6 +391,25 @@ export class DocsReviewReportsCollector {
       if (feedbackFiles.length === 0) continue;
       projects.set(projectId, { folderId: folder.id, filesByPath });
 
+      // Marker thu hồi của folder này — map theo install+confirmId LẤY TỪ
+      // ĐƯỜNG DẪN (marker được ghi path-addressed cạnh bản xác nhận). Parse
+      // khoan dung: marker hỏng → coi như không revoked (một file rác không
+      // được ghim feature ở trạng thái thu hồi); 2 chỗ marker (v1 + v2) cùng
+      // nội dung — bản parse được đầu tiên thắng.
+      const revocations = new Map<string, DocsReviewRevocation>();
+      for (const file of files) {
+        const ref = revocationPathOf(file.path);
+        if (!ref) continue;
+        const key = `${ref.installationId}/${ref.confirmationId}`;
+        if (revocations.has(key)) continue;
+        try {
+          const parsed = parseDocsReviewRevocation(JSON.parse((await client.downloadById(file.id)).toString('utf8')));
+          if (parsed) revocations.set(key, parsed);
+        } catch (err) {
+          this.log(`marker thu hồi không đọc được ${projectId}/${file.path}: ${(err as Error).message}`);
+        }
+      }
+
       // project.json chỉ cần khi có bản v1 (v2 mang sẵn app + feature).
       let projectConfig: Record<string, unknown> | null | undefined;
       const readProjectConfig = async (): Promise<Record<string, unknown> | null> => {
@@ -375,6 +429,7 @@ export class DocsReviewReportsCollector {
 
       for (const file of feedbackFiles) {
         const ref = feedbackPathOf(file.path)!;
+        const revoked = revocations.get(`${ref.installationId}/${ref.confirmationId}`);
         let raw: unknown;
         try {
           raw = JSON.parse((await client.downloadById(file.id)).toString('utf8'));
@@ -397,6 +452,7 @@ export class DocsReviewReportsCollector {
             screenPlatform: report.screenPlatform,
             summary: report.summary,
             report,
+            ...(revoked ? { revoked } : {}),
           });
           continue;
         }
@@ -418,6 +474,7 @@ export class DocsReviewReportsCollector {
           screenPlatform: null,
           summary: summaryFromV1(v1),
           report: null,
+          ...(revoked ? { revoked } : {}),
         });
       }
     }
@@ -443,7 +500,12 @@ export class DocsReviewReportsCollector {
     const found = await this.find(projectId, confirmationId);
     if (!found) return { error: 'not-found' };
     if (!found.record.report) return { error: 'legacy' };
-    return { report: found.record.report, history: historyOf(found.snapshot.records, projectId) };
+    // Bản đã thu hồi vẫn mở được (audit) — web hiện banner từ `revoked`.
+    return {
+      report: found.record.report,
+      history: historyOf(found.snapshot.records, projectId),
+      ...(found.record.revoked ? { revoked: found.record.revoked } : {}),
+    };
   }
 
   /** Tải MỘT output của bản xác nhận; chỉ path nằm trong `stages[].outputs[].path`. */

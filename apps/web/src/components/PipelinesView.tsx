@@ -73,6 +73,7 @@ import { PullConflictModal } from './pipelines/PullConflictModal';
 import { PlModal } from './pipelines/PlModal';
 import { FeedbackHub } from './feedback/FeedbackHub';
 import { DocsReviewConfirmModal } from './docs-review/DocsReviewConfirmModal';
+import { DocsReviewConfirmStatus } from './docs-review/DocsReviewConfirmStatus';
 import { fetchDocsReviewCommentCounts } from './docs-review/StageCommentPanel';
 import navStyles from './pipelines/PipelineNavViews.module.css';
 import { pullApply, pullPlan } from '../providers/pullConflict';
@@ -3042,6 +3043,21 @@ export function PipelinesView() {
               <Icon name="check" size={14} />
               <span>Xác nhận hoàn tất</span>
             </button>
+          ) : null}
+          {/* Chip trạng thái xác nhận + "Thu hồi xác nhận"
+              (wp-docs-review-confirm-revoke). `docsReviewCommentsGen` tăng sau
+              khi xác nhận thành công → chip tự tải lại; thu hồi thành công →
+              toast, chip tự chuyển "Đã thu hồi" (component refetch). Nút
+              "Xác nhận hoàn tất" giữ nguyên hành vi. */}
+          {workflowId === 'docs-review' && projectId ? (
+            <DocsReviewConfirmStatus
+              projectId={projectId}
+              reloadToken={docsReviewCommentsGen}
+              onRevoked={() =>
+                pushToast({ message: 'Đã thu hồi bản xác nhận hoàn tất — bổ sung bình luận rồi xác nhận lại khi sẵn sàng.' })
+              }
+              onRevokeError={(message) => pushToast({ message: 'Không thể thu hồi xác nhận.', details: message })}
+            />
           ) : null}
           </div>
           {/* Chế độ đang lưu của dự án. Chỉ hiện khi Tiết kiệm — ở chế độ Đầy

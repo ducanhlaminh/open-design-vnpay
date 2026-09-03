@@ -33,6 +33,11 @@ import {
   readDocsReviewStageComments,
 } from './docs-review-comments.js';
 import {
+  DocsReviewRevokeError,
+  readDocsReviewConfirmationState,
+  revokeDocsReviewConfirmation,
+} from './docs-review-feedback.js';
+import {
   DEFAULT_WORKFLOW_ID,
   WORKFLOWS,
   computeActive,
@@ -1318,6 +1323,44 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
       res.status(204).end();
     } catch (error) {
       docsReviewCommentError(res, error);
+    }
+  });
+
+  // ── Thu hồi "Xác nhận hoàn tất" (wp-docs-review-confirm-revoke) ───────────
+  // Marker append-only, không xóa report cũ; logic + status (404 chưa có bản,
+  // 409 đã thu hồi, upload lỗi → 502) ở docs-review-feedback.ts.
+  app.post('/api/projects/:id/docs-review/confirm/revoke', async (req, res) => {
+    const projectId = req.params.id;
+    if (!getProject(db, projectId)) return res.status(404).json({ error: 'project not found' });
+    const confirmationId = typeof req.body?.confirmationId === 'string' && req.body.confirmationId.trim()
+      ? req.body.confirmationId.trim() : undefined;
+    const reason = typeof req.body?.reason === 'string' && req.body.reason.trim()
+      ? req.body.reason.trim().slice(0, 2000) : undefined;
+    try {
+      const { user, installationId } = await resolveFeedbackIdentity();
+      const result = await revokeDocsReviewConfirmation({
+        projectId,
+        workflowRoot: docsReviewWorkflowRoot(projectId),
+        installationId,
+        user,
+        ...(confirmationId ? { confirmationId } : {}),
+        ...(reason ? { reason } : {}),
+      });
+      res.json(result);
+    } catch (error) {
+      const status = error instanceof DocsReviewRevokeError ? error.status : 502;
+      res.status(status).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  // Chip trạng thái xác nhận ở màn Pipelines — chỉ đọc biên nhận local.
+  app.get('/api/projects/:id/docs-review/confirm/state', async (req, res) => {
+    const projectId = req.params.id;
+    if (!getProject(db, projectId)) return res.status(404).json({ error: 'project not found' });
+    try {
+      res.json(await readDocsReviewConfirmationState(docsReviewWorkflowRoot(projectId)));
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
     }
   });
 

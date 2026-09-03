@@ -203,4 +203,30 @@ describe('DocsReviewReportDetailView', () => {
     await waitFor(() => expect(screen.getByText(/chưa có tệp kết quả/)).toBeTruthy());
     expect(screen.queryByLabelText('Output files')).toBeNull();
   });
+
+  // ── Thu hồi xác nhận (wp-docs-review-confirm-revoke) ─────────────────────
+  it('bản đã thu hồi: banner đầu trang + nhãn "đã thu hồi" trong Lịch sử; snapshot vẫn xem được', () => {
+    const revocation = { revokedAt: Date.UTC(2026, 7, 29, 4, 0, 0), user: 'binh', reason: 'bổ sung bình luận' };
+    const revokedData: DocsReviewReportDetailResponse = {
+      report,
+      revoked: revocation,
+      history: [{ ...data.history[0]!, revoked: revocation }, data.history[1]!, data.history[2]!],
+    };
+    render(<DocsReviewReportDetailView projectId="p-v2" confirmationId="c-new" data={revokedData} />);
+    const banner = screen.getByTestId('docs-review-report-revoked-banner');
+    expect(banner.textContent).toContain('đã được thu hồi');
+    expect(banner.textContent).toContain('binh');
+    expect(banner.textContent).toContain('bổ sung bình luận');
+    const history = screen.getByLabelText('Lịch sử xác nhận') as HTMLSelectElement;
+    expect(history.options[0]!.textContent).toContain('đã thu hồi');
+    expect(history.options[1]!.textContent).not.toContain('đã thu hồi');
+    // Phần còn lại giữ nguyên: tab + số liệu vẫn render (audit).
+    expect(screen.getAllByRole('tab')).toHaveLength(2);
+    expect(screen.getByText('Số liệu bước')).toBeTruthy();
+  });
+
+  it('không có `revoked` → không banner', () => {
+    render(<DocsReviewReportDetailView projectId="p-v2" confirmationId="c-new" data={data} />);
+    expect(screen.queryByTestId('docs-review-report-revoked-banner')).toBeNull();
+  });
 });

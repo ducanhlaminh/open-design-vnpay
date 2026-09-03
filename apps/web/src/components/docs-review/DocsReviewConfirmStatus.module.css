@@ -1,0 +1,31 @@
+/* DocsReviewConfirmStatus — chip trạng thái xác nhận cạnh nút "Xác nhận hoàn
+   tất" trên toolbar Pipelines; token sẵn có (fallback cho chỗ chưa nạp). */
+.wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  border: 1px solid var(--border, #e1e5eb);
+  border-radius: var(--radius-pill, 999px);
+  background: var(--bg-subtle, #f4f6f8);
+  color: var(--text-soft, #5a5850);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.chip[data-state='confirmed'] {
+  border-color: color-mix(in srgb, var(--accent, #0066b3) 35%, var(--border, #e1e5eb));
+  background: color-mix(in srgb, var(--accent, #0066b3) 10%, transparent);
+  color: var(--accent-strong, var(--accent, #0066b3));
+}
+
+.chip[data-state='revoked'] {
+  color: var(--text-soft, #5a5850);
+  font-style: italic;
+}

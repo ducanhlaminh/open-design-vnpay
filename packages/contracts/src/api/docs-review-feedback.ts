@@ -221,6 +221,36 @@ export interface ConfirmDocsReviewResponse {
   studioUrl?: string;
 }
 
+// ─── Thu hồi xác nhận (wp-docs-review-confirm-revoke) ───────────────────────
+// Marker append-only cạnh bản xác nhận (media `…/<confirmId>/revoked.json` +
+// `…/<confirmId>.revoked.json`, local `confirmation/<confirmId>.revoked.json`)
+// — KHÔNG xóa report cũ (giữ audit). Confirm lại cùng digest sẽ gỡ marker.
+
+export interface DocsReviewRevocation {
+  revokedAt: number;
+  user: string;
+  reason?: string;
+}
+
+/** `POST /api/projects/:id/docs-review/confirm/revoke` — `confirmationId` bỏ
+ *  trống = thu hồi bản local MỚI NHẤT theo `confirmedAt`. */
+export interface RevokeDocsReviewConfirmationRequest {
+  confirmationId?: string;
+  reason?: string;
+}
+
+export interface RevokeDocsReviewConfirmationResponse {
+  ok: true;
+  confirmationId: string;
+  revokedAt: number;
+}
+
+/** `GET /api/projects/:id/docs-review/confirm/state` — trạng thái xác nhận
+ *  của dự án (đọc biên nhận local `confirmation/`), cho chip ở màn Pipelines. */
+export interface DocsReviewConfirmationState {
+  latest: { confirmationId: string; confirmedAt: number; revoked?: DocsReviewRevocation } | null;
+}
+
 function parseAnnotationComments(raw: unknown[]): DocAnnotationComment[] {
   const out: DocAnnotationComment[] = [];
   for (const item of raw) {

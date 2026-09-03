@@ -210,12 +210,19 @@ export function DocsReviewReportDetailView({ projectId, confirmationId, data }: 
   const stage = report.stages[Math.min(activeStage, Math.max(0, report.stages.length - 1))];
   const historyOptions = useMemo(() => history.map((entry) => ({
     ...entry,
-    label: `${formatDateTime(entry.confirmedAt)} · ${entry.user || '—'}${entry.legacy ? ' (bản cũ)' : ''}`,
+    label: `${formatDateTime(entry.confirmedAt)} · ${entry.user || '—'}${entry.revoked ? ' · đã thu hồi' : ''}${entry.legacy ? ' (bản cũ)' : ''}`,
   })), [history]);
   const skipped = stage?.skipped?.length ?? 0;
 
   return (
     <div className={styles.detailPage}>
+      {/* Bản đã thu hồi vẫn mở được (audit) — chỉ báo rõ, phần còn lại giữ nguyên. */}
+      {data.revoked ? (
+        <div className={styles.warning} data-testid="docs-review-report-revoked-banner" role="status">
+          Bản xác nhận này đã được thu hồi lúc {formatDateTime(data.revoked.revokedAt)} bởi {data.revoked.user || '—'}
+          {data.revoked.reason ? ` — lý do: ${data.revoked.reason}` : ''}. Snapshot bên dưới vẫn xem được.
+        </div>
+      ) : null}
       <div className={styles.detailHead}>
         <div>
           <button type="button" className={styles.backBtn} onClick={() => navigateBack({ kind: 'home', view: 'feedback' })}>

@@ -202,6 +202,66 @@ describe('docs-review reports collector', () => {
   });
 });
 
+// ─── Thu hồi xác nhận (wp-docs-review-confirm-revoke) ───────────────────────
+describe('docs-review reports — revoked confirmations', () => {
+  const marker = JSON.stringify({ schemaVersion: 1, confirmationId: 'c-new', projectId: 'p-v2', revokedAt: 3_000, user: 'binh', reason: 'bổ sung bình luận' });
+  const revokedStore: FakeStore = {
+    ...store,
+    'p-v2': [
+      ...store['p-v2']!,
+      // Cả 2 chỗ marker như daemon ghi (v2 cạnh report.json + v1 cạnh <id>.json).
+      { path: 'docs-review-feedback/inst-b/c-new/revoked.json', content: marker },
+      { path: 'docs-review-feedback/inst-b/c-new.revoked.json', content: marker },
+    ],
+  };
+
+  it('latest revoked → feature drops out of completed (no fallback to the older confirmation)', async () => {
+    const collector = new DocsReviewReportsCollector({ client: () => fakeClient(revokedStore), log: () => {} });
+    const body = await collector.reports();
+    // p-v2 có c-prev (không revoked, cũ hơn) nhưng KHÔNG được kéo lại completed.
+    expect(body.completed.map((row) => row.projectId)).toEqual(['p-legacy', 'p-noapp']);
+    expect(body.summary.features).toBe(2);
+    // `confirmations` giữ định nghĩa cũ: đếm MỌI lượt xác nhận, kể cả revoked.
+    expect(body.summary.confirmations).toBe(5);
+    // Marker không phải bản xác nhận cũng không phải file hỏng.
+    expect(body.skippedFiles.map((row) => row.path).sort()).toEqual([
+      'docs-review-feedback/inst-a/broken.json',
+      'docs-review-feedback/inst-b/c-bad/report.json',
+    ]);
+    // KPI tính từ completed → không còn phần của p-v2.
+    expect(body.summary.agentProposals).toBe(5 + 5);
+  });
+
+  it('detail of a revoked confirmation still opens, carries `revoked`, and history marks the entry', async () => {
+    const collector = new DocsReviewReportsCollector({ client: () => fakeClient(revokedStore), log: () => {} });
+    const detail = await collector.detail('p-v2', 'c-new');
+    if ('error' in detail) throw new Error(`detail lỗi: ${detail.error}`);
+    expect(detail.revoked).toEqual({ revokedAt: 3_000, user: 'binh', reason: 'bổ sung bình luận' });
+    expect(detail.history).toEqual([
+      { confirmationId: 'c-new', confirmedAt: 2_000, user: 'binh', legacy: false, revoked: { revokedAt: 3_000, user: 'binh', reason: 'bổ sung bình luận' } },
+      { confirmationId: 'c-prev', confirmedAt: 1_200, user: 'dung', legacy: false },
+    ]);
+    // Bản không revoked của cùng project không mang field.
+    const prev = await collector.detail('p-v2', 'c-prev');
+    if ('error' in prev) throw new Error(`detail lỗi: ${prev.error}`);
+    expect(prev.revoked).toBeUndefined();
+  });
+
+  it('a broken marker is tolerated — the confirmation is NOT treated as revoked', async () => {
+    const brokenStore: FakeStore = {
+      'p-v2': [
+        ...store['p-v2']!,
+        { path: 'docs-review-feedback/inst-b/c-new/revoked.json', content: '{not json' },
+        { path: 'docs-review-feedback/inst-b/c-new.revoked.json', content: JSON.stringify({ note: 'thiếu revokedAt' }) },
+      ],
+    };
+    const collector = new DocsReviewReportsCollector({ client: () => fakeClient(brokenStore), log: () => {} });
+    const body = await collector.reports();
+    expect(body.completed.map((row) => [row.projectId, row.confirmationId])).toEqual([['p-v2', 'c-new']]);
+    expect(body.completed[0]!.revoked).toBeUndefined();
+  });
+});
+
 describe('docs-review reports routes', () => {
   it('GET /reports returns the aggregate; detail returns report + history; v1 detail is 404', async () => {
     const table = routes(new DocsReviewReportsCollector({ client: () => fakeClient(store), log: () => {} }));
