@@ -218,6 +218,32 @@ describe('App Context immutable versions', () => {
     expect((await readCurrentAppContextManifest(projectsDir, 'banking'))?.contextVersion).toBe('v1');
   });
 
+  it('best-effort materialize skips a missing package file and copies a drifted one as-is', async () => {
+    const { projectsDir, appRoot, dsDir } = await fixture();
+    await fs.promises.mkdir(path.join(appRoot, 'docs', 'guide'), { recursive: true });
+    await fs.promises.writeFile(path.join(appRoot, 'docs', 'guide', 'page.md'), 'trang goc\n');
+    await fs.promises.writeFile(path.join(appRoot, 'docs', 'guide', 'anh.png'), 'pin-bytes');
+    const v1 = (await createAppContextVersion({
+      projectsDir, appId: 'banking', appName: 'Banking', designSystemId: 'vnpay', designSystemDir: dsDir,
+    })).manifest;
+    const filesRoot = path.join(appRoot, 'context', 'versions', v1.contextVersion, 'files');
+    // Attachment this machine could not fetch (no PAT) + one that drifted on the wiki.
+    await fs.promises.rm(path.join(filesRoot, 'docs', 'guide', 'page.md'));
+    await fs.promises.writeFile(path.join(filesRoot, 'docs', 'guide', 'anh.png'), 'wiki-moi-hon');
+    // Wipe the mutable root the way a fresh pulled machine starts out.
+    await fs.promises.rm(path.join(appRoot, 'docs'), { recursive: true, force: true });
+    await fs.promises.rm(path.join(appRoot, 'app-context'), { recursive: true, force: true });
+
+    await expect(materializeAppContextVersion({ projectsDir, appId: 'banking', contextVersion: v1.contextVersion }))
+      .rejects.toThrow(/ENOENT|corrupt/);
+    await materializeAppContextVersion({ projectsDir, appId: 'banking', contextVersion: v1.contextVersion, bestEffort: true });
+
+    expect(JSON.parse(await fs.promises.readFile(path.join(appRoot, 'docs', '_manifest.json'), 'utf8'))).toEqual({ version: 1, pages: [] });
+    expect(await fs.promises.readFile(path.join(appRoot, 'docs', 'guide', 'anh.png'), 'utf8')).toBe('wiki-moi-hon');
+    await expect(fs.promises.stat(path.join(appRoot, 'docs', 'guide', 'page.md'))).rejects.toMatchObject({ code: 'ENOENT' });
+    expect((await readCurrentAppContextManifest(projectsDir, 'banking'))?.contextVersion).toBe(v1.contextVersion);
+  });
+
   it('stages a historical Feature context after the mutable DS source was deleted', async () => {
     const { projectsDir, dsDir } = await fixture();
     const v1 = (await createAppContextVersion({

@@ -577,6 +577,11 @@ export async function materializeAppContextVersion(options: {
   projectsDir: string;
   appId: string;
   contextVersion: `v${number}`;
+  /** Pull qua project-sync: attachment Confluence có thể vắng (không PAT) hoặc
+   *  đã drift so với digest pin (APPLY ghi bản mới nhất trên wiki). Best-effort
+   *  bỏ qua file vắng và chép nguyên bản đã drift thay vì hỏng cả bước
+   *  materialize; đường /context/pull cũ giữ nguyên strict. */
+  bestEffort?: boolean;
 }): Promise<AppContextManifest> {
   const manifest = await readAppContextManifest(options.projectsDir, options.appId, options.contextVersion);
   if (!manifest) throw new Error(`App Context ${options.contextVersion} not found`);
@@ -585,8 +590,16 @@ export async function materializeAppContextVersion(options: {
     if (file.source === 'design-system') continue; // installed DS is not overwritten by pulling an App.
     const source = path.join(versionRoot, VERSION_FILES_DIR, ...file.path.split('/'));
     const target = path.join(appRoot(options.projectsDir, options.appId), ...file.path.split('/'));
-    const content = await fs.promises.readFile(source);
-    if (digestBuffer(content) !== file.digest) throw new Error(`corrupt App Context file: ${file.path}`);
+    let content: Buffer;
+    try {
+      content = await fs.promises.readFile(source);
+    } catch (error) {
+      if (options.bestEffort && (error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      throw error;
+    }
+    if (digestBuffer(content) !== file.digest && !options.bestEffort) {
+      throw new Error(`corrupt App Context file: ${file.path}`);
+    }
     await fs.promises.mkdir(path.dirname(target), { recursive: true });
     await fs.promises.writeFile(target, content);
   }

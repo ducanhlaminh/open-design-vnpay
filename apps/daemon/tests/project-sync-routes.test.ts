@@ -632,6 +632,52 @@ describe('project-sync route contract', () => {
     }
   });
 
+  it('materializes the pulled Context package into the mutable App root so the Tài liệu pool is not empty', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'od-project-sync-app-pull-docs-'));
+    const seed = await fs.mkdtemp(path.join(os.tmpdir(), 'od-project-sync-app-seed-'));
+    try {
+      // A genuine immutable package (valid manifest digest) built the way the
+      // publishing machine builds one, then served byte-for-byte from media.
+      const { createAppContextVersion } = await import('../src/app-context-version.js');
+      await fs.mkdir(path.join(seed, 'shared-app', 'docs', 'guide'), { recursive: true });
+      await fs.writeFile(path.join(seed, 'shared-app', 'docs', '_manifest.json'), JSON.stringify({ version: 1, pages: [{ pageId: 'p1', title: 'Trang 1', path: 'guide/page.md', branch: 'guide' }] }));
+      await fs.writeFile(path.join(seed, 'shared-app', 'docs', 'guide', 'page.md'), '# Trang 1\n');
+      await createAppContextVersion({ projectsDir: seed, appId: 'shared-app', appName: 'Shared App', designSystemId: null });
+      const packaged: Array<{ path: string; checksum: string; content: string }> = [];
+      const walk = async (dir: string, rel: string) => {
+        for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
+          const childRel = rel ? `${rel}/${entry.name}` : entry.name;
+          if (entry.isDirectory()) await walk(path.join(dir, entry.name), childRel);
+          else {
+            const content = await fs.readFile(path.join(dir, entry.name), 'utf8');
+            packaged.push({ path: childRel, checksum: createHash('sha256').update(content).digest('hex'), content });
+          }
+        }
+      };
+      await walk(path.join(seed, 'shared-app', 'context'), 'context');
+      state.origins = [{ projectId: 'shared-app', name: 'Shared App', isApp: true, inMedia: true, visibility: 'visible' }];
+      state.mediaFiles = { 'shared-app': [
+        { path: 'app.json', checksum: 'remote-app', content: JSON.stringify({ kind: 'app', name: 'Shared App' }) },
+        ...packaged,
+      ] };
+      const table = handlers(root);
+      const planned = await call(table.get('POST /api/project-sync/plan')!, {
+        direction: 'pull', scope: { kind: 'app', projectId: 'local-app' }, origin: { mode: 'existing', originId: 'shared-app' },
+      });
+      expect(planned.status).toBe(200);
+      const applied = await call(table.get('POST /api/project-sync/apply')!, { planId: planned.body.data.planId });
+      expect(applied.status).toBe(200);
+      expect(applied.body.data.stale).toEqual([]);
+      // The immutable copy landed AND was materialized into the mutable root.
+      expect(await fs.readFile(path.join(root, 'local-app', 'context', 'versions', 'v1', 'files', 'docs', 'guide', 'page.md'), 'utf8')).toBe('# Trang 1\n');
+      expect(await fs.readFile(path.join(root, 'local-app', 'docs', 'guide', 'page.md'), 'utf8')).toBe('# Trang 1\n');
+      expect(JSON.parse(await fs.readFile(path.join(root, 'local-app', 'docs', '_manifest.json'), 'utf8')).pages).toHaveLength(1);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+      await fs.rm(seed, { recursive: true, force: true });
+    }
+  });
+
   it('normalizes a pulled Feature project.json back to the origin App id on push', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'od-push-normalize-appid-'));
     try {

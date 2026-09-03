@@ -39,7 +39,7 @@ import {
   setPipelineAppDesignSystem,
   setPipelineAppDocsReviewComponentSource,
 } from './db.js';
-import { featureContextBindingFromMetadata, parseManifestComponentSource } from './app-context-version.js';
+import { featureContextBindingFromMetadata, materializeAppContextVersion, parseManifestComponentSource, readCurrentAppContextManifest } from './app-context-version.js';
 import { MediaClient, mediaConfigFromEnv, type MediaFolderSession } from './kg-sync/media-client.js';
 import { loadRemoteProjects, PROJECT_LIFECYCLE_PATH } from './kg-sync/remote-registry.js';
 import { studioConfigOf } from './kg-sync/push-dest.js';
@@ -1550,6 +1550,29 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
               source: unit.pulledComponentSource ?? { mode: 'app-design-system' },
               createdAt: Date.now(),
             });
+            if (exec.scope.kind === 'app') {
+              // The pulled package is immutable under context/versions/<vN>/;
+              // the Tài liệu tab and every stage read the mutable App root
+              // (docs/_manifest.json, app-context/), so the version must be
+              // materialized — the legacy /context/pull route does this, the
+              // project-sync path used to skip it and the pool showed 0 pages.
+              // Best-effort: an App that never published a Context, or wiki
+              // attachments this machine cannot fetch, must not fail an APPLY
+              // that already transferred cleanly.
+              try {
+                const current = await readCurrentAppContextManifest(ctx.paths.PROJECTS_DIR, unit.localId);
+                if (current) {
+                  await materializeAppContextVersion({
+                    projectsDir: ctx.paths.PROJECTS_DIR,
+                    appId: unit.localId,
+                    contextVersion: current.contextVersion,
+                    bestEffort: true,
+                  });
+                }
+              } catch (error) {
+                console.warn(`[project-sync] materialize App Context after pull failed for ${unit.localId}:`, error);
+              }
+            }
           }
           continue;
         }
