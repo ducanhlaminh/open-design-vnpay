@@ -40,7 +40,7 @@ import {
   setPipelineAppDocsReviewComponentSource,
 } from './db.js';
 import { featureContextBindingFromMetadata, materializeAppContextVersion, parseManifestComponentSource, readCurrentAppContextManifest } from './app-context-version.js';
-import { MediaClient, mediaConfigFromEnv, type MediaFolderSession } from './kg-sync/media-client.js';
+import { MediaClient, mediaConfigFromEnv, type MediaFile, type MediaFolderSession } from './kg-sync/media-client.js';
 import { loadRemoteProjects, PROJECT_LIFECYCLE_PATH } from './kg-sync/remote-registry.js';
 import { studioConfigOf } from './kg-sync/push-dest.js';
 import { PROJECT_SYNC_PLAN_TTL_MS, ProjectSyncPlanStore, planProjectSync, projectSyncPlanIsFresh, type ProjectSyncSnapshotFile } from './project-sync.js';
@@ -104,20 +104,45 @@ async function originLedgerGroups(
   return groupOriginLedgers(ledgers, new Set(remoteRels), local);
 }
 
-/** Same, from ledger blobs that were already downloaded (batch PLAN). */
-async function ledgerGroupsFromContents(
-  contents: ReadonlyArray<{ rel: string; content: Buffer }>,
-  remoteRels: readonly string[],
-  local: { root: string | null } | null,
-): Promise<Map<string, OriginLedgerGroup>> {
-  const ledgers: Array<{ dirRel: string; ledger: ConfluenceSourcesLedger }> = [];
-  for (const { rel, content } of contents) {
-    if (!isAttachmentsLedgerPath(rel)) continue;
-    const ledger = parseConfluenceLedgerBuffer(content);
-    if (ledger) ledgers.push({ dirRel: path.posix.dirname(rel), ledger });
+/** One listing row per path (the first row that has a store id wins) — the
+ * store can hold same-path duplicates. */
+function dedupeByPath(rows: readonly MediaFile[]): Map<string, MediaFile> {
+  const out = new Map<string, MediaFile>();
+  for (const row of rows) {
+    const rel = typeof row.path === 'string' ? row.path : '';
+    if (!rel) continue;
+    const existing = out.get(rel);
+    if (!existing || (!existing.id && row.id)) out.set(rel, row);
   }
-  if (ledgers.length === 0) return new Map();
-  return groupOriginLedgers(ledgers, new Set(remoteRels), local);
+  return out;
+}
+
+/** checksum/size for every rel, from the LISTING when the store provides them
+ * (the media store checksums every upload — sha256 hex of the stored bytes,
+ * the exact format `checksum()` emits) and from a bounded download fallback
+ * otherwise (safety net for a non-standard store). `known` short-circuits rels
+ * whose bytes were already fetched for another reason (e.g. project.json). */
+async function remoteStats(
+  rowByRel: ReadonlyMap<string, MediaFile>,
+  rels: readonly string[],
+  downloadAll: (rels: string[]) => Promise<Buffer[]>,
+  known?: ReadonlyMap<string, Buffer>,
+): Promise<Map<string, { checksum: string; size: number }>> {
+  const out = new Map<string, { checksum: string; size: number }>();
+  const missing: string[] = [];
+  for (const rel of rels) {
+    const row = rowByRel.get(rel);
+    if (row && typeof row.checksum === 'string' && row.checksum) {
+      out.set(rel, { checksum: row.checksum, size: typeof row.size === 'number' ? row.size : 0 });
+      continue;
+    }
+    const bytes = known?.get(rel);
+    if (bytes) out.set(rel, { checksum: checksum(bytes), size: bytes.length });
+    else missing.push(rel);
+  }
+  const contents = missing.length > 0 ? await downloadAll(missing) : [];
+  missing.forEach((rel, i) => out.set(rel, { checksum: checksum(contents[i]!), size: contents[i]!.length }));
+  return out;
 }
 
 const emptyConfluenceOutcome = (): ProjectSyncConfluencePullOutcome => ({ fetched: 0, drifted: [], missing: [] });
@@ -757,66 +782,102 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
     const originFiles: ProjectSyncSnapshotFile[] = [];
     const featureFiles: BatchExecutionFeature['featureFiles'] = [];
     const session = await media.openFolderSession(originId, { create: false });
-    const remoteFeatureFiles = session.listFiles();
-    const remoteRels = remoteFeatureFiles.map((file) => (typeof file.path === 'string' ? file.path : '')).filter(Boolean);
+    // Listing checksums make PLAN download-free for ordinary files: only
+    // project.json (parsed for the binding), ledgers, and checksum-less rows
+    // are fetched. APPLY re-verifies checksum(content) against these values.
+    const rowByRel = dedupeByPath(session.list());
+    const remoteRels = [...rowByRel.keys()];
     const featureRels: string[] = [];
-    for (const file of remoteFeatureFiles) {
-      const rel = typeof file.path === 'string' ? file.path : '';
-      if (!rel || isControl(rel)) continue;
+    for (const rel of remoteRels) {
+      if (isControl(rel)) continue;
       if (!safeRelativePath(rel)) throw new Error(`Unsafe remote Feature path: ${rel}`);
       featureRels.push(rel);
     }
-    const featureContents = await mapLimit(featureRels, MEDIA_TRANSFER_CONCURRENCY, (rel) => session.download(rel));
-    // Confluence-backed attachments: ONE group per ledger (already downloaded
-    // above) — nothing else to fetch at PLAN time; APPLY expands the group.
-    const ledgerGroups = await ledgerGroupsFromContents(featureRels.map((rel, i) => ({ rel, content: featureContents[i]! })), remoteRels, { root: localRoot });
-    for (const [i, rel] of featureRels.entries()) {
-      const content = featureContents[i]!;
-      const digest = checksum(content);
+    // Confluence-backed attachments: ONE group per ledger (only the ledgers
+    // are downloaded) — nothing else to fetch at PLAN time; APPLY expands the group.
+    const ledgerGroups = await originLedgerGroups((rel) => session.download(rel), remoteRels, (rel) => !isControl(rel), { root: localRoot });
+    // Parity with the pre-listing behaviour (downloadFile failure → plan 502):
+    // a Feature origin without project.json cannot be planned.
+    if (!rowByRel.has('project.json')) throw new Error(`downloadFile: not found ${originId}/project.json`);
+    const projectContent = await session.download('project.json');
+    const projectConfig = JSON.parse(projectContent.toString('utf8')) as Record<string, unknown>;
+    // The pulled Feature keeps the LOCAL App id, so compare against a rewrite.
+    const comparisonContent = Buffer.from(`${JSON.stringify({
+      ...projectConfig,
+      appId: localAppId,
+      ...(projectConfig.appContextBinding && typeof projectConfig.appContextBinding === 'object' && !Array.isArray(projectConfig.appContextBinding)
+        ? { appContextBinding: { ...(projectConfig.appContextBinding as Record<string, unknown>), appId: localAppId } }
+        : {}),
+    }, null, 2)}\n`);
+    const statByRel = await remoteStats(
+      rowByRel,
+      featureRels,
+      (rels) => mapLimit(rels, MEDIA_TRANSFER_CONCURRENCY, (rel) => session.download(rel)),
+      new Map([['project.json', projectContent]]),
+    );
+    for (const rel of featureRels) {
+      const stat = statByRel.get(rel)!;
       const group = ledgerGroups.get(rel);
-      let comparisonContent = content;
-      if (rel === 'project.json') {
-        const remote = JSON.parse(content.toString('utf8')) as Record<string, unknown>;
-        comparisonContent = Buffer.from(`${JSON.stringify({
-          ...remote,
-          appId: localAppId,
-          ...(remote.appContextBinding && typeof remote.appContextBinding === 'object' && !Array.isArray(remote.appContextBinding)
-            ? { appContextBinding: { ...(remote.appContextBinding as Record<string, unknown>), appId: localAppId } }
-            : {}),
-        }, null, 2)}\n`);
-      }
       const stage = stageForOutput(rel)?.id;
-      featureFiles.push({ rel, checksum: digest, ...(group ? { ledger: ledgerRefOf(group) } : {}) });
-      originFiles.push({ path: `feature/${rel}`, checksum: checksum(comparisonContent), size: comparisonContent.length, kind: kindOf(rel, false), featureId: originId, ...(stage ? { stage } : {}), ...(group ? { confluenceGroup: groupOf(group) } : {}) });
+      // featureFiles keep the ORIGINAL bytes' checksum (APPLY verifies the
+      // download against it); only the plan comparison sees the rewrite.
+      featureFiles.push({ rel, checksum: stat.checksum, ...(group ? { ledger: ledgerRefOf(group) } : {}) });
+      const compared = rel === 'project.json' ? { checksum: checksum(comparisonContent), size: comparisonContent.length } : stat;
+      originFiles.push({ path: `feature/${rel}`, checksum: compared.checksum, size: compared.size, kind: kindOf(rel, false), featureId: originId, ...(stage ? { stage } : {}), ...(group ? { confluenceGroup: groupOf(group) } : {}) });
     }
-    return { localFiles, originFiles, featureFiles };
+    return { localFiles, originFiles, featureFiles, projectConfig };
   };
 
-  const boundContextSnapshot = async (originAppId: string, localAppId: string, contextVersion: string | null, featureId: string) => {
+  /** Per-`contextVersion` data that is IDENTICAL for every Feature of one
+   * batch bound to that version: remote rows (listing checksum/size + ledger
+   * groups) and the local App copies. Cached for the lifetime of one
+   * buildFeaturePullBatch call. */
+  type BoundContextData = {
+    rows: Array<{ rel: string; checksum: string; size: number; group?: OriginLedgerGroup }>;
+    locals: Array<{ rel: string; checksum: string; size: number }>;
+  };
+
+  const boundContextSnapshot = async (
+    appSession: () => Promise<MediaFolderSession>,
+    originAppId: string,
+    localAppId: string,
+    contextVersion: string | null,
+    featureId: string,
+    cache: Map<string, BoundContextData>,
+  ) => {
     const empty = { localFiles: [] as ProjectSyncSnapshotFile[], originFiles: [] as ProjectSyncSnapshotFile[], contextFiles: [] as BatchExecutionFeature['contextFiles'] };
     if (!contextVersion || !/^v[1-9]\d*$/.test(contextVersion)) return empty;
-    const media = new MediaClient(mediaConfigFromEnv());
-    const root = `context/versions/${contextVersion}`;
-    const session = await media.openFolderSession(originAppId, { create: false });
-    const allRemote = session.listFiles();
-    const inVersion = (rel: string) => rel === `${root}/manifest.json` || rel.startsWith(`${root}/files/`);
-    const remote = allRemote.filter((file) => typeof file.path === 'string' && inVersion(file.path));
-    if (!remote.some((file) => file.path === `${root}/manifest.json`)) throw new Error(`Bound Context ${contextVersion} is missing from origin App ${originAppId}`);
-    const remoteRels = allRemote.map((file) => (typeof file.path === 'string' ? file.path : '')).filter(Boolean);
-    const contextRels = remote.map((file) => file.path as string);
-    for (const rel of contextRels) if (!safeRelativePath(rel)) throw new Error(`Unsafe bound Context path: ${rel}`);
-    const contextContents = await mapLimit(contextRels, MEDIA_TRANSFER_CONCURRENCY, (rel) => session.download(rel));
-    const localRoot = path.join(ctx.paths.PROJECTS_DIR, localAppId);
-    const ledgerGroups = await ledgerGroupsFromContents(contextRels.map((rel, i) => ({ rel, content: contextContents[i]! })), remoteRels, { root: localRoot });
-    for (const [i, rel] of contextRels.entries()) {
-      const content = contextContents[i]!;
-      const digest = checksum(content);
-      const entryPath = `bound-context/${featureId}/${rel}`;
-      const group = ledgerGroups.get(rel);
-      empty.originFiles.push({ path: entryPath, checksum: digest, size: content.length, kind: 'context', featureId, contextVersion, ...(group ? { confluenceGroup: groupOf(group) } : {}) });
-      empty.contextFiles.push({ rel, checksum: digest, ...(group ? { ledger: ledgerRefOf(group) } : {}) });
-      const local = await fs.readFile(path.join(ctx.paths.PROJECTS_DIR, localAppId, rel)).catch(() => null);
-      if (local) empty.localFiles.push({ path: entryPath, checksum: checksum(local), size: local.length, kind: 'context', featureId, contextVersion });
+    let data = cache.get(contextVersion);
+    if (!data) {
+      const session = await appSession();
+      const root = `context/versions/${contextVersion}`;
+      const inVersion = (rel: string) => rel === `${root}/manifest.json` || rel.startsWith(`${root}/files/`);
+      const rowByRel = dedupeByPath(session.list());
+      const remoteRels = [...rowByRel.keys()];
+      const contextRels = remoteRels.filter(inVersion);
+      if (!rowByRel.has(`${root}/manifest.json`)) throw new Error(`Bound Context ${contextVersion} is missing from origin App ${originAppId}`);
+      for (const rel of contextRels) if (!safeRelativePath(rel)) throw new Error(`Unsafe bound Context path: ${rel}`);
+      const localRoot = path.join(ctx.paths.PROJECTS_DIR, localAppId);
+      const ledgerGroups = await originLedgerGroups((rel) => session.download(rel), remoteRels, inVersion, { root: localRoot });
+      const statByRel = await remoteStats(rowByRel, contextRels, (rels) => mapLimit(rels, MEDIA_TRANSFER_CONCURRENCY, (rel) => session.download(rel)));
+      const rows: BoundContextData['rows'] = [];
+      const locals: BoundContextData['locals'] = [];
+      for (const rel of contextRels) {
+        const stat = statByRel.get(rel)!;
+        const group = ledgerGroups.get(rel);
+        rows.push({ rel, ...stat, ...(group ? { group } : {}) });
+        const local = await fs.readFile(path.join(localRoot, rel)).catch(() => null);
+        if (local) locals.push({ rel, checksum: checksum(local), size: local.length });
+      }
+      data = { rows, locals };
+      cache.set(contextVersion, data);
+    }
+    for (const row of data.locals) {
+      empty.localFiles.push({ path: `bound-context/${featureId}/${row.rel}`, checksum: row.checksum, size: row.size, kind: 'context', featureId, contextVersion });
+    }
+    for (const row of data.rows) {
+      empty.originFiles.push({ path: `bound-context/${featureId}/${row.rel}`, checksum: row.checksum, size: row.size, kind: 'context', featureId, contextVersion, ...(row.group ? { confluenceGroup: groupOf(row.group) } : {}) });
+      empty.contextFiles.push({ rel: row.rel, checksum: row.checksum, ...(row.group ? { ledger: ledgerRefOf(row.group) } : {}) });
     }
     return empty;
   };
@@ -840,17 +901,21 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
     const executionByOrigin = new Map<string, Omit<BatchExecutionFeature, 'localId' | 'mode'>>();
     const originFeatures = [];
     const media = new MediaClient(mediaConfigFromEnv());
+    // The origin App folder is shared by every Feature in the batch: list it
+    // once (lazily) and reuse the per-version Context data across Features
+    // bound to the same contextVersion.
+    let appSessionPromise: Promise<MediaFolderSession> | null = null;
+    const appSession = () => (appSessionPromise ??= media.openFolderSession(request.originAppId, { create: false }));
+    const contextCache = new Map<string, BoundContextData>();
     for (const originId of request.originFeatureIds) {
       const origin = origins.find((row) => row.originId === originId && row.kind === 'feature' && row.visibility === 'visible');
       if (!origin) continue;
       const mapped = localFeatures.find((project) => originIdOf(project) === originId) ?? null;
       const feature = await featureSnapshot(originId, mapped?.id ?? null, request.localAppId);
-      const projectFile = await media.downloadFile(originId, 'project.json');
-      const config = JSON.parse(projectFile.toString('utf8')) as Record<string, unknown>;
-      const rawBinding = config.appContextBinding;
+      const rawBinding = feature.projectConfig.appContextBinding;
       const contextVersion = rawBinding && typeof rawBinding === 'object' && !Array.isArray(rawBinding) && typeof (rawBinding as Record<string, unknown>).contextVersion === 'string'
         ? (rawBinding as Record<string, unknown>).contextVersion as string : null;
-      const context = await boundContextSnapshot(request.originAppId, request.localAppId, contextVersion, originId);
+      const context = await boundContextSnapshot(appSession, request.originAppId, request.localAppId, contextVersion, originId, contextCache);
       const built = planProjectSync({ direction: 'pull', scope: { kind: 'feature', projectId: mapped?.id ?? originId, appId: request.localAppId }, origin: { mode: 'existing', originId }, local: [...feature.localFiles, ...context.localFiles], originFiles: [...feature.originFiles, ...context.originFiles] });
       originFeatures.push({ originId, originAppId: origin.appId ?? '', name: origin.name, summary: built.plan.summary, entries: built.plan.entries });
       executionByOrigin.set(originId, { originId, name: origin.name, featureFiles: feature.featureFiles, contextVersion, contextFiles: context.contextFiles });

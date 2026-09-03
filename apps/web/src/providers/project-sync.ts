@@ -52,6 +52,9 @@ function errorCodeOf(body: unknown): string | undefined {
 }
 
 export const PROJECT_SYNC_REQUEST_TIMEOUT_MS = 30_000;
+/** PLAN reads the whole origin listing (a big Feature batch can take a while
+ *  even without content downloads) — give it more room than the 30s default. */
+export const PROJECT_SYNC_PLAN_TIMEOUT_MS = 120_000;
 export const PROJECT_SYNC_OPERATION_TIMEOUT_MS = 5 * 60_000;
 export const PROJECT_SYNC_POLL_INTERVAL_MS = 700;
 
@@ -187,7 +190,7 @@ export async function planProjectSync(request: ProjectSyncPlanRequest): Promise<
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(request),
-  });
+  }, PROJECT_SYNC_PLAN_TIMEOUT_MS);
   const body = await json(response);
   if (response.status === 409 && errorCodeOf(body) === ERR_PROJECT_SYNC_STAGE_RUNNING) {
     throw new ProjectSyncStageRunningError(messageFrom(body, 'Bước đang chạy — đợi xong rồi chia sẻ.'));
@@ -273,7 +276,7 @@ export async function planProjectSyncFeaturePullBatch(
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(request),
-  });
+  }, PROJECT_SYNC_PLAN_TIMEOUT_MS);
   const body = await json(response);
   if (!response.ok) throw new Error(messageFrom(body, 'Không thể lập kế hoạch lấy tính năng.'));
   const plan = (body as { data?: ProjectSyncFeaturePullBatchPlan }).data;

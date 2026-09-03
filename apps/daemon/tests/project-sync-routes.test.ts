@@ -938,6 +938,83 @@ describe('project-sync route contract', () => {
       await fs.rm(root, { recursive: true, force: true });
     }
   });
+  it('plans a Feature batch from listing checksums — only project.json and ledgers are downloaded, Context listed once per version', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'od-feature-pull-listing-checksum-'));
+    try {
+      const sha = (value: string) => createHash('sha256').update(value).digest('hex');
+      const row = (path: string, content: string) => ({ path, content, checksum: sha(content) });
+      state.pipelineApps = [{ id: 'local-app', name: 'Local App' }];
+      state.origins = [
+        { projectId: 'shared-app', name: 'Shared App', isApp: true, inMedia: true, visibility: 'visible' },
+        { projectId: 'feature-a', name: 'Feature A', isApp: false, appId: 'shared-app', inMedia: true, visibility: 'visible' },
+        { projectId: 'feature-b', name: 'Feature B', isApp: false, appId: 'shared-app', inMedia: true, visibility: 'visible' },
+      ];
+      const control = (name: string) => JSON.stringify({ name, appId: 'shared-app', appContextBinding: { appId: 'shared-app', contextVersion: 'v1' } });
+      const ledger = JSON.stringify({ version: 1, base: 'https://wiki.test', items: [{ name: 'a.png', sha256: sha('AAA'), size: 3, pageId: '100', spaceKey: 'S', attachment: 'a.png', attachmentVersion: 1, fetchedAt: 1 }] });
+      state.mediaFiles = {
+        'shared-app': [
+          row('app.json', JSON.stringify({ name: 'Shared App' })),
+          row('context/versions/v1/manifest.json', JSON.stringify({ contextVersion: 'v1', files: [{ path: 'brief.md' }] })),
+          row('context/versions/v1/files/brief.md', 'shared context'),
+          row('context/versions/v1/files/docs/attachments/_sources.json', ledger),
+        ],
+        'feature-a': [row('project.json', control('Feature A')), row('outputs/a.md', 'A')],
+        'feature-b': [row('project.json', control('Feature B')), row('outputs/b.md', 'B'), row('outputs/attachments/_sources.json', ledger)],
+      };
+      await fs.mkdir(path.join(root, 'local-app', '_studio'), { recursive: true });
+      await fs.writeFile(path.join(root, 'local-app', '_studio', 'project-sync-mapping.json'), JSON.stringify({ schemaVersion: 1, localId: 'local-app', originId: 'shared-app' }));
+      const table = handlers(root);
+      const planned = await call(table.get('POST /api/project-sync/feature-pulls/plan')!, { localAppId: 'local-app', originAppId: 'shared-app', originFeatureIds: ['feature-a', 'feature-b'] });
+      expect(planned.status).toBe(200);
+      // Ordinary files carry the LISTING checksum, without any download.
+      expect(planned.body.data.features[0].entries.find((entry: any) => entry.path === 'feature/outputs/a.md')).toMatchObject({ change: 'new', origin: { checksum: sha('A') } });
+      expect(planned.body.data.features[1].entries.find((entry: any) => entry.path === 'feature/outputs/attachments/_sources.json')).toMatchObject({ origin: { checksum: sha(ledger) }, confluenceGroup: { files: 1 } });
+      // Only project.json + ledgers were downloaded — each exactly once (the
+      // shared Context ledger once for BOTH features bound to v1).
+      expect([...state.downloads].sort()).toEqual([
+        'feature-a:project.json',
+        'feature-b:outputs/attachments/_sources.json',
+        'feature-b:project.json',
+        'shared-app:context/versions/v1/files/docs/attachments/_sources.json',
+      ]);
+      // The origin App folder is listed once for the whole batch.
+      expect(state.sessionOpens.filter((id) => id === 'shared-app')).toEqual(['shared-app']);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('falls back to downloading a row whose listing has no checksum and still plans the right digest', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'od-feature-pull-checksum-fallback-'));
+    try {
+      const sha = (value: string) => createHash('sha256').update(value).digest('hex');
+      state.pipelineApps = [{ id: 'local-app', name: 'Local App' }];
+      state.origins = [
+        { projectId: 'shared-app', name: 'Shared App', isApp: true, inMedia: true, visibility: 'visible' },
+        { projectId: 'feature-a', name: 'Feature A', isApp: false, appId: 'shared-app', inMedia: true, visibility: 'visible' },
+      ];
+      const control = JSON.stringify({ name: 'Feature A', appId: 'shared-app' });
+      state.mediaFiles = {
+        'shared-app': [{ path: 'app.json', content: '{}', checksum: sha('{}') }],
+        'feature-a': [
+          { path: 'project.json', content: control, checksum: sha(control) },
+          { path: 'outputs/kept.md', content: 'KEPT', checksum: sha('KEPT') },
+          { path: 'outputs/nochk.md', content: 'NOCHK' },
+        ],
+      };
+      await fs.mkdir(path.join(root, 'local-app', '_studio'), { recursive: true });
+      await fs.writeFile(path.join(root, 'local-app', '_studio', 'project-sync-mapping.json'), JSON.stringify({ schemaVersion: 1, localId: 'local-app', originId: 'shared-app' }));
+      const table = handlers(root);
+      const planned = await call(table.get('POST /api/project-sync/feature-pulls/plan')!, { localAppId: 'local-app', originAppId: 'shared-app', originFeatureIds: ['feature-a'] });
+      expect(planned.status).toBe(200);
+      expect(planned.body.data.features[0].entries.find((entry: any) => entry.path === 'feature/outputs/nochk.md')).toMatchObject({ change: 'new', origin: { checksum: sha('NOCHK') } });
+      expect(state.downloads).toContain('feature-a:outputs/nochk.md');
+      expect(state.downloads).not.toContain('feature-a:outputs/kept.md');
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   describe('Confluence-backed attachments (ledger manifest)', () => {
     const sha = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
     const WIKI = 'https://wiki.test';
