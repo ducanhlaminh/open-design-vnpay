@@ -27,7 +27,6 @@ import type {
 import { UNASSIGNED_APP, navigate, useRoute } from '../../router';
 import { Toast } from '../Toast';
 import { PipelinesView } from '../PipelinesView';
-import { ProjectSyncPreviewModal } from '../project-sync';
 import { PushAllModal, runningLabelsByFeatureId, type ContextTransferSelection, type FeatureStageSelections } from './PipelineModals';
 import { ConfirmDeleteModal } from './ConfirmDeleteModal';
 import { EditAppModal } from './EditAppModal';
@@ -143,7 +142,9 @@ export function PipelinesRoute() {
   const [syncStatusByAppId, setSyncStatusByAppId] = useState<Map<string, ProjectSyncScopeStatus>>(new Map());
   const [syncStatusByFeatureId, setSyncStatusByFeatureId] = useState<Map<string, ProjectSyncScopeStatus>>(new Map());
   const [syncStatusReloadTick, setSyncStatusReloadTick] = useState(0);
-  const [syncDialog, setSyncDialog] = useState<{
+  // Pull một App đã có local (mapping sẵn): PullSharedAppModal mode một App —
+  // mở modal là chạy luôn plan → preflight → apply, không còn bước xem trước.
+  const [pullAppDialog, setPullAppDialog] = useState<{
     scope: ProjectSyncScope;
     subjectName: string;
   } | null>(null);
@@ -566,7 +567,7 @@ export function PipelinesRoute() {
           syncIssue={syncAccess?.syncIssue}
           syncStatusByAppId={syncStatusByAppId}
           onPullAll={() => setPullSharedOpen(true)}
-          onPullApp={(app) => setSyncDialog({
+          onPullApp={(app) => setPullAppDialog({
             scope: { kind: 'app', projectId: app.id },
             subjectName: app.name,
           })}
@@ -585,11 +586,11 @@ export function PipelinesRoute() {
       {page}
       {createModal}
       {actionModal}
-      {syncDialog ? (
-        <ProjectSyncPreviewModal
-          scope={syncDialog.scope}
-          subjectName={syncDialog.subjectName}
-          onClose={() => setSyncDialog(null)}
+      {pullAppDialog ? (
+        <PullSharedAppModal
+          scope={pullAppDialog.scope}
+          subjectName={pullAppDialog.subjectName}
+          onClose={() => setPullAppDialog(null)}
           onApplied={() => {
             void nav.reload();
             setSyncStatusReloadTick((tick) => tick + 1);
@@ -607,7 +608,8 @@ export function PipelinesRoute() {
           localAppIds={new Set(nav.apps.map((app) => app.id))}
           onClose={() => setPullSharedOpen(false)}
           onApplied={() => {
-            setPullSharedOpen(false);
+            // Không đóng modal ở đây: khi có cảnh báo wiki drift/missing, modal
+            // tự giữ mở để hiện danh sách; không cảnh báo thì nó tự đóng qua onClose.
             void nav.reload();
             setSyncStatusReloadTick((tick) => tick + 1);
             setSyncToast({ message: 'Đã lấy dự án về máy. Danh sách bản trên máy đang được làm mới.' });

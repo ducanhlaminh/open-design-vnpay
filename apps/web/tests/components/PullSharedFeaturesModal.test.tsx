@@ -1,4 +1,7 @@
 // @vitest-environment jsdom
+//
+// Pull tính năng không còn bước "Xem trước": một nút "Lấy N tính năng" chạy
+// thẳng plan → preflight Confluence (nếu có file wiki) → apply.
 
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type {
@@ -59,14 +62,27 @@ const origins: ProjectSyncOrigin[] = [
 
 const plan: ProjectSyncFeaturePullBatchPlan = {
   planId: 'batch-1', createdAt: '', localAppId: 'local-app', originAppId: 'remote-app', totalItems: 4,
-  features: origins.map((origin, index) => ({
-    originId: origin.originId, name: origin.name, localId: `local-${origin.originId}`, mode: index ? 'create' : 'update',
-    summary: { created: index ? 2 : 0, changed: index ? 0 : 2, unchanged: 0, deleted: 0 },
-    entries: Array.from({ length: 2 }, (_, entry) => ({
-      path: `${origin.originId}/${entry}.json`, kind: 'feature' as const, change: index ? 'new' as const : 'changed' as const,
-      resolution: 'pull' as const,
-    })),
-  })),
+  features: [
+    {
+      originId: 'f-a', name: 'Feature A', localId: 'local-f-a', mode: 'update',
+      summary: { created: 0, changed: 2, unchanged: 1, deleted: 0 },
+      entries: [
+        // Stage do daemon gắn sẵn…
+        { path: 'feature/docs-review/spec.md', kind: 'output', change: 'changed', resolution: 'pull', stage: 'docs-review' },
+        // …hoặc suy từ segment đầu của path (sau prefix đơn vị `feature/`).
+        { path: 'feature/docs-review/review.json', kind: 'output', change: 'changed', resolution: 'pull' },
+        { path: 'feature/docs-review/notes.md', kind: 'output', change: 'unchanged', resolution: 'skip', stage: 'docs-review' },
+      ],
+    },
+    {
+      originId: 'f-b', name: 'Feature B', localId: 'local-f-b', mode: 'create',
+      summary: { created: 2, changed: 0, unchanged: 0, deleted: 0 },
+      entries: [
+        { path: 'feature/ui-react/App.tsx', kind: 'output', change: 'new', resolution: 'pull', stage: 'ui-react' },
+        { path: 'feature/context/urd.md', kind: 'context', change: 'new', resolution: 'pull' },
+      ],
+    },
+  ],
 };
 
 function operation(overrides: Partial<ProjectSyncFeaturePullBatchOperation> = {}): ProjectSyncFeaturePullBatchOperation {
@@ -97,36 +113,45 @@ afterEach(() => {
 });
 
 describe('PullSharedFeaturesModal', () => {
-  it('filters by the remote App and creates one plan for a multi-selection', async () => {
+  it('lọc theo remote App, một nút pull tạo plan chung và liệt kê CHỈ output đổi theo stage', async () => {
     listMock.mockResolvedValue(origins);
     planMock.mockResolvedValue(plan);
+    let finishCreate!: (value: ProjectSyncFeaturePullBatchOperation) => void;
+    createMock.mockReturnValue(new Promise((resolve) => { finishCreate = resolve; }));
+    const onClose = vi.fn();
     render(
       <PullSharedFeaturesModal
         localAppId="local-app" remoteAppOriginId="remote-app"
         existingFeatureMappings={new Map([['f-a', 'feature-a-local']])}
-        preselectedOriginIds={['f-a']} onClose={() => {}} onCompleted={() => {}}
+        preselectedOriginIds={['f-a']} onClose={onClose} onCompleted={() => {}}
       />,
     );
 
     expect(await screen.findByText('Feature A')).toBeTruthy();
     expect(listMock).toHaveBeenCalledWith({ kind: 'feature', appId: 'remote-app' });
     expect(screen.getByText('Cập nhật feature-a-local')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Xem trước' })).toBeNull();
     fireEvent.click(screen.getByRole('checkbox', { name: /Feature B/ }));
-    fireEvent.click(screen.getByRole('button', { name: 'Xem trước' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Lấy 2 tính năng' }));
 
     await waitFor(() => expect(planMock).toHaveBeenCalledWith({
       localAppId: 'local-app', originAppId: 'remote-app', originFeatureIds: ['f-a', 'f-b'],
     }));
-    expect(await screen.findByText('4 mục')).toBeTruthy();
-    const summary = screen.getByLabelText('Tóm tắt nội dung sẽ lấy');
-    expect(summary.textContent).toContain('2 tạo mới');
-    expect(summary.textContent).toContain('2 thay đổi');
-    // No wiki-backed entry in the plan → no preflight round-trip.
+    // Per-row: đếm CHỈ entries output có thay đổi, breakdown theo stage; entry
+    // context/binding không lẫn vào con số output.
+    expect(await screen.findByText('docs-review 2 · Cập nhật')).toBeTruthy();
+    expect(screen.getByText('ui-react 1 · Tạo mới')).toBeTruthy();
+    // Section "Nội dung sẽ lấy" (summary grid) đã bỏ — thông tin nằm per-row.
+    expect(screen.queryByLabelText('Tóm tắt nội dung sẽ lấy')).toBeNull();
+    // Không có file wiki trong plan → không preflight, apply chạy luôn.
     expect(preflightMock).not.toHaveBeenCalled();
     expect(screen.queryByLabelText('Tài liệu Confluence')).toBeNull();
+    expect(createMock).toHaveBeenCalledWith({ planId: 'batch-1' });
+    finishCreate(operation({ state: 'succeeded', phase: 'finalizing', progress: { completedItems: 4, totalItems: 4, percent: 100 }, result: result() }));
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
   });
 
-  it('runs the Confluence preflight for the batch plan and blocks the pull until it passes', async () => {
+  it('preflight Confluence là gate cứng: fail thì dừng trước apply, "Kiểm tra lại" pass thì tự chạy tiếp', async () => {
     listMock.mockResolvedValue(origins);
     const wiki = { base: 'https://wiki.example.vn', pageId: '123', spaceKey: 'SMB', attachment: 'a.png', attachmentVersion: 2 };
     const wikiPlan: ProjectSyncFeaturePullBatchPlan = {
@@ -145,6 +170,9 @@ describe('PullSharedFeaturesModal', () => {
     preflightMock
       .mockResolvedValueOnce({ ...preflight, token: 'invalid', displayName: undefined, spaces: [], ok: false })
       .mockResolvedValueOnce(preflight);
+    createMock.mockResolvedValue(operation({
+      state: 'succeeded', phase: 'finalizing', progress: { completedItems: 4, totalItems: 4, percent: 100 }, result: result(),
+    }));
     render(
       <PullSharedFeaturesModal
         localAppId="local-app" remoteAppOriginId="remote-app" preselectedOriginIds={['f-a', 'f-b']}
@@ -152,19 +180,19 @@ describe('PullSharedFeaturesModal', () => {
       />,
     );
     await screen.findByText('Feature A');
-    fireEvent.click(screen.getByRole('button', { name: 'Xem trước' }));
-    await screen.findByText('4 mục');
+    fireEvent.click(screen.getByRole('button', { name: 'Lấy 2 tính năng' }));
 
     await waitFor(() => expect(preflightMock).toHaveBeenCalledWith({ batchPlanId: 'batch-wiki' }));
     expect(await screen.findByText('PAT không hợp lệ hoặc hết hạn')).toBeTruthy();
     expect(screen.getByText('5 file (3.0 MB) sẽ tải từ https://wiki.example.vn')).toBeTruthy();
+    expect(createMock).not.toHaveBeenCalled();
     const start = screen.getByRole('button', { name: 'Lấy 2 tính năng' }) as HTMLButtonElement;
     expect(start.disabled).toBe(true);
 
     fireEvent.click(screen.getByRole('button', { name: 'Kiểm tra lại' }));
     expect(await screen.findByText('PAT hợp lệ · Nguyễn Văn A')).toBeTruthy();
     expect(preflightMock).toHaveBeenCalledTimes(2);
-    await waitFor(() => expect(start.disabled).toBe(false));
+    await waitFor(() => expect(createMock).toHaveBeenCalledWith({ planId: 'batch-wiki' }));
   });
 
   it('keeps the dialog open and names the Feature whose wiki files went missing', async () => {
@@ -187,8 +215,6 @@ describe('PullSharedFeaturesModal', () => {
       />,
     );
     await screen.findByText('Feature A');
-    fireEvent.click(screen.getByRole('button', { name: 'Xem trước' }));
-    await screen.findByText('4 mục');
     fireEvent.click(screen.getByRole('button', { name: 'Lấy 2 tính năng' }));
 
     const warnings = await screen.findByTestId('feature-pull-confluence-warnings');
@@ -214,8 +240,6 @@ describe('PullSharedFeaturesModal', () => {
       />,
     );
     await screen.findByText('Feature A');
-    fireEvent.click(screen.getByRole('button', { name: 'Xem trước' }));
-    await screen.findByText('4 mục');
     fireEvent.click(screen.getByRole('button', { name: 'Lấy 2 tính năng' }));
 
     expect(await screen.findByText('2/4 file · 50%')).toBeTruthy();
@@ -252,8 +276,6 @@ describe('PullSharedFeaturesModal', () => {
       />,
     );
     await screen.findByText('Feature A');
-    fireEvent.click(screen.getByRole('button', { name: 'Xem trước' }));
-    await screen.findByText('4 mục');
     fireEvent.click(screen.getByRole('button', { name: 'Lấy 2 tính năng' }));
 
     const progressPanel = await screen.findByTestId('feature-pull-progress');
@@ -286,8 +308,6 @@ describe('PullSharedFeaturesModal', () => {
       />,
     );
     await screen.findByText('Feature A');
-    fireEvent.click(screen.getByRole('button', { name: 'Xem trước' }));
-    await screen.findByText('4 mục');
     fireEvent.click(screen.getByRole('button', { name: 'Lấy 2 tính năng' }));
 
     expect(await screen.findByText('Không chép được Feature B')).toBeTruthy();
@@ -315,8 +335,6 @@ describe('PullSharedFeaturesModal', () => {
       />,
     );
     await screen.findByText('Feature A');
-    fireEvent.click(screen.getByRole('button', { name: 'Xem trước' }));
-    await screen.findByText('4 mục');
     fireEvent.click(screen.getByRole('button', { name: 'Lấy 2 tính năng' }));
 
     await waitFor(() => expect(pollMock.mock.calls.length).toBeGreaterThanOrEqual(2), { timeout: 3_500 });
@@ -324,7 +342,7 @@ describe('PullSharedFeaturesModal', () => {
     await waitFor(() => expect(onCompleted).toHaveBeenCalledTimes(1));
   });
 
-  it('shows a timeout alert and unlocks the modal so the user can retry', async () => {
+  it('shows a timeout alert and unlocks the modal so the user can retry from a fresh plan', async () => {
     listMock.mockResolvedValue(origins);
     planMock.mockResolvedValue(plan);
     createMock.mockResolvedValue(operation());
@@ -336,8 +354,6 @@ describe('PullSharedFeaturesModal', () => {
       />,
     );
     await screen.findByText('Feature A');
-    fireEvent.click(screen.getByRole('button', { name: 'Xem trước' }));
-    await screen.findByText('4 mục');
     fireEvent.click(screen.getByRole('button', { name: 'Lấy 2 tính năng' }));
 
     await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('mất quá nhiều thời gian'));

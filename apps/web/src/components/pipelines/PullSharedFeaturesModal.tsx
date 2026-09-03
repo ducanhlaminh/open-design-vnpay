@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   ProjectSyncFeaturePullBatchOperation,
   ProjectSyncFeaturePullBatchPlan,
+  ProjectSyncFeaturePullBatchPlanItem,
   ProjectSyncFeaturePullBatchResult,
   ProjectSyncOperationPhase,
   ProjectSyncOrigin,
@@ -63,6 +64,33 @@ const PHASE_LABEL: Record<ProjectSyncOperationPhase, string> = {
   finalizing: 'Đang hoàn tất',
 };
 
+/** Stage của một entry output trong batch plan. Path entry là path tương đối
+ *  trong feature có prefix đơn vị (`feature/<rel>`); stage do daemon gắn sẵn
+ *  (`stageForOutput`) — chỉ fallback sang segment đầu của path khi thiếu. */
+function stageOfEntry(entry: { stage?: string; path: string }): string {
+  if (entry.stage) return entry.stage;
+  const segments = entry.path.split('/').filter(Boolean);
+  if (segments[0] === 'feature') segments.shift();
+  if (segments[0] === 'features' && segments.length > 2) segments.splice(0, 2);
+  return segments.length > 1 ? segments[0]! : 'khác';
+}
+
+/** Per-row sau khi plan: chỉ đếm output sẽ thay đổi, breakdown theo stage.
+ *  0 output thay đổi → chỉ còn tài liệu/cấu hình (context/binding). */
+function planItemLabelOf(item: ProjectSyncFeaturePullBatchPlanItem): string {
+  const modeLabel = item.mode === 'create' ? 'Tạo mới' : 'Cập nhật';
+  const changed = item.entries.filter((entry) => entry.change !== 'unchanged');
+  if (changed.length === 0) return 'Không có thay đổi';
+  const outputs = changed.filter((entry) => entry.kind === 'output');
+  if (outputs.length === 0) return `Chỉ tài liệu/cấu hình · ${modeLabel}`;
+  const byStage = new Map<string, number>();
+  for (const entry of outputs) {
+    const stage = stageOfEntry(entry);
+    byStage.set(stage, (byStage.get(stage) ?? 0) + 1);
+  }
+  return `${[...byStage].map(([stage, count]) => `${stage} ${count}`).join(' · ')} · ${modeLabel}`;
+}
+
 function confluenceSummaryOf(result: ProjectSyncFeaturePullBatchResult): string | null {
   return summarizeConfluencePullOutcome(mergeConfluencePullOutcomes(
     result.items.map((item) => (item.state === 'succeeded' ? item.result.confluence : undefined)),
@@ -111,16 +139,20 @@ export function PullSharedFeaturesModal({
     setPreflight({ status: 'idle' });
   }, []);
 
-  const runPreflight = useCallback(async (batchPlanId: string) => {
+  /** Trả `true` = pass (chạy tiếp apply), `false` = chặn (panel hiện lỗi +
+   *  "Kiểm tra lại"), `null` = kết quả đã cũ (generation khác). */
+  const runPreflight = useCallback(async (batchPlanId: string): Promise<boolean | null> => {
     const generation = ++preflightGeneration.current;
     setPreflight({ status: 'loading' });
     try {
       const next = await preflightProjectSyncConfluence({ batchPlanId });
-      if (generation !== preflightGeneration.current) return;
+      if (generation !== preflightGeneration.current) return null;
       setPreflight({ status: 'ready', preflight: next });
+      return next.ok;
     } catch (cause) {
-      if (generation !== preflightGeneration.current) return;
+      if (generation !== preflightGeneration.current) return null;
       setPreflight({ status: 'error', message: errorMessage(cause, 'Không thể kiểm tra quyền truy cập Confluence.') });
+      return false;
     }
   }, []);
 
@@ -192,7 +224,7 @@ export function PullSharedFeaturesModal({
       setError(message);
       // The server operation can still be running after a client/network
       // timeout. Mark only the local snapshot as failed so the modal unlocks;
-      // pressing the primary action resumes the idempotent operation.
+      // pressing the primary action re-runs the pull from a fresh plan.
       setOperation((current) => current ? {
         ...current,
         state: 'failed',
@@ -217,37 +249,62 @@ export function PullSharedFeaturesModal({
     resetPreflight();
   }, [busy, operation?.state, resetPreflight]);
 
-  const createPlan = async () => {
-    if (selectedIds.length === 0) return;
-    setLoadingPlan(true);
-    setError(null);
-    try {
-      const next = await planProjectSyncFeaturePullBatch({
-        localAppId,
-        originAppId: remoteAppOriginId,
-        originFeatureIds: selectedIds,
-      });
-      setPlan(next);
-      if (confluenceTotalsOf(next).files > 0) void runPreflight(next.planId);
-      else resetPreflight();
-    } catch (cause) {
-      setError(errorMessage(cause, 'Không thể lập kế hoạch lấy tính năng.'));
-    } finally {
-      setLoadingPlan(false);
-    }
-  };
-
-  const start = async () => {
-    if (!plan) return;
+  const start = async (target: ProjectSyncFeaturePullBatchPlan) => {
     setError(null);
     setStarting(true);
     try {
-      setOperation(await createProjectSyncFeaturePullBatchOperation({ planId: plan.planId }));
+      setOperation(await createProjectSyncFeaturePullBatchOperation({ planId: target.planId }));
     } catch (cause) {
       setError(errorMessage(cause, 'Không thể bắt đầu lấy tính năng.'));
     } finally {
       setStarting(false);
     }
+  };
+
+  // Một mạch plan → preflight Confluence (chỉ khi plan có file wiki) → start.
+  // Lỗi giữa chừng (plan lỗi, apply failed, plan hết hạn) hiện lỗi và nút pull
+  // chạy lại từ một plan mới. `pullGeneration` vô hiệu chuỗi cũ khi user đổi
+  // lựa chọn hoặc modal unmount giữa chừng.
+  const pullGeneration = useRef(0);
+  useEffect(() => () => { pullGeneration.current += 1; }, []);
+  const pull = async () => {
+    if (selectedIds.length === 0) return;
+    const generation = ++pullGeneration.current;
+    setLoadingPlan(true);
+    setError(null);
+    setOperation(null);
+    setPlan(null);
+    resetPreflight();
+    let next: ProjectSyncFeaturePullBatchPlan;
+    try {
+      next = await planProjectSyncFeaturePullBatch({
+        localAppId,
+        originAppId: remoteAppOriginId,
+        originFeatureIds: selectedIds,
+      });
+    } catch (cause) {
+      if (generation !== pullGeneration.current) return;
+      setError(errorMessage(cause, 'Không thể lập kế hoạch lấy tính năng.'));
+      setLoadingPlan(false);
+      return;
+    }
+    if (generation !== pullGeneration.current) return;
+    setPlan(next);
+    setLoadingPlan(false);
+    if (confluenceTotalsOf(next).files > 0) {
+      const ok = await runPreflight(next.planId);
+      if (generation !== pullGeneration.current || ok !== true) return;
+    }
+    await start(next);
+  };
+
+  // "Kiểm tra lại" trong panel preflight: pass thì TỰ chạy tiếp apply — chỉ
+  // khi chưa có operation nào (sau một operation lỗi, nút pull chạy plan mới).
+  const recheck = async () => {
+    if (!plan || busy || operation !== null) return;
+    const generation = pullGeneration.current;
+    const ok = await runPreflight(plan.planId);
+    if (ok === true && generation === pullGeneration.current) await start(plan);
   };
 
   const retryFailed = async () => {
@@ -312,22 +369,16 @@ export function PullSharedFeaturesModal({
     <>
       <span className={styles.footerSummary}>{selectedIds.length} tính năng đã chọn</span>
       <button type="button" className="pl-btn" onClick={close} disabled={busy}>Hủy</button>
-      {!plan ? (
-        <button type="button" className="pl-btn pl-btn--primary" disabled={busy || selectedIds.length === 0} onClick={() => void createPlan()}>
-          {loadingPlan ? <Icon name="spinner" size={14} /> : null} Xem trước
-        </button>
-      ) : (
-        <button
-          type="button"
-          className="pl-btn pl-btn--primary"
-          disabled={busy || pullBlockedByConfluence}
-          title={pullBlockedByConfluence && !busy ? 'Cần PAT và quyền truy cập Confluence để tải tài liệu wiki về máy.' : undefined}
-          onClick={() => void start()}
-        >
-          {operationActive(operation) ? <Icon name="spinner" size={14} /> : <Icon name="download" size={14} />}
-          Lấy {plan.features.length} tính năng
-        </button>
-      )}
+      <button
+        type="button"
+        className="pl-btn pl-btn--primary"
+        disabled={busy || selectedIds.length === 0 || pullBlockedByConfluence}
+        title={pullBlockedByConfluence && !busy ? 'Cần PAT và quyền truy cập Confluence để tải tài liệu wiki về máy.' : undefined}
+        onClick={() => void pull()}
+      >
+        {busy ? <Icon name="spinner" size={14} /> : <Icon name="download" size={14} />}
+        Lấy {selectedIds.length} tính năng
+      </button>
     </>
   );
 
@@ -397,7 +448,7 @@ export function PullSharedFeaturesModal({
                         {itemResult.state === 'succeeded' ? 'Thành công' : itemResult.error.message}
                       </span>
                     ) : itemPlan ? (
-                      <span className={styles.count}>{itemPlan.entries.length} mục · {itemPlan.mode === 'create' ? 'Tạo mới' : 'Cập nhật'}</span>
+                      <span className={styles.count}>{planItemLabelOf(itemPlan)}</span>
                     ) : null}
                   </li>
                 );
@@ -406,25 +457,13 @@ export function PullSharedFeaturesModal({
           ) : null}
         </section>
 
-        {plan ? (
-          <section className={styles.preview} aria-label="Tóm tắt nội dung sẽ lấy">
-            <div className={styles.sectionHead}><strong>Nội dung sẽ lấy</strong><span>{plan.totalItems} mục</span></div>
-            <div className={styles.summaryGrid}>
-              <span><b>{plan.features.reduce((n, item) => n + item.summary.created, 0)}</b> tạo mới</span>
-              <span><b>{plan.features.reduce((n, item) => n + item.summary.changed, 0)}</b> thay đổi</span>
-              <span><b>{plan.features.reduce((n, item) => n + item.summary.unchanged, 0)}</b> không đổi</span>
-              <span><b>{plan.features.reduce((n, item) => n + item.summary.deleted, 0)}</b> đã xóa</span>
-            </div>
-          </section>
-        ) : null}
-
         {plan && confluenceTotals.files > 0 && !terminalResult ? (
           <ConfluencePreflightPanel
             files={confluenceTotals.files}
             bytes={confluenceTotals.bytes}
             state={preflight}
             disabled={busy}
-            onRecheck={() => void runPreflight(plan.planId)}
+            onRecheck={() => void recheck()}
           />
         ) : null}
 

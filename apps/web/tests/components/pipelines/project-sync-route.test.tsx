@@ -1,11 +1,11 @@
 // @vitest-environment jsdom
 //
-// Route wiring for the shared-results modal and Pull preview. These specs pin
-// that cards retain the exact local scope and never hide local rows through a
-// legacy remote read.
+// Route wiring for the shared-results modal and the pull modals. These specs
+// pin that cards retain the exact local scope and never hide local rows through
+// a legacy remote read.
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { PipelineProject, ProjectSyncScope } from '@open-design/contracts';
+import type { PipelineProject } from '@open-design/contracts';
 
 const mocks = vi.hoisted(() => ({
   navigate: vi.fn(),
@@ -29,17 +29,6 @@ vi.mock('../../../src/components/project-sync', () => ({
   SyncStatusBadge: ({ status }: { status: string }) => <span data-sync-status={status}>{status}</span>,
   projectSyncUserStatusOf: (value: { status?: string; state?: string; mappingValid: boolean }) =>
     value.status ?? (!value.mappingValid || value.state === 'new' ? 'not_shared' : value.state === 'unchanged' ? 'up_to_date' : 'needs_review'),
-  ProjectSyncPreviewModal: ({ scope, subjectName, onClose, onApplied }: {
-    scope: ProjectSyncScope;
-    subjectName: string;
-    onClose: () => void;
-    onApplied?: () => void;
-  }) => (
-    <div role="dialog" aria-label={`Đồng bộ ${subjectName}`}>
-      <output data-direction="pull" data-kind={scope.kind} data-project-id={scope.projectId} data-app-id={scope.appId ?? ''} />
-      <button type="button" onClick={() => { onApplied?.(); onClose(); }}>Áp dụng</button>
-    </div>
-  ),
 }));
 
 vi.mock('../../../src/components/pipelines/PullSharedFeaturesModal', () => ({
