@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+  isStaleTerminalUpdateState,
   clearUpdateMarker,
   compareVersions,
   deriveOdHomeFromResourceRoot,
@@ -236,5 +237,19 @@ describe('update marker read/write/expire lifecycle', () => {
       const result = await resolveJustUpdated(dataDir, '0.9.0', now);
       expect(result).toEqual({ version: '0.9.0', at: now - UPDATE_MARKER_EXPIRY_MS });
     });
+  });
+});
+
+describe('isStaleTerminalUpdateState', () => {
+  const rec = (state: string, targetVersion: string) => ({ state, targetVersion }) as never;
+  it('rolled-back/failed của dòng đời cũ (current > target) là stale', () => {
+    expect(isStaleTerminalUpdateState(rec('rolled-back', '0.8.68'), '0.8.160')).toBe(true);
+    expect(isStaleTerminalUpdateState(rec('failed', '0.8.68'), '0.8.160')).toBe(true);
+  });
+  it('không stale khi target >= current, khi healthy, hay khi chưa terminal', () => {
+    expect(isStaleTerminalUpdateState(rec('rolled-back', '0.8.160'), '0.8.160')).toBe(false);
+    expect(isStaleTerminalUpdateState(rec('rolled-back', '0.9.0'), '0.8.160')).toBe(false);
+    expect(isStaleTerminalUpdateState(rec('healthy', '0.8.68'), '0.8.160')).toBe(false);
+    expect(isStaleTerminalUpdateState(rec('restarting', '0.8.68'), '0.8.160')).toBe(false);
   });
 });

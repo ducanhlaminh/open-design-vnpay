@@ -33,6 +33,7 @@ import {
   compareVersions,
   deriveOdHomeFromResourceRoot,
   extractSemverFromTag,
+  isStaleTerminalUpdateState,
   isTerminalUpdateState,
   patchUpdateState,
   readUpdateState,
@@ -3361,6 +3362,29 @@ async function readOpenDesignLatestReleaseInfo() {
 // `.github/workflows/release-host-runtime.yml` publishes to.
 const HOST_RUNTIME_GH_REPO = 'ducanhlaminh/open-design-vnpay';
 const HOST_RUNTIME_RELEASE_LATEST_API = `https://api.github.com/repos/${HOST_RUNTIME_GH_REPO}/releases/latest`;
+// Mirror Cloudflare Pages (0.8.77+): scripts/host-runtime/mirror-publish.sh đẩy
+// `latest/release.json` ({version, tag, url các gói}) cùng lúc với GitHub
+// Release. Mạng công ty chặn/TLS-inspect api.github.com (403) làm "Kiểm tra
+// cập nhật" chết dù installer đã tải qua mirror từ lâu — nên CHECK cũng phải
+// hỏi mirror trước, GitHub chỉ còn là fallback.
+const HOST_RUNTIME_MIRROR_RELEASE_URL = 'https://od-runtime.pages.dev/latest/release.json';
+
+async function fetchHostRuntimeLatestFromMirror(signal) {
+  const response = await fetch(HOST_RUNTIME_MIRROR_RELEASE_URL, {
+    headers: { accept: 'application/json', 'user-agent': 'open-design-daemon' },
+    signal,
+  });
+  if (!response.ok) {
+    throw new Error(`mirror release.json request failed with HTTP ${response.status}`);
+  }
+  const payload = await response.json();
+  const tagName = payload && typeof payload.tag === 'string' ? payload.tag : null;
+  const version = payload && typeof payload.version === 'string' && /^\d+\.\d+\.\d+$/.test(payload.version)
+    ? payload.version
+    : (tagName ? extractSemverFromTag(tagName) : null);
+  if (!version) throw new Error('mirror release.json did not include a parseable version');
+  return { tagName: tagName ?? `host-runtime-v${version}`, version };
+}
 // Keep this shorter than the UI's seven-minute background poll. A one-hour
 // cache forced users to restart the daemon before a freshly published host
 // runtime became visible. Five minutes still coalesces bursts of browser
@@ -3391,25 +3415,34 @@ async function readHostRuntimeLatestReleaseInfo({ force = false } = {}) {
     const ctrl = new AbortController();
     const timeout = setTimeout(() => ctrl.abort(), OPEN_DESIGN_GITHUB_TIMEOUT_MS);
     try {
-      const response = await fetch(HOST_RUNTIME_RELEASE_LATEST_API, {
-        headers: {
-          accept: 'application/vnd.github+json',
-          'user-agent': 'open-design-daemon',
-        },
-        signal: ctrl.signal,
-      });
-      if (!response.ok) {
-        throw new Error(`GitHub latest release request failed with HTTP ${response.status}`);
-      }
-      const payload = await response.json();
-      const tagName = payload && typeof payload.tag_name === 'string' ? payload.tag_name : null;
-      const version = tagName ? extractSemverFromTag(tagName) : null;
-      if (!tagName || !version) {
-        throw new Error('GitHub latest release metadata did not include a parseable tag_name');
+      // Mirror trước (mạng VNPAY chặn api.github.com), GitHub API fallback.
+      let release;
+      try {
+        release = await fetchHostRuntimeLatestFromMirror(ctrl.signal);
+      } catch (mirrorError) {
+        const response = await fetch(HOST_RUNTIME_RELEASE_LATEST_API, {
+          headers: {
+            accept: 'application/vnd.github+json',
+            'user-agent': 'open-design-daemon',
+          },
+          signal: ctrl.signal,
+        });
+        if (!response.ok) {
+          throw new Error(
+            `GitHub latest release request failed with HTTP ${response.status}; mirror: ${String((mirrorError && mirrorError.message) || mirrorError)}`,
+          );
+        }
+        const payload = await response.json();
+        const tagName = payload && typeof payload.tag_name === 'string' ? payload.tag_name : null;
+        const version = tagName ? extractSemverFromTag(tagName) : null;
+        if (!tagName || !version) {
+          throw new Error('GitHub latest release metadata did not include a parseable tag_name');
+        }
+        release = { tagName, version };
       }
       hostRuntimeLatestReleaseCache = {
-        tagName,
-        version,
+        tagName: release.tagName,
+        version: release.version,
         fetchedAt: Date.now(),
       };
       return { ...hostRuntimeLatestReleaseCache, stale: false };
@@ -6012,6 +6045,13 @@ export async function startServer({
     // this process. update.log remains the installer's source of coarse
     // phase information; fold it into the durable record on every poll.
     let updateState = await readUpdateState(RUNTIME_DATA_DIR);
+    // Bản ghi terminal của một dòng đời CŨ (đã rolled-back/failed nhưng daemon
+    // hiện tại chạy version CAO HƠN target của nó — vd chạy 0.8.160 mà record
+    // nói "rolled back về 0.8.68" từ 19/08) là chuyện đã qua: giấu đi để UI
+    // không treo mãi một lỗi cổ. Không xoá file — còn dùng post-mortem.
+    if (updateState && isStaleTerminalUpdateState(updateState, currentVersion)) {
+      updateState = null;
+    }
     if (updateState && !isTerminalUpdateState(updateState.state)) {
       const parsedProgress = await readUpdateProgress(RUNTIME_DATA_DIR);
       if (parsedProgress) {

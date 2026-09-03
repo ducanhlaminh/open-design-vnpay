@@ -79,6 +79,8 @@ async function withFakeOpencodeAgent<T>(script: string, run: () => Promise<T>): 
 }
 
 let githubReleaseCalls = 0;
+  let mirrorReleaseCalls = 0;
+  let mirrorRelease: { version: string; tag: string } | null = null;
 
 describe('host-runtime self-update routes', () => {
   let server: http.Server;
@@ -104,6 +106,15 @@ describe('host-runtime self-update routes', () => {
     // anything else during these tests) falls through to the real fetch.
     globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
       const href = typeof input === 'string' ? input : input.toString();
+      // Mirror-first (0.8.168): các test có sẵn mô tả đường fallback GitHub,
+      // nên mirror mặc định trả 404; test mirror riêng bật mirrorRelease.
+      if (href === 'https://od-runtime.pages.dev/latest/release.json') {
+        mirrorReleaseCalls += 1;
+        if (mirrorRelease) {
+          return new Response(JSON.stringify(mirrorRelease), { status: 200, headers: { 'content-type': 'application/json' } });
+        }
+        return new Response('not found', { status: 404 });
+      }
       if (href === 'https://api.github.com/repos/ducanhlaminh/open-design-vnpay/releases/latest') {
         githubReleaseCalls += 1;
         return new Response(
@@ -209,6 +220,49 @@ describe('host-runtime self-update routes', () => {
       const res = await fetch(`${baseUrl}/api/update/status`);
       const body = (await res.json()) as { justUpdated: unknown };
       expect(body.justUpdated).toBeNull();
+    });
+
+    it('mirror-first: khi od-runtime.pages.dev/latest/release.json trả version, không hỏi GitHub', async () => {
+      mirrorRelease = { version: '999.1.0', tag: 'host-runtime-v999.1.0' };
+      const githubBefore = githubReleaseCalls;
+      try {
+        const res = await fetch(`${baseUrl}/api/update/status?refresh=1`);
+        const body = (await res.json()) as { latestVersion: string | null; updateAvailable: boolean };
+        expect(body.latestVersion).toBe('999.1.0');
+        expect(body.updateAvailable).toBe(true);
+        expect(githubReleaseCalls).toBe(githubBefore);
+      } finally {
+        mirrorRelease = null;
+        // Cache release 5 phút là module-level — nạp lại qua GitHub fallback để
+        // các test sau (apply) thấy đúng FAKE_LATEST_TAG như trước.
+        await fetch(`${baseUrl}/api/update/status?refresh=1`);
+      }
+    });
+
+    it('giấu bản ghi rolled-back của dòng đời cũ (target thấp hơn version đang chạy)', async () => {
+      const startedAt = new Date('2026-08-19T06:43:58.631Z').toISOString();
+      await writeFile(join(dataDir, 'update-state.json'), JSON.stringify({
+        operationId: 'ancient-op',
+        targetVersion: '0.0.1',
+        sourceVersion: '0.0.0',
+        state: 'rolled-back',
+        phase: { step: 6, totalSteps: 6, label: 'x' },
+        error: { message: 'update rolled back; daemon is still running newer instead of 0.0.1', at: startedAt },
+        startedAt,
+        updatedAt: startedAt,
+      }), 'utf8');
+      try {
+        const res = await fetch(`${baseUrl}/api/update/status`);
+        const body = (await res.json()) as { state: string | null; lastError: unknown; operationId: string | null };
+        expect(body.state).toBeNull();
+        expect(body.operationId).toBeNull();
+        expect(body.lastError).toBeNull();
+        // File post-mortem vẫn còn — chỉ giấu khỏi response.
+        const persisted = JSON.parse(await readFile(join(dataDir, 'update-state.json'), 'utf8')) as { state: string };
+        expect(persisted.state).toBe('rolled-back');
+      } finally {
+        await rm(join(dataDir, 'update-state.json'), { force: true });
+      }
     });
 
     it('reconciles a persisted in-flight operation to healthy after a daemon restart lands on its target', async () => {

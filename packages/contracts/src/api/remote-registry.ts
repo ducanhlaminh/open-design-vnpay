@@ -40,6 +40,9 @@ export interface RemoteProject {
    *  (apps/daemon/src/app-context.ts resolveAppId). Undefined/null when
    *  ungrouped, or when this entry is itself an App. */
   appId?: string | null;
+  /** Feature mà project.json gốc folder thiếu/không đọc được — App cha không
+   *  xác minh được (project-sync hiện "origin parent could not be verified"). */
+  parentLookupFailed?: boolean;
   /** Missing on older callers/fixtures; remote readers normalize it to
    *  `visible`. A hidden App also hides its child Features from Pull. */
   visibility?: ProjectVisibility;

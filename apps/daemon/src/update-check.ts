@@ -67,6 +67,20 @@ function isUpdateStateName(value: unknown): value is HostUpdateStateName {
   ].includes(value);
 }
 
+/** Bản ghi update terminal thuộc dòng đời CŨ: đã kết thúc (rolled-back/failed)
+ *  mà daemon hiện tại chạy version cao hơn target của nó — tức lỗi đó xảy ra
+ *  trước một lần cài đè thành công, không còn liên quan. Route status dùng để
+ *  giấu `lastError` cổ (vd chạy 0.8.160, record "rolled back về 0.8.68"). */
+export function isStaleTerminalUpdateState(
+  state: Pick<HostUpdateState, 'state' | 'targetVersion'>,
+  currentVersion: string,
+): boolean {
+  if (!isTerminalUpdateState(state.state)) return false;
+  if (state.state === 'healthy') return false;
+  return typeof state.targetVersion === 'string'
+    && compareVersions(currentVersion, state.targetVersion) > 0;
+}
+
 export function isTerminalUpdateState(state: HostUpdateStateName): boolean {
   return state === 'healthy' || state === 'restart-required'
     || state === 'rolled-back' || state === 'failed';

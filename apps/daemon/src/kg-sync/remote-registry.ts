@@ -19,6 +19,11 @@ export interface FolderSource {
   /** Read-only: implementations must return an error for an absent project or
    *  artifact and must never create a folder while resolving this file. */
   downloadFile?(projectId: string, filePath: string): Promise<Uint8Array>;
+  /** Đường nhanh: tải theo id đã có từ listAllFiles. `downloadFile(name, path)`
+   *  của MediaClient mở session mới = listFolders + listAllFiles LẠI cho mỗi
+   *  file — với kho remote đó là 2 round-trip thừa nhân số folder (nguyên nhân
+   *  /api/project-sync/origins chậm/timeout). Có id + hàm này thì dùng luôn. */
+  downloadById?(id: string): Promise<Uint8Array>;
 }
 
 interface MediaRow {
@@ -28,6 +33,10 @@ interface MediaRow {
   isApp: boolean;
   visibility?: ProjectLifecycle['visibility'];
   hiddenAt?: string;
+  /** Feature: appId đọc từ project.json gốc folder (App: luôn undefined). */
+  appId?: string | null;
+  /** Feature không đọc/parse được project.json → không xác minh được App cha. */
+  parentLookupFailed?: boolean;
 }
 
 /** Root-level project config file. Carries the human display name a user
@@ -61,6 +70,12 @@ function filePathOf(value: unknown): string | null {
   return typeof row.path === 'string' ? row.path : null;
 }
 
+function fileIdOf(value: unknown): string | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const row = value as Record<string, unknown>;
+  return typeof row.id === 'string' && row.id ? row.id : null;
+}
+
 /** Root-level control file `uploadProjectFiles` (server.ts) unconditionally
  *  writes into an App's own media folder whenever a Feature carrying
  *  `studioConfig.appId` is pushed — the one reliable, already-live signal
@@ -80,6 +95,8 @@ export function mergeRemoteProjects(media: MediaRow[]): RemoteProject[] {
       isApp: m.isApp,
       visibility: m.visibility ?? 'visible',
       ...(m.hiddenAt ? { hiddenAt: m.hiddenAt } : {}),
+      ...(m.appId !== undefined ? { appId: m.appId } : {}),
+      ...(m.parentLookupFailed ? { parentLookupFailed: true } : {}),
     });
   }
   return [...byId.values()].sort((a, b) => a.projectId.localeCompare(b.projectId));
@@ -95,38 +112,72 @@ export async function loadRemoteProjects(media: FolderSource): Promise<RemotePro
   const mediaRows: MediaRow[] = await Promise.all(
     folders.map(async (f) => {
       const files = await media.listAllFiles(f.id).catch(() => []);
+      const byPath = new Map<string, unknown>();
+      for (const file of files) {
+        const filePath = filePathOf(file);
+        if (filePath != null && !byPath.has(filePath)) byPath.set(filePath, file);
+      }
+      // Đọc 1 file gốc folder, MỖI PATH TỐI ĐA 1 LẦN (cache parse) — ưu tiên
+      // downloadById từ danh sách vừa list; downloadFile chỉ còn là fallback
+      // cho source không có id (fake test cũ).
+      const parsedByPath = new Map<string, Record<string, unknown> | null>();
+      const readRootJson = async (filePath: string): Promise<Record<string, unknown> | null> => {
+        if (parsedByPath.has(filePath)) return parsedByPath.get(filePath)!;
+        let parsed: Record<string, unknown> | null = null;
+        const row = byPath.get(filePath);
+        if (row) {
+          try {
+            const id = fileIdOf(row);
+            const content = id && media.downloadById
+              ? await media.downloadById(id)
+              : media.downloadFile
+                ? await media.downloadFile(f.name, filePath)
+                : null;
+            if (content) {
+              const value = JSON.parse(Buffer.from(content).toString('utf8')) as unknown;
+              parsed = value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
+            }
+          } catch {
+            parsed = null;
+          }
+        }
+        parsedByPath.set(filePath, parsed);
+        return parsed;
+      };
       let lifecycle: ProjectLifecycle | null = null;
-      if (media.downloadFile && files.some((file) => filePathOf(file) === PROJECT_LIFECYCLE_PATH)) {
-        try {
-          const content = await media.downloadFile(f.name, PROJECT_LIFECYCLE_PATH);
-          lifecycle = parseProjectLifecycle(JSON.parse(Buffer.from(content).toString('utf8')), f.name);
+      if (byPath.has(PROJECT_LIFECYCLE_PATH)) {
+        const raw = await readRootJson(PROJECT_LIFECYCLE_PATH);
+        if (raw) {
+          lifecycle = parseProjectLifecycle(raw, f.name);
           if (!lifecycle) console.warn(`[remote-registry] ignoring invalid lifecycle metadata for ${f.name}`);
-        } catch (err) {
-          console.warn(`[remote-registry] cannot read lifecycle metadata for ${f.name}: ${(err as Error).message}`);
+        } else {
+          console.warn(`[remote-registry] cannot read lifecycle metadata for ${f.name}`);
         }
       }
-      const isApp = files.some((file) => filePathOf(file) === APP_MARKER_PATH);
+      const isApp = byPath.has(APP_MARKER_PATH);
       // Open Design publishes App metadata as app.json; project.json is the
       // legacy/Pipeline Studio shape (same precedence server.ts uses to
       // resolve an App's name when mirroring a pulled Feature's parent App).
       let name = f.name;
-      if (media.downloadFile) {
-        for (const source of isApp ? [APP_MARKER_PATH, PROJECT_CONFIG_PATH] : [PROJECT_CONFIG_PATH]) {
-          if (!files.some((file) => filePathOf(file) === source)) continue;
-          try {
-            const content = await media.downloadFile(f.name, source);
-            const config = JSON.parse(Buffer.from(content).toString('utf8')) as Record<string, unknown>;
-            if (typeof config.name === 'string' && config.name.trim()) { name = config.name; break; }
-          } catch {
-            // Best-effort, matches the lifecycle read above: an unreadable or
-            // nameless config file just falls through to the next source (or
-            // the folder id if none carry a name).
-          }
-        }
+      for (const source of isApp ? [APP_MARKER_PATH, PROJECT_CONFIG_PATH] : [PROJECT_CONFIG_PATH]) {
+        const config = await readRootJson(source);
+        if (config && typeof config.name === 'string' && config.name.trim()) { name = config.name; break; }
+        // Best-effort: file thiếu/hỏng/không tên → thử source kế / giữ folder id.
+      }
+      // Feature: App cha nằm ngay trong project.json vừa đọc cho tên — trước
+      // đây project-sync-routes tải LẠI project.json cho từng feature (mỗi lần
+      // một session listFolders+listAllFiles) chỉ để lấy appId này.
+      let appId: string | null = null;
+      let parentLookupFailed = false;
+      if (!isApp) {
+        const config = await readRootJson(PROJECT_CONFIG_PATH);
+        appId = config && typeof config.appId === 'string' ? config.appId : null;
+        parentLookupFailed = config == null;
       }
       return {
         projectId: f.name,
         name,
+        ...(isApp ? {} : { appId, ...(parentLookupFailed ? { parentLookupFailed: true } : {}) }),
         // Studio metadata is a registry control artifact, not a project file
         // that users can Pull or count as an available output.
         files: files.filter((file) => filePathOf(file) !== PROJECT_LIFECYCLE_PATH).length,

@@ -193,7 +193,10 @@ describe('project-sync route contract', () => {
       const status = await call(handlers(root).get('POST /api/project-sync/status')!, { scopes: [{ kind: 'app', projectId: 'local-app' }] });
       expect(status.body.data.results[0].entries.every((entry: any) => !entry.path.startsWith('features/'))).toBe(true);
       expect(status.body.data.results[0].features).toEqual([]);
-      expect(state.downloads.some((value) => value.startsWith('remote-feature:'))).toBe(true); // registry lookup only
+      // 0.8.168: appId đọc sẵn trong lượt list registry — App status không còn
+      // tải bất kỳ file nào của feature (trước đây cho phép đúng 1 lượt
+      // project.json "registry lookup only").
+      expect(state.downloads.every((value) => !value.startsWith('remote-feature:'))).toBe(true);
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }
@@ -476,8 +479,9 @@ describe('project-sync route contract', () => {
 
   it('reports a mapped Feature parent lookup failure as unavailable, not missing', async () => {
     state.projects = [{ id: 'local', name: 'Local', metadata: { studioConfig: { remoteId: 'shared' } } }];
-    state.origins = [{ projectId: 'shared', name: 'Shared', isApp: false, appId: 'origin-app', inMedia: true, visibility: 'visible' }];
-    state.failDownloads.add('shared:project.json');
+    // 0.8.168: appId/parentLookupFailed do loadRemoteProjects đọc sẵn (1 lượt
+    // list), route không tải lại project.json — mô phỏng lỗi ngay trên row.
+    state.origins = [{ projectId: 'shared', name: 'Shared', isApp: false, appId: null, parentLookupFailed: true, inMedia: true, visibility: 'visible' }];
     const status = await call(handlers().get('POST /api/project-sync/status')!, { scopes: [{ kind: 'feature', projectId: 'local', appId: 'local-app' }] });
     expect(status.body.data.results[0]).toMatchObject({ status: 'unavailable', reason: 'status_check_failed' });
   });

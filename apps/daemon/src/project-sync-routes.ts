@@ -331,24 +331,33 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
     try { return await resolveConfluenceCreds(ctx.paths.RUNTIME_DATA_DIR); } catch { return null; }
   };
 
+  // Kết quả liệt kê kho remote đắt (1 listFolders + mỗi folder 1 listAllFiles
+  // + ≤2 download) và bị gọi dồn dập: picker /origins refetch theo từng phím
+  // gõ, /status quét mọi scope, /plan gọi lại lần nữa. Cache ngắn + gộp các
+  // request đang bay là đủ để hết timeout mà không ôm dữ liệu cũ lâu (apply
+  // xong invalidate ngay bên dưới). appId/parentLookupFailed nay do
+  // loadRemoteProjects đọc sẵn từ chính lượt list — hết cảnh tải lại
+  // project.json cho từng feature.
+  const REMOTE_ORIGINS_TTL_MS = 20_000;
+  let remoteOriginsCache: { at: number; rows: DiagnosticOrigin[] } | null = null;
+  let remoteOriginsInflight: Promise<DiagnosticOrigin[]> | null = null;
+  const invalidateRemoteOrigins = (): void => { remoteOriginsCache = null; };
   const remoteOrigins = async (): Promise<DiagnosticOrigin[]> => {
-    const media = new MediaClient(mediaConfigFromEnv());
-    const rows = await loadRemoteProjects(media);
-    await Promise.all(rows.filter((row) => !row.isApp).map(async (row) => {
-      try {
-        const config = JSON.parse((await media.downloadFile(row.projectId, 'project.json')).toString('utf8')) as { appId?: unknown };
-        row.appId = typeof config.appId === 'string' ? config.appId : null;
-      } catch {
-        row.appId = null;
-        (row as typeof row & { parentLookupFailed?: boolean }).parentLookupFailed = true;
-      }
-    }));
-    return rows.map((row) => ({
-      originId: row.projectId, name: row.name || row.projectId, kind: row.isApp ? 'app' : 'feature',
-      appId: row.appId ?? null, visibility: row.visibility ?? 'visible', inMedia: row.inMedia,
-      mappingVersion: null,
-      ...((row as typeof row & { parentLookupFailed?: boolean }).parentLookupFailed ? { parentLookupFailed: true } : {}),
-    }));
+    if (remoteOriginsCache && Date.now() - remoteOriginsCache.at < REMOTE_ORIGINS_TTL_MS) return remoteOriginsCache.rows;
+    if (remoteOriginsInflight) return remoteOriginsInflight;
+    remoteOriginsInflight = (async () => {
+      const media = new MediaClient(mediaConfigFromEnv());
+      const rows = await loadRemoteProjects(media);
+      const out: DiagnosticOrigin[] = rows.map((row) => ({
+        originId: row.projectId, name: row.name || row.projectId, kind: row.isApp ? 'app' : 'feature',
+        appId: row.appId ?? null, visibility: row.visibility ?? 'visible', inMedia: row.inMedia,
+        mappingVersion: null,
+        ...(row.parentLookupFailed ? { parentLookupFailed: true } : {}),
+      }));
+      remoteOriginsCache = { at: Date.now(), rows: out };
+      return out;
+    })().finally(() => { remoteOriginsInflight = null; });
+    return remoteOriginsInflight;
   };
 
   const unitsFor = async (
@@ -1593,6 +1602,9 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
       ...(confluenceTasks.length > 0 || groupTasks.length > 0 ? { confluence: confluenceOutcome } : {}),
     };
     appliedResults.set(stored.plan.planId, { expiresAt: Date.now() + PROJECT_SYNC_PLAN_TTL_MS, result });
+    // Push vừa đổi kho remote (origin mới / file mới) — bỏ cache để lần
+    // /origins//status kế tiếp thấy ngay, không đợi hết TTL.
+    invalidateRemoteOrigins();
     res.json({ ok: true, data: result });
   };
   app.post('/api/project-sync/apply', applyHandler);

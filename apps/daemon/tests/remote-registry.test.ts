@@ -66,6 +66,10 @@ describe('loadRemoteProjects', () => {
     expect(byId.XPOS).toEqual({
       projectId: 'XPOS',
       name: 'XPOS',
+      // Folder không có project.json đọc được → App cha không xác minh nổi
+      // (0.8.168: appId/parentLookupFailed đọc ngay trong lượt list).
+      appId: null,
+      parentLookupFailed: true,
       inMedia: true,
       files: 3,
       isApp: false,
@@ -74,6 +78,10 @@ describe('loadRemoteProjects', () => {
     expect(byId['media-only']).toEqual({
       projectId: 'media-only',
       name: 'media-only',
+      // Folder không có project.json đọc được → App cha không xác minh nổi
+      // (0.8.168: appId/parentLookupFailed đọc ngay trong lượt list).
+      appId: null,
+      parentLookupFailed: true,
       inMedia: true,
       files: 1,
       isApp: false,
@@ -285,5 +293,31 @@ describe('isProjectVisible / filterVisibleProjects', () => {
     expect(filterLifecycleVisibleProjects(data).map((p) => p.projectId)).toEqual(['visible']);
     expect(isLifecycleHidden(data, 'child', 'app--old')).toBe(true);
     expect(isLifecycleHidden(data, 'visible', null)).toBe(false);
+  });
+});
+
+describe('loadRemoteProjects — 0.8.168 de-N+1', () => {
+  it('đọc name/appId qua downloadById từ danh sách đã list, không mở session downloadFile', async () => {
+    const downloadFileCalls: string[] = [];
+    const downloadByIdCalls: string[] = [];
+    const media: FolderSource = {
+      listFolders: async () => [{ id: 'f1', name: 'feat-a' }],
+      listAllFiles: async () => [{ id: 'id-pj', path: 'project.json' }, { id: 'id-x', path: 'docs/x.md' }],
+      downloadFile: async (projectId, filePath) => {
+        downloadFileCalls.push(`${projectId}:${filePath}`);
+        return Buffer.from('{}');
+      },
+      downloadById: async (id) => {
+        downloadByIdCalls.push(id);
+        return Buffer.from(JSON.stringify({ name: 'Tính năng A', appId: 'app--bidv' }));
+      },
+    };
+    const rows = await loadRemoteProjects(media);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ projectId: 'feat-a', name: 'Tính năng A', appId: 'app--bidv', isApp: false });
+    expect(rows[0]!.parentLookupFailed).toBeUndefined();
+    // project.json chỉ tải MỘT lần, bằng id — không round-trip session nào.
+    expect(downloadByIdCalls).toEqual(['id-pj']);
+    expect(downloadFileCalls).toEqual([]);
   });
 });
