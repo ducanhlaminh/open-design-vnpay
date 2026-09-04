@@ -14,8 +14,12 @@ import { describe, expect, it } from 'vitest';
 import {
   HOST_RUNTIME_RELEASE_CACHE_TTL_MS,
   formatPrematureUpdateExitError,
+  installerFileNameForPlatform,
+  installerSanityMarker,
+  isSanityValidInstallerBody,
   isWindowsUpdateRestartRequiredExit,
   formatUpdateSpawnError,
+  resolveHostRuntimeReleaseBase,
   resolveUpdateCommand,
   resolveUpdateSpawnOptions,
 } from '../src/server.js';
@@ -66,6 +70,116 @@ describe('resolveUpdateCommand', () => {
   it('defaults platform to process.platform when not given', () => {
     const result = resolveUpdateCommand(odHome);
     expect(result.cmd).toBe(process.platform === 'win32' ? 'powershell' : 'bash');
+  });
+
+  // WP-B: POST /api/update/apply downloads the LATEST installer to a temp
+  // file first and, on success, must run THAT file instead of the one
+  // bundled with the currently-installed version — see
+  // `downloadLatestInstaller` in server.ts. `scriptPath` is the seam that
+  // lets this be exercised without any fs/network.
+  it('uses scriptPath in place of the derived $OD_HOME/current install script on darwin', () => {
+    const scriptPath = '/tmp/od-data/update-installer-abc-123.sh';
+    expect(resolveUpdateCommand(odHome, 'darwin', scriptPath)).toEqual({
+      cmd: 'bash',
+      args: [scriptPath, '--update'],
+    });
+  });
+
+  it('uses scriptPath in place of the derived $OD_HOME/current install script on win32', () => {
+    const scriptPath = 'C:\\Users\\alice\\AppData\\od-data\\update-installer-abc-123.ps1';
+    expect(resolveUpdateCommand(odHome, 'win32', scriptPath)).toEqual({
+      cmd: 'powershell',
+      args: [
+        '-NoProfile',
+        '-NonInteractive',
+        '-ExecutionPolicy', 'Bypass',
+        '-File', scriptPath,
+        '-Update',
+      ],
+    });
+  });
+
+  it('falls back to the derived $OD_HOME/current path when scriptPath is not given', () => {
+    expect(resolveUpdateCommand(odHome, 'darwin').args[0]).toBe(join(odHome, 'current', 'install.sh'));
+    expect(resolveUpdateCommand(odHome, 'win32').args[5]).toBe(join(odHome, 'current', 'install.ps1'));
+  });
+});
+
+// WP-B: base resolution for both the release check and the installer
+// download must honor `OD_RELEASE_URL` (config.env, written by
+// install.sh's write_config_env — see deploy/host/install.sh's
+// resolve_archive ~line 460) as an ABSOLUTE override with no GitHub/mirror
+// fallback, exactly like the installer itself treats a pinned source.
+describe('resolveHostRuntimeReleaseBase', () => {
+  it('defaults to the mirror base and isOverride:false when OD_RELEASE_URL is unset', () => {
+    expect(resolveHostRuntimeReleaseBase({})).toEqual({
+      base: 'https://od-runtime.pages.dev/latest',
+      isOverride: false,
+    });
+  });
+
+  it('defaults when OD_RELEASE_URL is set but blank/whitespace-only', () => {
+    expect(resolveHostRuntimeReleaseBase({ OD_RELEASE_URL: '' })).toEqual({
+      base: 'https://od-runtime.pages.dev/latest',
+      isOverride: false,
+    });
+    expect(resolveHostRuntimeReleaseBase({ OD_RELEASE_URL: '   ' })).toEqual({
+      base: 'https://od-runtime.pages.dev/latest',
+      isOverride: false,
+    });
+  });
+
+  it('uses OD_RELEASE_URL verbatim (trimmed) when set without a trailing slash', () => {
+    expect(resolveHostRuntimeReleaseBase({ OD_RELEASE_URL: '  https://mirror.internal/od  ' })).toEqual({
+      base: 'https://mirror.internal/od',
+      isOverride: true,
+    });
+  });
+
+  it('strips a trailing slash (or several) from OD_RELEASE_URL', () => {
+    expect(resolveHostRuntimeReleaseBase({ OD_RELEASE_URL: 'https://mirror.internal/od/' })).toEqual({
+      base: 'https://mirror.internal/od',
+      isOverride: true,
+    });
+    expect(resolveHostRuntimeReleaseBase({ OD_RELEASE_URL: 'https://mirror.internal/od///' })).toEqual({
+      base: 'https://mirror.internal/od',
+      isOverride: true,
+    });
+  });
+});
+
+describe('installer sanity check (installerSanityMarker / isSanityValidInstallerBody)', () => {
+  it('requires the platform-appropriate flag marker inside a non-empty body', () => {
+    expect(installerSanityMarker('win32')).toBe('-Update');
+    expect(installerSanityMarker('darwin')).toBe('--update');
+    expect(installerSanityMarker('linux')).toBe('--update');
+  });
+
+  it('accepts a body containing the marker', () => {
+    expect(isSanityValidInstallerBody('#!/bin/sh\n# usage: install.sh --update\n', 'darwin')).toBe(true);
+    expect(isSanityValidInstallerBody('# ... -Update ...', 'win32')).toBe(true);
+  });
+
+  it('rejects an empty body — guards against a 200-OK empty response', () => {
+    expect(isSanityValidInstallerBody('', 'darwin')).toBe(false);
+    expect(isSanityValidInstallerBody('   \n  ', 'darwin')).toBe(false);
+  });
+
+  it('rejects a body missing the marker — guards against a proxy/captive-portal 200-HTML page', () => {
+    expect(isSanityValidInstallerBody('<html><body>Sign in to Wi-Fi</body></html>', 'darwin')).toBe(false);
+  });
+
+  it('rejects a non-string body', () => {
+    expect(isSanityValidInstallerBody(null, 'darwin')).toBe(false);
+    expect(isSanityValidInstallerBody(undefined, 'darwin')).toBe(false);
+  });
+});
+
+describe('installerFileNameForPlatform', () => {
+  it('names the temp file with the operationId and the platform-appropriate extension', () => {
+    expect(installerFileNameForPlatform('darwin', 'op-1')).toBe('update-installer-op-1.sh');
+    expect(installerFileNameForPlatform('linux', 'op-1')).toBe('update-installer-op-1.sh');
+    expect(installerFileNameForPlatform('win32', 'op-1')).toBe('update-installer-op-1.ps1');
   });
 });
 

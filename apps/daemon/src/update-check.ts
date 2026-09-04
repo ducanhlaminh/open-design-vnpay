@@ -52,6 +52,12 @@ export interface HostUpdateState {
   updatedAt: string;
   bytesDownloaded?: number;
   totalBytes?: number;
+  /** Which install.sh/.ps1 POST /api/update/apply actually spawned: a
+   *  freshly-downloaded copy of the LATEST installer ('remote'), or the
+   *  installer bundled with the currently-installed version, used as a
+   *  fallback when the download/sanity-check failed ('local'). Internal
+   *  diagnostics only — not part of any external contract. */
+  installerSource?: 'remote' | 'local';
 }
 
 export const UPDATE_STATE_FILENAME = 'update-state.json';

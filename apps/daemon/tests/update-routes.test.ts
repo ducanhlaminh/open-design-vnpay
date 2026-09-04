@@ -35,7 +35,18 @@ vi.mock('node:child_process', async (importOriginal) => {
   const rawSpawn = actual.spawn as (...args: unknown[]) => unknown;
   const spawnMock = ((command: string, args?: readonly string[], options?: unknown) => {
     const argv = args ? Array.from(args) : undefined;
-    const isUpdateSpawn = Array.isArray(argv) && argv.some((a) => typeof a === 'string' && a.includes('install.sh'));
+    // Match on the COMMAND, not just the script path inside argv: WP-B
+    // (installer downloaded fresh to a `update-installer-<opId>.sh` temp
+    // file) means the update-apply route's script path no longer always
+    // contains the literal substring "install.sh" — only the pre-existing
+    // `$OD_HOME/current/install.sh` fallback path does. `spawn(resolvedCmd,
+    // ...)` in the apply route is the ONLY caller in this codebase that
+    // spawns a bare 'bash'/'powershell' command, so matching on command
+    // name alone is both necessary (catches the remote temp-file case) and
+    // safe (nothing else in server.ts spawns those literal commands) — this
+    // must NEVER fall through to a real spawn, since a real one would
+    // actually run install.sh/.ps1 against this machine's real OD_HOME.
+    const isUpdateSpawn = command === 'bash' || (typeof command === 'string' && command.toLowerCase().includes('powershell'));
     if (isUpdateSpawn) {
       spawnCalls.push({ command, args: argv });
       // Never actually shell out — return a stand-in with the
@@ -81,6 +92,17 @@ async function withFakeOpencodeAgent<T>(script: string, run: () => Promise<T>): 
 let githubReleaseCalls = 0;
   let mirrorReleaseCalls = 0;
   let mirrorRelease: { version: string; tag: string } | null = null;
+  // Body served for GET `${base}/install.sh` (WP-B: POST /api/update/apply
+  // downloads the latest installer before spawning it). Defaults to 404 —
+  // preserves the pre-WP-B "local install.sh" spawn path/args for every
+  // test that doesn't opt in — flip per-test via `installerScriptBody`.
+  let installerFetchCalls = 0;
+  let installerScriptBody: string | null | undefined = undefined; // undefined = 404
+  // A second, distinct release-source base used ONLY by the OD_RELEASE_URL
+  // override test below — deliberately mocked here too so that test can
+  // never fall through to `originalFetch` and hit the real network.
+  const OVERRIDE_RELEASE_BASE = 'https://od-release-override.example.test/src';
+  let overrideReleaseCalls = 0;
 
 describe('host-runtime self-update routes', () => {
   let server: http.Server;
@@ -121,6 +143,27 @@ describe('host-runtime self-update routes', () => {
           JSON.stringify({ tag_name: FAKE_LATEST_TAG, html_url: 'https://example.com/release' }),
           { status: 200, headers: { 'content-type': 'application/json' } },
         );
+      }
+      // WP-B: POST /api/update/apply downloads `${base}/install.sh` before
+      // spawning. Never let this fall through to originalFetch — default
+      // (installerScriptBody undefined) is 404, matching the pre-WP-B
+      // "run the locally-installed install.sh" behavior every other test
+      // in this file already asserts.
+      if (href === 'https://od-runtime.pages.dev/latest/install.sh') {
+        installerFetchCalls += 1;
+        if (installerScriptBody === undefined) {
+          return new Response('not found', { status: 404 });
+        }
+        if (installerScriptBody === null) {
+          return new Response('', { status: 200 });
+        }
+        return new Response(installerScriptBody, { status: 200, headers: { 'content-type': 'text/plain' } });
+      }
+      // OD_RELEASE_URL override test fixture — always fails, always mocked,
+      // never real network.
+      if (href === `${OVERRIDE_RELEASE_BASE}/release.json`) {
+        overrideReleaseCalls += 1;
+        return new Response('not found', { status: 404 });
       }
       return originalFetch(input, init);
     }) as typeof fetch;
@@ -467,6 +510,135 @@ setTimeout(() => {
       };
       expect(persisted.state).toBe('failed');
       expect(persisted.error?.message).toContain('spawn bash ENOENT');
+    });
+  });
+
+  // WP-B: POST /api/update/apply must download the LATEST installer before
+  // spawning (so a bug already fixed upstream also fixes the update path
+  // itself), falling back to the pre-WP-B "run the currently-installed
+  // install.sh" behavior whenever the download fails or fails its sanity
+  // check. Each `it` below ends by firing the mocked child's 'error'
+  // listener to release `updateApplyInProgress` for the next test — same
+  // trick the "persists a spawn error" test above already relies on.
+  describe('POST /api/update/apply — installer download source (WP-B)', () => {
+    afterEach(async () => {
+      installerScriptBody = undefined;
+      await rm(join(dataDir, 'update-state.json'), { force: true });
+      await rm(join(dataDir, 'update-marker.json'), { force: true });
+    });
+
+    it('downloads and spawns the latest remote installer, recording installerSource "remote"', async () => {
+      installerScriptBody = '#!/bin/sh\necho fake-latest-installer\n# usage: install.sh --update\n';
+      const before = installerFetchCalls;
+
+      const applyRes = await fetch(`${baseUrl}/api/update/apply`, { method: 'POST' });
+      const applyBody = (await applyRes.json()) as { started: boolean; operationId: string };
+      expect(applyBody.started).toBe(true);
+      expect(installerFetchCalls).toBe(before + 1);
+
+      const call = spawnCalls[spawnCalls.length - 1]!;
+      expect(call.command).toBe('bash');
+      expect(call.args?.[0]).toMatch(/update-installer-.*\.sh$/);
+      expect(call.args?.[0]).not.toBe(join(odHomeFixture, 'current', 'install.sh'));
+      expect(call.args?.[1]).toBe('--update');
+
+      const statusRes = await fetch(`${baseUrl}/api/update/status`);
+      const statusBody = (await statusRes.json()) as { updateState: { installerSource?: string } | null };
+      expect(statusBody.updateState?.installerSource).toBe('remote');
+
+      updateChildListeners.get('error')?.(new Error('test cleanup: release apply lock'));
+    });
+
+    it('falls back to the local install.sh when the downloaded body is empty (fails sanity check)', async () => {
+      installerScriptBody = null; // mock serves a 200 with an empty body
+      const applyRes = await fetch(`${baseUrl}/api/update/apply`, { method: 'POST' });
+      expect((await applyRes.json() as { started: boolean }).started).toBe(true);
+
+      const call = spawnCalls[spawnCalls.length - 1]!;
+      expect(call.command).toBe('bash');
+      expect(call.args).toEqual([join(odHomeFixture, 'current', 'install.sh'), '--update']);
+
+      const statusRes = await fetch(`${baseUrl}/api/update/status`);
+      const statusBody = (await statusRes.json()) as { updateState: { installerSource?: string } | null };
+      expect(statusBody.updateState?.installerSource).toBe('local');
+
+      updateChildListeners.get('error')?.(new Error('test cleanup: release apply lock'));
+    });
+
+    it('falls back to the local install.sh when the downloaded body is missing the --update marker', async () => {
+      // A real-world failure mode: a captive-portal/proxy returns 200 with
+      // an HTML page instead of the script.
+      installerScriptBody = '<html><body>Sign in required</body></html>';
+      const applyRes = await fetch(`${baseUrl}/api/update/apply`, { method: 'POST' });
+      expect((await applyRes.json() as { started: boolean }).started).toBe(true);
+
+      const call = spawnCalls[spawnCalls.length - 1]!;
+      expect(call.args).toEqual([join(odHomeFixture, 'current', 'install.sh'), '--update']);
+
+      updateChildListeners.get('error')?.(new Error('test cleanup: release apply lock'));
+    });
+
+    it('does not delete the temp installer right after spawning, but sweeps it on the NEXT apply', async () => {
+      installerScriptBody = '#!/bin/sh\necho v1\n# --update\n';
+      const first = await fetch(`${baseUrl}/api/update/apply`, { method: 'POST' });
+      expect((await first.json() as { started: boolean }).started).toBe(true);
+      const firstScriptPath = spawnCalls[spawnCalls.length - 1]!.args![0]!;
+
+      // Still there right after the spawn — the installer process is
+      // (nominally) still reading from it.
+      await expect(readFile(firstScriptPath, 'utf8')).resolves.toContain('--update');
+
+      updateChildListeners.get('error')?.(new Error('test cleanup: release apply lock'));
+      await rm(join(dataDir, 'update-state.json'), { force: true });
+      await rm(join(dataDir, 'update-marker.json'), { force: true });
+
+      const second = await fetch(`${baseUrl}/api/update/apply`, { method: 'POST' });
+      expect((await second.json() as { started: boolean }).started).toBe(true);
+
+      // Swept at the start of the SECOND apply, since it belongs to a
+      // different (now-stale) operationId.
+      await expect(readFile(firstScriptPath, 'utf8')).rejects.toThrow();
+
+      updateChildListeners.get('error')?.(new Error('test cleanup: release apply lock'));
+    });
+  });
+
+  // WP-B: the release CHECK (GET /api/update/status) must honor
+  // OD_RELEASE_URL the same way — see resolveHostRuntimeReleaseBase's unit
+  // tests in update-command-resolution.test.ts for the pure base-resolution
+  // logic. This exercises it end-to-end: when set, a failing fetch must NOT
+  // fall back to GitHub (install.sh's own preflight treats a pinned source
+  // as absolute — see install.sh ~line 488).
+  describe('GET /api/update/status honors OD_RELEASE_URL (WP-B)', () => {
+    const originalOdReleaseUrl = process.env.OD_RELEASE_URL;
+
+    afterEach(async () => {
+      if (originalOdReleaseUrl === undefined) delete process.env.OD_RELEASE_URL;
+      else process.env.OD_RELEASE_URL = originalOdReleaseUrl;
+      // Restore the shared release cache to the default mirror's value so
+      // this test's env override can't leak into any test that runs later.
+      await fetch(`${baseUrl}/api/update/status?refresh=1`);
+    });
+
+    it('when set and unreachable, does not fall back to GitHub (asserts call counts + the exact URL hit)', async () => {
+      // Warm the cache via the default mirror first so there is a known
+      // cached release available to serve `stale:true` from.
+      await fetch(`${baseUrl}/api/update/status?refresh=1`);
+
+      process.env.OD_RELEASE_URL = `${OVERRIDE_RELEASE_BASE}/`; // trailing slash — base resolution must strip it
+      const githubBefore = githubReleaseCalls;
+      const overrideBefore = overrideReleaseCalls;
+      const mirrorBefore = mirrorReleaseCalls;
+
+      const res = await fetch(`${baseUrl}/api/update/status?refresh=1`);
+      const body = (await res.json()) as { checkError: string | null; latestVersion: string | null };
+
+      // Exactly one call, to the override base's release.json — not the
+      // default mirror, and never GitHub.
+      expect(overrideReleaseCalls).toBe(overrideBefore + 1);
+      expect(mirrorReleaseCalls).toBe(mirrorBefore);
+      expect(githubReleaseCalls).toBe(githubBefore);
+      expect(body.checkError).toBeTruthy();
     });
   });
 });

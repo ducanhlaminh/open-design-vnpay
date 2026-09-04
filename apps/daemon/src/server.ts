@@ -3367,10 +3367,28 @@ const HOST_RUNTIME_RELEASE_LATEST_API = `https://api.github.com/repos/${HOST_RUN
 // Release. Mạng công ty chặn/TLS-inspect api.github.com (403) làm "Kiểm tra
 // cập nhật" chết dù installer đã tải qua mirror từ lâu — nên CHECK cũng phải
 // hỏi mirror trước, GitHub chỉ còn là fallback.
-const HOST_RUNTIME_MIRROR_RELEASE_URL = 'https://od-runtime.pages.dev/latest/release.json';
+const HOST_RUNTIME_DEFAULT_MIRROR_BASE = 'https://od-runtime.pages.dev/latest';
 
-async function fetchHostRuntimeLatestFromMirror(signal) {
-  const response = await fetch(HOST_RUNTIME_MIRROR_RELEASE_URL, {
+// Resolve the release/installer source base URL: `OD_RELEASE_URL` (written
+// into config.env by install.sh's `write_config_env` whenever the user/IT
+// pinned a non-default source — see install.sh's `resolve_archive` ~line
+// 460) when set, else the default Cloudflare Pages mirror base.
+// `isOverride: true` means this is a user/IT-provided source, which per
+// install.sh's own preflight semantics (~line 488: "that host is the only
+// one the download needs, and it never fails over") must NOT fall back to
+// GitHub — the whole point of pinning a source is that it's authoritative.
+export function resolveHostRuntimeReleaseBase(
+  env: NodeJS.ProcessEnv = process.env,
+): { base: string; isOverride: boolean } {
+  const raw = env.OD_RELEASE_URL;
+  if (typeof raw === 'string' && raw.trim().length > 0) {
+    return { base: raw.trim().replace(/\/+$/, ''), isOverride: true };
+  }
+  return { base: HOST_RUNTIME_DEFAULT_MIRROR_BASE, isOverride: false };
+}
+
+async function fetchHostRuntimeLatestFromMirror(signal, releaseUrl) {
+  const response = await fetch(releaseUrl, {
     headers: { accept: 'application/json', 'user-agent': 'open-design-daemon' },
     signal,
   });
@@ -3415,11 +3433,16 @@ async function readHostRuntimeLatestReleaseInfo({ force = false } = {}) {
     const ctrl = new AbortController();
     const timeout = setTimeout(() => ctrl.abort(), OPEN_DESIGN_GITHUB_TIMEOUT_MS);
     try {
-      // Mirror trước (mạng VNPAY chặn api.github.com), GitHub API fallback.
+      // Mirror trước (mạng VNPAY chặn api.github.com), GitHub API fallback —
+      // NHƯNG khi OD_RELEASE_URL được set (user/IT pinned source), nguồn đó
+      // là tuyệt đối và không được fallback GitHub (xem
+      // resolveHostRuntimeReleaseBase ở trên, cùng semantics install.sh).
+      const { base, isOverride } = resolveHostRuntimeReleaseBase();
       let release;
       try {
-        release = await fetchHostRuntimeLatestFromMirror(ctrl.signal);
+        release = await fetchHostRuntimeLatestFromMirror(ctrl.signal, `${base}/release.json`);
       } catch (mirrorError) {
+        if (isOverride) throw mirrorError;
         const response = await fetch(HOST_RUNTIME_RELEASE_LATEST_API, {
           headers: {
             accept: 'application/vnd.github+json',
@@ -3487,9 +3510,16 @@ let lastUpdateError: { message: string; at: string } | null = null;
 // it is unit-testable in isolation. The caller still owns resolving the
 // `powershell` binary itself (see `resolveOnPath` at the call site below)
 // since that involves a real PATH lookup this function must stay free of.
+//
+// `scriptPath` overrides the default `$OD_HOME/current/install.{sh,ps1}`
+// location — used when POST /api/update/apply has freshly downloaded the
+// latest installer to a temp file first (see `downloadLatestInstaller`
+// below) instead of running the installer of the currently-installed
+// version.
 export function resolveUpdateCommand(
   odHome: string,
   platform: NodeJS.Platform = process.platform,
+  scriptPath?: string,
 ): { cmd: string; args: string[] } {
   if (platform === 'win32') {
     return {
@@ -3508,14 +3538,14 @@ export function resolveUpdateCommand(
         '-NoProfile',
         '-NonInteractive',
         '-ExecutionPolicy', 'Bypass',
-        '-File', path.join(odHome, 'current', 'install.ps1'),
+        '-File', scriptPath ?? path.join(odHome, 'current', 'install.ps1'),
         '-Update',
       ],
     };
   }
   return {
     cmd: 'bash',
-    args: [path.join(odHome, 'current', 'install.sh'), '--update'],
+    args: [scriptPath ?? path.join(odHome, 'current', 'install.sh'), '--update'],
   };
 }
 
@@ -3540,6 +3570,96 @@ export function resolveUpdateSpawnOptions(
   return platform === 'win32'
     ? { detached: false, windowsHide: true }
     : { detached: true };
+}
+
+// Downloading the LATEST installer before running it (rather than the
+// installer of the version currently installed) so a bug already fixed in a
+// newer release also fixes the update path itself — see WP-B context: a
+// machine stuck on <=0.8.76 or <=0.8.160 could not self-heal because
+// `install.sh --update` ran the OLD, buggy installer.
+const UPDATE_INSTALLER_FILE_PREFIX = 'update-installer-';
+const UPDATE_INSTALLER_DOWNLOAD_TIMEOUT_MS = 15_000;
+
+export function installerFileNameForPlatform(
+  platform: NodeJS.Platform,
+  operationId: string,
+): string {
+  return `${UPDATE_INSTALLER_FILE_PREFIX}${operationId}.${platform === 'win32' ? 'ps1' : 'sh'}`;
+}
+
+// The marker string a successfully-downloaded installer body must contain —
+// guards against a proxy/captive-portal returning a 200 HTML page instead of
+// the real script (a real failure mode of some corporate networks).
+export function installerSanityMarker(platform: NodeJS.Platform): string {
+  return platform === 'win32' ? '-Update' : '--update';
+}
+
+export function isSanityValidInstallerBody(
+  body: unknown,
+  platform: NodeJS.Platform,
+): body is string {
+  return typeof body === 'string'
+    && body.trim().length > 0
+    && body.includes(installerSanityMarker(platform));
+}
+
+// Removes any `update-installer-*` temp file left over from a PREVIOUS
+// apply attempt (a different operationId) — the file for the CURRENT
+// operation must survive this call since the installer may still be
+// running from it. Best-effort: a cleanup failure never blocks the apply
+// itself.
+async function cleanupStaleUpdateInstallers(
+  dataDir: string,
+  currentOperationId: string,
+): Promise<void> {
+  try {
+    const entries = await fs.promises.readdir(dataDir);
+    await Promise.all(
+      entries
+        .filter((name) => name.startsWith(UPDATE_INSTALLER_FILE_PREFIX) && !name.includes(currentOperationId))
+        .map((name) => fs.promises.rm(path.join(dataDir, name), { force: true }).catch(() => {})),
+    );
+  } catch {
+    // Best-effort — a missing/unreadable data dir just means nothing to clean up.
+  }
+}
+
+// Downloads `${base}/install.sh` (or `.ps1` on win32) to a temp file inside
+// the daemon's persistent data dir, mode 0600. Throws on any failure
+// (network, non-2xx, sanity-check) — the caller falls back to the
+// currently-installed installer, exactly like the pre-WP-B behavior.
+async function downloadLatestInstaller({
+  base,
+  platform,
+  dataDir,
+  operationId,
+}: {
+  base: string;
+  platform: NodeJS.Platform;
+  dataDir: string;
+  operationId: string;
+}): Promise<string> {
+  const url = `${base}/${platform === 'win32' ? 'install.ps1' : 'install.sh'}`;
+  const ctrl = new AbortController();
+  const timeout = setTimeout(() => ctrl.abort(), UPDATE_INSTALLER_DOWNLOAD_TIMEOUT_MS);
+  try {
+    const response = await fetch(url, {
+      headers: { 'user-agent': 'open-design-daemon' },
+      signal: ctrl.signal,
+    });
+    if (!response.ok) {
+      throw new Error(`installer download failed with HTTP ${response.status}`);
+    }
+    const body = await response.text();
+    if (!isSanityValidInstallerBody(body, platform)) {
+      throw new Error('installer download failed sanity check (empty body or missing marker)');
+    }
+    const destination = path.join(dataDir, installerFileNameForPlatform(platform, operationId));
+    await fs.promises.writeFile(destination, body, { encoding: 'utf8', mode: 0o600 });
+    return destination;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 // A successful updater stops/restarts this daemon before its child can emit
@@ -6168,6 +6288,34 @@ export async function startServer({
       if (!odHome) throw new Error('could not resolve OD_HOME from OD_RESOURCE_ROOT');
 
       operationId = randomUUID();
+
+      // Sweep any `update-installer-*` temp file left over from a previous
+      // (unrelated) apply attempt before touching this one.
+      await cleanupStaleUpdateInstallers(RUNTIME_DATA_DIR, operationId);
+
+      // Download the LATEST installer (same source as the release check
+      // above) and run THAT instead of the installer bundled with the
+      // currently-installed version — see downloadLatestInstaller's
+      // docblock. Any failure (network, non-http(s) base, sanity check)
+      // silently falls back to the pre-existing behavior.
+      const { base: releaseBase } = resolveHostRuntimeReleaseBase();
+      let installerScriptPath: string | undefined;
+      let installerSource: 'remote' | 'local' = 'local';
+      if (/^https?:\/\//i.test(releaseBase)) {
+        try {
+          installerScriptPath = await downloadLatestInstaller({
+            base: releaseBase,
+            platform: process.platform,
+            dataDir: RUNTIME_DATA_DIR,
+            operationId,
+          });
+          installerSource = 'remote';
+        } catch {
+          installerScriptPath = undefined;
+          installerSource = 'local';
+        }
+      }
+
       const startedAt = new Date().toISOString();
       await writeUpdateState(RUNTIME_DATA_DIR, {
         operationId,
@@ -6178,13 +6326,14 @@ export async function startServer({
         error: null,
         startedAt,
         updatedAt: startedAt,
+        installerSource,
       });
 
       // Must survive the restart — write to disk BEFORE spawning, not
       // just in memory (this process is about to be killed).
       await writeUpdateMarker(RUNTIME_DATA_DIR, targetVersion);
 
-      const { cmd, args } = resolveUpdateCommand(odHome, process.platform);
+      const { cmd, args } = resolveUpdateCommand(odHome, process.platform, installerScriptPath);
       let resolvedCmd = cmd;
       if (process.platform === 'win32') {
         // `cmd` is 'powershell' on this branch — resolve it through PATH/
