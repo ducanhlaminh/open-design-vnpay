@@ -58,6 +58,8 @@ có `data-nav` để chuyển màn.
   số 1.
 - Không cần `criteria/`, `comp/`, DS hay Figma — bước này không dùng.
 
+**Tìm trong tài liệu:** cần thông tin ngoài trang đang đọc → grep KHÔNG DẤU trên `./docs-feature/_sections.md` (và `./docs-app/_sections.md` nếu được phép tham khảo pool) → mở đúng `path:line` đọc nguyên văn rồi mới dùng. MỌI thông tin lấy từ docs-app phải ghi nguồn `path#heading` ngay trong output/ghi chú tương ứng. Không đoán nội dung từ tên trang.
+
 ## Output (CHỈ ghi trong `mockups/`)
 
 1. `mockups/<SCREEN-KEY>.html` — một file / màn, key NGUYÊN VĂN từ `_inputs.json`.

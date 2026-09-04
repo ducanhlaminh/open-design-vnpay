@@ -55,6 +55,8 @@ KHÔNG đánh giá UX, KHÔNG sửa sơ đồ gốc, KHÔNG viết `patch.json`/
   hệ thống liên tiếp gom thành MỘT node hệ thống nét đứt. Không có sơ đồ nào
   → tự dựng luồng hoàn toàn từ chữ.
 
+**Tìm trong tài liệu:** cần thông tin ngoài trang đang đọc → grep KHÔNG DẤU trên `./docs-feature/_sections.md` (và `./docs-app/_sections.md` nếu được phép tham khảo pool) → mở đúng `path:line` đọc nguyên văn rồi mới dùng. MỌI thông tin lấy từ docs-app phải ghi nguồn `path#heading` ngay trong output/ghi chú tương ứng. Không đoán nội dung từ tên trang.
+
 ## Luật chưng cất màn ↔ bước
 
 - **Màn** = giao diện người dùng đứng trên đó (tài liệu thường khai bằng mục

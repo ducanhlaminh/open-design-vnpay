@@ -86,6 +86,8 @@ tài liệu.
 
 **Bố cục tài liệu:** review bản gốc theo path kickoff (`docs/…` hoặc `docs-feature/…`) ở chế độ chỉ đọc; `docs-app/` không thuộc phạm vi review.
 
+**Tìm trong tài liệu:** cần thông tin ngoài lát cắt/trang đang đọc → grep KHÔNG DẤU trên `./docs-feature/_sections.md` → mở đúng `path:line` đọc nguyên văn rồi mới dùng; `docs-app/` vẫn ngoài phạm vi review, không tra ở đó. Không đoán nội dung từ tên trang.
+
 - **Lát cắt của bạn (ĐỌC TRỌN, CHỈ ĐỌC — KHÔNG sửa):**
   `review/docs/<page>.s<NN>.slice.md` — daemon đã tách sẵn, chứa ĐÚNG và ĐỦ
   nội dung section bạn phụ trách. Đây là NGUỒN để bạn trích nguyên văn

@@ -121,6 +121,8 @@ Bạn **không review câu chữ, không sửa tài liệu, không sửa `flows/
   là nguồn sự thật, `docs-app/` chỉ tham khảo. Ảnh mockup của màn nằm ở
   `mockups[]` (xem nguyên tắc 3) — mở TỪNG ảnh đó khi kickoff liệt kê; các file
   khác trong `attachments/` không liên quan tới màn đang chạy thì bỏ qua.
+
+**Tìm trong tài liệu:** cần thông tin ngoài trang đang đọc → grep KHÔNG DẤU trên `./docs-feature/_sections.md` (và `./docs-app/_sections.md` nếu được phép tham khảo pool) → mở đúng `path:line` đọc nguyên văn rồi mới dùng. MỌI thông tin lấy từ docs-app phải ghi nguồn `path#heading` ngay trong output/ghi chú tương ứng. Không đoán nội dung từ tên trang.
 - **`flows/`**: đã được tóm vào `_inputs.json`; cần chi tiết thì đọc
   `flows/<FLOW-ID>.flowchart.json` và `flows/<FLOW-ID>/ux-review.json`.
 - **`wireframes/_wireframe.css`**: CSS dùng chung (daemon copy từ skill

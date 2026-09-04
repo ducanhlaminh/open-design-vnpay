@@ -793,6 +793,7 @@ import {
   readManifest,
   stageAppDocsPool,
 } from './app-pool.js';
+import { writeDocsSectionIndex } from './docs-section-index.js';
 import { registerAppPoolRoutes } from './app-pool-routes.js';
 import { registerAppContextRoutes } from './app-context-routes.js';
 import { registerOverviewRoutes } from './overview-routes.js';
@@ -18993,6 +18994,19 @@ export async function startServer({
         const cwd = wfDir ? path.join(projectRoot, wfDir) : projectRoot;
         outerCwd = cwd;
 
+        // wp-docs-review-section-index: dr-review có kickoff RIÊNG (fan-out
+        // theo trang, không đi qua runPipeline chung) nên hook y hệt ở đó
+        // không chạm tới đây — refresh lại tại chỗ, trước khi fan-out mọi
+        // trang. Best-effort: lỗi không được chặn cả stage.
+        try {
+          await writeDocsSectionIndex(path.join(cwd, 'docs-feature'));
+          const appSectionsPath = path.join(cwd, 'docs-app', '_sections.md');
+          const hasAppSections = await fs.promises.stat(appSectionsPath).then(() => true, () => false);
+          if (!hasAppSections) await writeDocsSectionIndex(path.join(cwd, 'docs-app'));
+        } catch (error) {
+          console.warn('[docs-review] refresh _sections.md failed (continuing):', error);
+        }
+
         // Dọn thông báo "không chạy được" còn sót từ lần chạy TRƯỚC — nó nằm
         // ngang hàng review/ (xem writeDocsReviewFailureNote), cố tình không
         // khớp outputs của stage nào nên không tự dọn theo re-run clear bên
@@ -23457,6 +23471,24 @@ export async function startServer({
         } catch (error) {
           console.warn('[ds-criteria] staging into run cwd failed (continuing without it):', error);
         }
+      }
+    }
+    // wp-docs-review-section-index: chỉ WF docs-review, refresh mục lục
+    // section (`_sections.md`, 0 LLM) TRƯỚC khi agent chạy — agent grep
+    // KHÔNG DẤU trên đó thay vì grep mù/đoán tên trang. `docs-app/` đã tự có
+    // `_sections.md` từ app-pool.ts khi pool đổi (stageAppDocsPool copy mọi
+    // `.md`, kể cả file này) — chỉ bù khi thiếu (pool cũ/staging lệch).
+    // Best-effort: lỗi (fs hỏng, quyền…) không được chặn kickoff.
+    if (getWorkflow('docs-review')?.pipelineIds.includes(def.id)) {
+      try {
+        const projectRoot = await ensureProject(PROJECTS_DIR, projectId);
+        const runCwd = wfDir ? path.join(projectRoot, wfDir) : projectRoot;
+        await writeDocsSectionIndex(path.join(runCwd, 'docs-feature'));
+        const appSectionsPath = path.join(runCwd, 'docs-app', '_sections.md');
+        const hasAppSections = await fs.promises.stat(appSectionsPath).then(() => true, () => false);
+        if (!hasAppSections) await writeDocsSectionIndex(path.join(runCwd, 'docs-app'));
+      } catch (error) {
+        console.warn('[docs-review] refresh _sections.md failed (continuing):', error);
       }
     }
     // UI terminals (ui-html / ui-react / ui-react-ds) get the target-viewport

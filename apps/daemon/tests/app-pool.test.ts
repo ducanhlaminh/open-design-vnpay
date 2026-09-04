@@ -180,6 +180,28 @@ describe('app-pool — deletePoolPages', () => {
     await expect(fsp.access(path.join(docsDir, 'branch-a/page-one.md'))).rejects.toThrow();
     const index = await readFile(path.join(docsDir, '_index.md'), 'utf8');
     expect(index).not.toContain('page-one.md');
+    // wp-docs-review-section-index: xoá trang cuối cùng của pool → không còn
+    // *.md nào → _sections.md không được sinh ra (no-op, khớp writeDocsSectionIndex
+    // trên root rỗng).
+    await expect(fsp.access(path.join(docsDir, '_sections.md'))).rejects.toThrow();
+  });
+
+  it('regenerates _sections.md alongside _index.md when a page survives the delete', async () => {
+    const appId = 'app-1';
+    const docsDir = appDocsDir(projectsDir, appId);
+    const fsp = await import('node:fs/promises');
+    await fsp.mkdir(path.join(docsDir, 'branch-a'), { recursive: true });
+    await fsp.writeFile(path.join(docsDir, 'branch-a/page-one.md'), '# Page One');
+    await fsp.writeFile(path.join(docsDir, 'branch-a/page-two.md'), '## Còn lại\n\nnội dung');
+    await writeManifest(projectsDir, appId, {
+      version: 1,
+      pages: [page(), page({ pageId: '2', path: 'branch-a/page-two.md', title: 'Page Two' })],
+    });
+
+    await deletePoolPages(projectsDir, appId, ['1']);
+    const sections = await readFile(path.join(docsDir, '_sections.md'), 'utf8');
+    expect(sections).not.toContain('page-one.md');
+    expect(sections).toContain('branch-a/page-two.md:1');
   });
 
   it('is best-effort when the file is already missing (manifest entry still drops)', async () => {
@@ -293,6 +315,13 @@ describe('app-pool — importConfluenceIntoPool (stubbed fetch core)', () => {
 
     const index = await readFile(path.join(appDocsDir(projectsDir, 'app-1'), '_index.md'), 'utf8');
     expect(index).toContain('branch-x/page-0.md');
+
+    // wp-docs-review-section-index: import cũng regen _sections.md cạnh
+    // _index.md — `.md` nên stageAppDocsPool copy nó sang docs-app/ của mọi
+    // feature y hệt _index.md, không cần code staging riêng.
+    const sections = await readFile(path.join(appDocsDir(projectsDir, 'app-1'), '_sections.md'), 'utf8');
+    expect(sections).toContain('branch-x/page-0.md:1');
+    expect(sections).toContain('branch-x/page-1.md:1');
   });
 
   it('cancel before commit removes staging and leaves the live pool byte-for-byte unchanged', async () => {

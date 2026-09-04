@@ -52,6 +52,8 @@ của bạn).
   dự án legacy dùng `docs/`). Bỏ qua `_index.md`, `attachments/`, `*.changes.json`,
   `*.notes.json`, `review/`, `*.slice.md`.
 
+**Tìm trong tài liệu:** cần thông tin ngoài trang đang đọc → grep KHÔNG DẤU trên `./docs-feature/_sections.md` (và `./docs-app/_sections.md` nếu được phép tham khảo pool) → mở đúng `path:line` đọc nguyên văn rồi mới dùng. MỌI thông tin lấy từ docs-app phải ghi nguồn `path#heading` ngay trong output/ghi chú tương ứng. Không đoán nội dung từ tên trang.
+
 ## Checklist UX (chấm đúng các mục này, không bịa mục khác)
 
 | # | Mục | Câu hỏi | `heuristic` |

@@ -28,6 +28,7 @@ import {
   resolveConfluenceCreds,
   type ConfluenceDocPage,
 } from './bas/bas-client.js';
+import { writeDocsSectionIndex } from './docs-section-index.js';
 
 export type ManifestPage = AppPoolPage;
 
@@ -348,6 +349,13 @@ export async function importConfluenceIntoPool(opts: {
     rebalanceBranches(next);
     await fs.promises.writeFile(path.join(stagedDocsDir, '_manifest.json'), `${JSON.stringify(next, null, 2)}\n`, 'utf8');
     await fs.promises.writeFile(path.join(stagedDocsDir, '_index.md'), generateIndexMd(next), 'utf8');
+    // `_sections.md` cạnh `_index.md` (0 LLM, mục lục mức section — xem
+    // wp-docs-review-section-index.md). `.md` nên `stageAppDocsPool` copy
+    // sang `docs-app/` của mọi feature y hệt `_index.md`, không cần code
+    // staging riêng. Best-effort: một pool hỏng vẫn phải import được.
+    await writeDocsSectionIndex(stagedDocsDir).catch((error) => {
+      console.warn(`[app-pool] build _sections.md for ${appId} failed (continuing):`, error);
+    });
 
     // Last cancellable point. From onCommitStart onward the two renames form
     // one non-cancellable commit; a failed second rename restores the backup.
@@ -465,5 +473,8 @@ export async function deletePoolPages(
   };
   await writeManifest(projectsDir, appId, next);
   await writeIndexMd(projectsDir, appId, next);
+  await writeDocsSectionIndex(appDocsDir(projectsDir, appId)).catch((error) => {
+    console.warn(`[app-pool] refresh _sections.md for ${appId} failed (continuing):`, error);
+  });
   return next;
 }
