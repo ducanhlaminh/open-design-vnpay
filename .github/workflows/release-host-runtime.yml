@@ -463,9 +463,163 @@ jobs:
           if [ -f "$HOME/Library/LaunchAgents/com.vnpay.open-design.plist" ]; then echo "LaunchAgent plist still exists after uninstall"; exit 1; fi
           echo "[ok] uninstall removed $HOME/.open-design and the LaunchAgent"
 
+  update-e2e-macos:
+    name: Update E2E (darwin-arm64)
+    # Everything the smoke-test-* jobs above DON'T cover: the `--update` /
+    # `-Update` code path and the Web UI's POST /api/update/apply, against a
+    # real N-1 release from od-runtime.pages.dev updating up to THIS build.
+    # See deploy/host/tests/update-e2e.sh for the full two-stage design.
+    needs: build
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Download darwin-arm64 tarball
+        uses: actions/download-artifact@v8
+        with:
+          name: host-runtime-darwin-arm64
+          path: ${{ runner.temp }}/out
+
+      - name: Resolve archive path
+        id: archive
+        run: |
+          set -euo pipefail
+          tarball="$(ls "${{ runner.temp }}/out"/*.tar.gz | head -1)"
+          if [ -z "$tarball" ]; then echo "no .tar.gz found in ${{ runner.temp }}/out" >&2; exit 1; fi
+          echo "path=$tarball" >> "$GITHUB_OUTPUT"
+
+      # No OD_E2E_HOME here -- a GitHub-hosted runner is always fresh, so
+      # the script's own guard (no launchd label loaded, ports free) is
+      # enough; it operates directly on the runner's real $HOME.
+      - name: Run update-e2e.sh (N-1 -> 9.9.1 -> 9.9.2)
+        env:
+          OD_E2E_TARBALL: ${{ steps.archive.outputs.path }}
+          OD_E2E_PLATFORM: darwin-arm64
+        run: |
+          set -euo pipefail
+          bash "${{ github.workspace }}/deploy/host/tests/update-e2e.sh"
+
+      # update-e2e.sh already dumps these itself (via its own EXIT trap)
+      # before it tears anything down, so this step is a redundant safety
+      # net -- e.g. if the process were killed before its trap could run.
+      - name: Dump daemon logs + launchd state (on failure)
+        if: failure()
+        run: |
+          od_home="$HOME/.open-design"
+          for f in "$od_home/logs/open-design.out.log" "$od_home/logs/open-design.err.log"; do
+            echo "===== $f (last 200 lines)"; tail -n 200 "$f" 2>/dev/null || echo "(missing)"
+          done
+          data_dir="$(grep -E '^OD_DATA_DIR=' "$od_home/config.env" 2>/dev/null | tail -1 | cut -d= -f2-)"
+          data_dir="${data_dir:-$HOME/od-data/open-design}"
+          for f in "$data_dir/update.log" "$data_dir/update-state.json"; do
+            echo "===== $f (last 200 lines)"; tail -n 200 "$f" 2>/dev/null || echo "(missing)"
+          done
+          echo "===== launchctl print"; launchctl print "gui/$(id -u)/com.vnpay.open-design" 2>&1 | head -80 || true
+
+      # Best-effort second teardown in case update-e2e.sh's own EXIT trap
+      # did not get to run to completion -- mirrors smoke-test-macos's own
+      # always-run uninstall step.
+      - name: Teardown (best-effort, in case the script's own trap did not run)
+        if: always()
+        run: |
+          launchctl bootout "gui/$(id -u)/com.vnpay.open-design" >/dev/null 2>&1 || true
+          rm -f "$HOME/Library/LaunchAgents/com.vnpay.open-design.plist"
+          rm -rf "$HOME/.open-design"
+
+  update-e2e-windows:
+    name: Update E2E (win32-x64)
+    needs: build
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Download win32-x64 tarball
+        uses: actions/download-artifact@v8
+        with:
+          name: host-runtime-win32-x64
+          path: ${{ runner.temp }}\out
+
+      - name: Resolve archive path
+        id: archive
+        shell: pwsh
+        run: |
+          $tarball = Get-ChildItem -Path "${{ runner.temp }}\out" -Filter *.tar.gz | Select-Object -First 1
+          if (-not $tarball) { Write-Error "no .tar.gz found in ${{ runner.temp }}\out"; exit 1 }
+          "path=$($tarball.FullName)" >> $env:GITHUB_OUTPUT
+
+      - name: Run update-e2e.ps1 (N-1 -> 9.9.1 -> 9.9.2)
+        shell: pwsh
+        env:
+          OD_E2E_TARBALL: ${{ steps.archive.outputs.path }}
+          OD_E2E_PLATFORM: win32-x64
+        run: |
+          & "${{ github.workspace }}\deploy\host\tests\update-e2e.ps1"
+          if ($LASTEXITCODE -ne 0) { throw "update-e2e.ps1 exited $LASTEXITCODE" }
+
+      - name: Dump daemon logs (on failure)
+        if: failure()
+        shell: pwsh
+        run: |
+          $odHome = Join-Path $env:USERPROFILE ".open-design"
+          foreach ($f in @("$odHome\logs\open-design.out.log", "$odHome\logs\open-design.err.log")) {
+            Write-Host "===== $f (last 200 lines)"
+            if (Test-Path $f) { Get-Content -Path $f -Tail 200 } else { Write-Host "(missing)" }
+          }
+          $dataDir = Join-Path $env:USERPROFILE "od-data\open-design"
+          $cfg = Join-Path $odHome "config.env"
+          if (Test-Path $cfg) {
+            $m = Select-String -Path $cfg -Pattern '^OD_DATA_DIR=(.*)$' -ErrorAction SilentlyContinue | Select-Object -Last 1
+            if ($m) { $dataDir = $m.Matches[0].Groups[1].Value }
+          }
+          foreach ($f in @("$dataDir\update.log", "$dataDir\update-state.json")) {
+            Write-Host "===== $f (last 200 lines)"
+            if (Test-Path $f) { Get-Content -Path $f -Tail 200 } else { Write-Host "(missing)" }
+          }
+
+      # Best-effort second teardown -- mirrors smoke-test-windows job's own
+      # unconditional Cleanup step, in case update-e2e.ps1's finally block
+      # did not get to run (e.g. the job was killed).
+      - name: Teardown (best-effort, in case the script's own trap did not run)
+        if: always()
+        shell: pwsh
+        run: |
+          $odHome = Join-Path $env:USERPROFILE ".open-design"
+          $pidFile = Join-Path $odHome "open-design.pid"
+          if (Test-Path $pidFile) {
+            $daemonPid = (Get-Content $pidFile -Raw -ErrorAction SilentlyContinue)
+            if ($daemonPid) {
+              $daemonPid = $daemonPid.Trim()
+              try { Stop-Process -Id $daemonPid -Force -ErrorAction Stop } catch { try { taskkill.exe /PID $daemonPid /T /F 2>$null } catch {} }
+            }
+          }
+          try { schtasks /Delete /TN "OpenDesignDaemon" /F 2>$null } catch {}
+          Remove-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "OpenDesignDaemon" -Force -ErrorAction SilentlyContinue
+          Remove-Item -Recurse -Force "$odHome" -ErrorAction SilentlyContinue
+          $global:LASTEXITCODE = 0
+
   publish:
     name: Publish GitHub Release
-    needs: build
+    # Release only publishes once BOTH the fresh-install smoke tests AND
+    # the update-path e2e tests are green -- a real user reaches this
+    # build either by installing fresh or by updating from N-1, and both
+    # paths must work before it goes out.
+    needs: [build, update-e2e-macos, update-e2e-windows]
     # Manual workflow_dispatch runs (used to smoke-test a branch before it's
     # merged/tagged) build + smoke-test only -- they must never cut a real
     # public GitHub Release out of unmerged/experimental code. Only the tag
