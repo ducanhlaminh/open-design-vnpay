@@ -58,7 +58,12 @@ có `data-nav` để chuyển màn.
   số 1.
 - Không cần `criteria/`, `comp/`, DS hay Figma — bước này không dùng.
 
-**Tìm trong tài liệu:** cần thông tin ngoài trang đang đọc → grep KHÔNG DẤU trên `./docs-feature/_sections.md` (và `./docs-app/_sections.md` nếu được phép tham khảo pool) → mở đúng `path:line` đọc nguyên văn rồi mới dùng. MỌI thông tin lấy từ docs-app phải ghi nguồn `path#heading` ngay trong output/ghi chú tương ứng. Không đoán nội dung từ tên trang.
+- **Tra cứu khi cần thông tin ngoài trang đang đọc — CHẠY LỆNH NÀY TRƯỚC, `rg`/grep sau:**
+  `"$OD_NODE_BIN" "$OD_BIN" tools docs search "<câu hỏi tiếng Việt đầy đủ>" [--scope feature|app|both]`
+  → trả `path:line` xếp theo độ liên quan; tìm theo NGHĨA nên bắt được cả cách diễn đạt
+  khác/không dấu. Mở đúng dòng đó đọc nguyên văn rồi mới dùng; `rg` chỉ dùng khi đã biết
+  chính xác từ khoá. Lệnh báo chưa bật → grep KHÔNG DẤU trên `_sections.md` (mục lục
+  section cạnh `_index.md`). Thông tin lấy từ `docs-app/` phải ghi nguồn `path#heading`.
 
 ## Output (CHỈ ghi trong `mockups/`)
 

@@ -8,6 +8,7 @@ import { runProjectHandoff } from './handoff-cli.js';
 import { runConnectorsToolCli } from './tools-connectors-cli.js';
 import { runDesignSystemsToolCli } from './tools-design-systems-cli.js';
 import { runFigmaToolCli } from './tools-figma-cli.js';
+import { runDocsToolCli } from './tools-docs-cli.js';
 import { DESIGN_SYSTEMS_USAGE, isDesignSystemsHelpArg } from './design-systems-cli-help.js';
 import { parseDesignSystemRenameArgs } from './design-system-rename-args.js';
 import { runLiveArtifactsToolCli } from './tools-live-artifacts-cli.js';
@@ -664,8 +665,43 @@ if (argv[0] === 'tools' && argv[1] === 'live-artifacts') {
       process.stderr.write(`${JSON.stringify({ ok: false, error: { message } })}\n`);
       process.exitCode = 1;
     });
+} else if (argv[0] === 'tools' && argv[1] === 'docs') {
+  runDocsToolCli(argv.slice(2))
+    .then(({ exitCode }) => {
+      process.exitCode = exitCode;
+    })
+    .catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      process.stderr.write(`${JSON.stringify({ ok: false, error: { message } })}\n`);
+      process.exitCode = 1;
+    });
+} else if (argv[0] === 'tools' && (argv.length === 1 || argv[1] === '--help' || argv[1] === '-h')) {
+  // `od tools --help` used to fall through to the daemon startup path and print
+  // the ROOT help: an agent probing for a tool got a wall of unrelated commands
+  // and gave up (observed in a real docs-review run). Print the tool groups.
+  printToolsHelp();
 } else {
   await runDaemonCliStartup(argv, { printHelp: printRootHelp });
+}
+
+function printToolsHelp() {
+  console.log(`Usage: od tools <group> <command> [options]
+
+Agent-callable tool groups (the daemon injects OD_BIN / OD_NODE_BIN /
+OD_DAEMON_URL / OD_TOOL_TOKEN / OD_PROJECT_ID into every agent run):
+
+  docs search "<query>" [--scope feature|app|both] [--limit 5]
+      Search docs-review pages by MEANING (local embedding). Returns
+      "path:line | breadcrumb | score | scope" — open that line and read it.
+      Run this BEFORE rg/grep when you need something outside the page you
+      are on. Full help: od tools docs --help
+
+  live-artifacts <create|list|update|refresh>   Manage live artifacts.
+  connectors <list|execute|github-design-context>   Configured connectors.
+  design-systems read --path <path>             Active design-system files.
+  figma <design-context|screenshot|variable-defs|metadata>   Figma Desktop.
+
+Each group prints its own help with --help.`);
 }
 
 function printRootHelp() {
@@ -687,6 +723,9 @@ function printRootHelp() {
 
   od tools figma <design-context|screenshot|variable-defs|metadata> --file <fileKey> --node <nodeId> [--json]
       Read one component from the file the App declared, through Figma Desktop (daemon-proxied).
+
+  od tools docs search "<query>" [--scope feature|app|both] [--limit 5] [--project <id>]
+      Search docs-review pages by MEANING (local embedding via Ollama), for docs-review skills.
 
   od research search --query <text> [--max-sources 5] [--daemon-url <url>]
       Run agent-callable Tavily research through the local daemon.

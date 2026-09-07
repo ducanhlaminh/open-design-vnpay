@@ -1,0 +1,266 @@
+/* "Câu hỏi / Trả lời / Dẫn chứng" — mục cuối Quick result docs-review.
+   Tất cả màu/khoảng cách lấy từ token trung tính trong styles/tokens.css
+   (xem AGENTS.md "Web CSS ownership": component mới mặc định CSS Module). */
+
+/* Trang Quick result cao cố định và `overflow: hidden` — mục này PHẢI không
+   co giãn (`flex: 0 0 auto`) và tự cuộn bên trong, nếu không nó bóp
+   FileViewer phía trên còn một dải mỏng. */
+.panel {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 10px 8px;
+  border-top: 1px solid var(--border, #e1e5eb);
+  background: var(--bg-subtle, #eef1f5);
+}
+
+.panelHeader {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 5px 4px;
+  background: none;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  text-align: left;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-strong, #0d0c0a);
+}
+
+.panelHeader:hover {
+  background: var(--bg-muted, #e4e8ef);
+}
+
+.panelTitle {
+  flex-shrink: 0;
+}
+
+.panelCount {
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--text-soft, #6b675f);
+}
+
+.truncated {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--amber, #b26200);
+  background: var(--amber-bg, #fff3e0);
+  border-radius: var(--radius-pill, 999px);
+  padding: 2px 8px;
+}
+
+/* Trần chiều cao + cuộn riêng: mở mục này KHÔNG được đẩy FileViewer khỏi
+   màn hình, dù có 200 câu hỏi. */
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-height: min(46vh, 420px);
+  overflow-y: auto;
+  scrollbar-width: thin;
+  padding-right: 2px;
+}
+
+/* `.list` là flex column có trần chiều cao: item mặc định `flex-shrink: 1`
+   nên khi mở rộng vượt trần, nó bị BÓP lại và `overflow: hidden` cắt cụt nội
+   dung (lỗi đã thấy: dòng dẫn chứng thứ hai đứt ngang). Khoá co lại → danh
+   sách cuộn thay vì cắt. */
+.item {
+  flex: 0 0 auto;
+  border: 1px solid var(--border-soft, #edf0f4);
+  border-radius: var(--radius-sm, 8px);
+  background: var(--bg-panel, rgba(255, 255, 255, 0.74));
+  overflow: hidden;
+}
+
+.itemHeader {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  color: var(--text, #1a1916);
+  font-size: 12.5px;
+}
+
+.itemHeader:hover {
+  background: var(--bg-muted, #e4e8ef);
+}
+
+.question {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Cụm trạng thái bên phải mỗi câu — đọc được khi đang đóng. */
+.metaAnswered,
+.metaMissing,
+.metaCount {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.metaAnswered {
+  color: var(--green, #1f7a4d);
+}
+
+.metaMissing {
+  color: var(--text-faint, #8a857b);
+  font-style: italic;
+}
+
+.metaCount {
+  color: var(--text-soft, #6b675f);
+  font-variant-numeric: tabular-nums;
+}
+
+.orphanBadge {
+  flex-shrink: 0;
+  font-size: 10px;
+  color: var(--text-soft, #6b675f);
+  border: 1px solid var(--border-strong, #c9d0da);
+  border-radius: var(--radius-pill, 999px);
+  padding: 1px 7px;
+}
+
+.itemBody {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 2px 10px 10px 28px;
+}
+
+.blockLabel {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-soft, #6b675f);
+  margin-bottom: 4px;
+}
+
+.answerText {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text, #1a1916);
+  line-height: 1.5;
+}
+
+.answerMuted {
+  margin: 0;
+  font-size: 13px;
+  font-style: italic;
+  color: var(--text-faint, #8a857b);
+}
+
+.usedFor {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--text-muted, #57544e);
+}
+
+.evidenceBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.evidenceRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  background: none;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--accent, #0066b3);
+  text-align: left;
+}
+
+.evidenceRow:hover {
+  background: var(--accent-tint, #e6f0f8);
+}
+
+.evidencePath {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.evidenceCrumb {
+  color: var(--text-soft, #6b675f);
+  flex-shrink: 0;
+}
+
+.evidenceScore {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-family: var(--mono, monospace);
+  font-size: 11px;
+  color: var(--text-faint, #8a857b);
+}
+
+.modalLayer {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+}
+
+.modalBody {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* Modal xem dẫn chứng: đường dẫn đầy đủ trên đầu, viewer chiếm hết phần còn
+   lại của body modal. */
+.modalPath {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border, #e1e5eb);
+  font-size: 12px;
+  font-family: var(--mono, monospace);
+  color: var(--text-soft, #6b675f);
+  word-break: break-all;
+}
+
+.modalViewer {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 0 4px 8px;
+}
+
+.evidenceMissing {
+  margin: 8px 0;
+  font-size: 12px;
+  color: var(--text-faint, #8a857b);
+}
+
+.footnote {
+  margin: 4px 0 0;
+  font-size: 11px;
+  color: var(--text-faint, #8a857b);
+}

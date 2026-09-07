@@ -279,7 +279,11 @@ function entity(id: string, name: string, kind: SyncEntitySummary['kind'], total
 
 // `.od-skills` is the per-run private SKILL.md copy and `.tmp` is scratch —
 // neither is a shareable output (mirrors the `.odhistory` info/exclude list).
-const WALK_SKIP_DIRS = new Set(['.odhistory', 'node_modules', '.od-skills', '.tmp']);
+// `tracing` (wp-docs-review-tracing) — nhật ký "câu hỏi/dẫn chứng" của
+// docs-review, quyết định của user cho GIAI ĐOẠN THỬ NGHIỆM: KHÔNG tự động
+// đồng bộ sau mỗi lần chạy; chỉ đẩy khi người dùng bấm "Chia sẻ kết quả"
+// (chưa có nút đó — bỏ qua ở đây cho tới lúc đó).
+const WALK_SKIP_DIRS = new Set(['.odhistory', 'node_modules', '.od-skills', '.tmp', 'tracing']);
 
 /** Stage ids whose pipeline state is queued/running in a project's metadata. */
 export function runningStageIdsOf(metadata: unknown): string[] {

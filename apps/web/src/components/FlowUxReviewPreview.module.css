@@ -152,6 +152,60 @@
     grid-template-rows: minmax(360px, 1fr) auto;
   }
 }
+/* Bố cục "Cạnh nhau" (wp bottom-panel): panel lý do UX nằm DƯỚI sơ đồ. Trần
+   chiều cao để sơ đồ luôn giữ phần lớn khung; panel tự cuộn. */
+.bodyStacked {
+  grid-template-columns: minmax(0, 1fr);
+  /* Sơ đồ được ƯU TIÊN chiều cao: ít nhất 520px để xem trọn luồng (khung
+     Quick result cao cố định — `.pl-result-page`: 100dvh − 128px — nên nếu
+     chia đều, sơ đồ chỉ còn ~200px và gần như không đọc được). Panel dưới lấy
+     chiều cao TỰ NHIÊN; thiếu chỗ thì CUỘN cả khối này, KHÔNG bóp sơ đồ. */
+  grid-template-rows: minmax(520px, 1fr) auto;
+  overflow-x: hidden;
+}
+/* `min-height: 360px` của khung sơ đồ (đúng cho bố cục cột) làm hàng trên CAO
+   HƠN ô grid của nó ở bố cục xếp dọc: sơ đồ tràn xuống và VẼ ĐÈ lên panel
+   dưới (đã thấy: nội dung panel bị sơ đồ phủ, chỉ còn trơ mấy radio). Ở bố cục
+   này khung sơ đồ phải co được và tự cắt. */
+.bodyStacked .diagram {
+  border-right: none;
+  overflow: hidden;
+}
+.bodyStacked .diagramBox,
+.bodyStacked .sidePaneBox,
+.bodyStacked .drawio {
+  min-height: 0;
+}
+/* Panel dưới không tự cuộn nữa (khối cha cuộn) — để nó cao tự nhiên, người
+   đọc cuộn một lần thay vì hai thanh cuộn lồng nhau. */
+.bodyStacked .panel {
+  overflow: visible;
+}
+.bodyStacked.bodyPanelHidden {
+  grid-template-rows: minmax(0, 1fr) 0;
+}
+/* Panel dưới: viền trên thay viền trái, và phải NỔI trên sơ đồ (viewer draw.io
+   vẽ bằng div định vị tuyệt đối, dễ trồi ra ngoài khung). */
+.bodyStacked .panel {
+  position: relative;
+  z-index: 1;
+  border-top: 1px solid var(--border, #e1e5eb);
+  background: var(--bg-subtle, #eef1f5);
+}
+/* Rail thu gọn: ở bố cục đáy nó là một THANH NGANG dưới cùng, không phải tab
+   dọc dán mép phải. */
+.bodyStacked .panelTab {
+  top: auto;
+  bottom: 0;
+  right: 50%;
+  transform: translateX(50%);
+  writing-mode: horizontal-tb;
+  border: 1px solid var(--border, #e1e5eb);
+  border-bottom: none;
+  border-radius: 8px 8px 0 0;
+  padding: 4px 14px;
+}
+
 /* Panel ẩn: sơ đồ chiếm trọn bề rộng — panel vẫn ra khỏi DOM (không giữ như
  * DocRedlinePreview) vì panel này không có state cuộn/scroll-anchor cần nhớ
  * giữa các lần ẩn/hiện. */
@@ -248,10 +302,21 @@
   padding: 3px 10px;
   cursor: pointer;
 }
+/* Dòng chú giải chung dưới sơ đồ (không còn nhét trong đầu khung Cải thiện). */
 .legend {
-  display: inline-flex;
+  display: flex;
+  align-items: center;
   gap: 6px;
+  padding: 6px 10px 0;
   font-size: 11px;
+}
+.legendLabel {
+  margin-right: 2px;
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-faint, #8a857b);
 }
 .legendItem {
   padding: 1px 8px;
@@ -357,12 +422,14 @@
   flex-direction: column;
   background: var(--bg, #fff);
 }
+/* Hai đầu khung phải CÙNG chiều cao, nếu không hai sơ đồ bắt đầu lệch nhau
+   và mất hết tác dụng của bố cục cạnh nhau. */
 .sidePaneHead {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
+  min-height: 30px;
   padding: 4px 10px;
   border-bottom: 1px solid var(--border, #e1e5eb);
   background: var(--bg-subtle, #eef1f5);

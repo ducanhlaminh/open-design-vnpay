@@ -249,6 +249,15 @@ describe('app-pool — stageAppDocsPool + appDocsPoolDirective (§2.4)', () => {
       expect(directive).toContain('docs-app/_index.md');
       expect(directive).toContain('docs-feature/');
       expect(directive).toMatch(/KHÔNG audit\/fan-out/);
+      // Kickoff phải nêu lệnh tìm theo nghĩa: hai lần chạy thật cho thấy agent
+      // chỉ đọc `_index.md` (cây tên trang) rồi grep mù khi chỉ dẫn nằm trong
+      // skill — kickoff là chỗ agent thực sự đọc.
+      expect(directive).toContain('tools docs search');
+      // Luật "mỗi tham chiếu → một truy vấn": chạy thật cho thấy agent hỏi
+      // đúng MỘT câu rồi dừng, bỏ lỡ các trang mà Business Rules trỏ tới
+      // (Hồ sơ nháp, Xác thực giao dịch, Thông báo lỗi chung).
+      expect(directive).toContain('MỖI tham chiếu');
+      expect(directive).toMatch(/ĐỌC CẢ danh sách/);
 
       // Bước sinh flow/spec màn hình phải BIẾT đường vào cấp app (Trang chủ →
       // menu → màn feature) — thông tin chỉ có trong pool App, nên với các
@@ -257,6 +266,7 @@ describe('app-pool — stageAppDocsPool + appDocsPoolDirective (§2.4)', () => {
         const navDirective = appDocsPoolDirective(staged, stage);
         expect(navDirective).toMatch(/ĐƯỜNG VÀO/);
         expect(navDirective).toMatch(/KHÔNG bịa tên menu/);
+        expect(navDirective).toContain('tools docs search');
         expect(navDirective).not.toMatch(/KHÔNG audit\/fan-out/);
       }
       // Bước khác giữ nguyên luật cũ: docs-app chỉ để tham khảo.

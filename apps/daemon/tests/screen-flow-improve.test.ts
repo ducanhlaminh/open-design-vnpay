@@ -11,7 +11,7 @@ import { test } from 'vitest';
 
 import { decodeMxfile, listCells } from '../src/flow-ux/mxfile.js';
 import { finalizeFlowUx } from '../src/flow-ux/index.js';
-import { parsePatchDoc } from '../src/flow-ux/patch.js';
+import { graphCellFingerprint, parsePatchDoc } from '../src/flow-ux/patch.js';
 import {
   PROPOSED_EDITED_FILE,
   SCREENS_IMPROVED_FILE,
@@ -314,4 +314,82 @@ test('finalizeFlowUx: selection improved nhưng chưa có proposed → original 
   assert.ok(!fs.existsSync(path.join(cwd, 'flows', 'x')));
   // screens.improved.json vẫn còn để web hiện danh sách màn của bản cải thiện.
   assert.ok(fs.existsSync(path.join(dir, SCREENS_IMPROVED_FILE)));
+});
+
+
+// ── WP patch-stale-guard (2026-09-04) ────────────────────────────────────────
+// Sự cố thật: chạy lại "Luồng màn hình" sinh sơ đồ với bộ id cạnh mới
+// (od-e-auth-result… → od-e1…), patch.json cũ vẫn được áp → 7/11 op chết và
+// bản "Đề xuất" có node mới nhưng KHÔNG cạnh nào nối vào (đọc còn hại hơn
+// không có). Hai chốt chặn: vân tay sơ đồ + ngưỡng quá nửa op chết.
+
+test('graphCellFingerprint: đổi TẬP ID cell → vân tay đổi; đổi nhãn/vị trí thì KHÔNG (kéo lại node không làm patch hỏng)', () => {
+  const a = [vertex('od-a', 'A', 0, 0), edge('od-e1', 'od-a', 'od-b', 'x')].join('\n');
+  const sameIdsOtherLabels = [vertex('od-a', 'A ĐÃ ĐỔI', 500, 900), edge('od-e1', 'od-a', 'od-b', 'y')].join('\n');
+  const renamedEdge = [vertex('od-a', 'A', 0, 0), edge('od-e-a-b', 'od-a', 'od-b', 'x')].join('\n');
+  assert.equal(graphCellFingerprint(a), graphCellFingerprint(sameIdsOtherLabels));
+  assert.notEqual(graphCellFingerprint(a), graphCellFingerprint(renamedEdge));
+});
+
+test('finalizeScreenFlowImprove đóng dấu baseFingerprint; sơ đồ sinh lại với id khác → finalizeFlowUx KHÔNG áp patch cũ, cảnh báo, không có proposed', async () => {
+  const { cwd, dir } = await setupFlow();
+  fs.writeFileSync(path.join(dir, 'patch.json'), JSON.stringify(PATCH));
+  fs.writeFileSync(path.join(dir, 'ux-review.json'), JSON.stringify(REVIEW));
+  const first = await finalizeScreenFlowImprove(cwd);
+  assert.equal(first.hasProposal, true, 'lượt đầu vẫn ra bản cải thiện');
+  const stamped = parsePatchDoc(fs.readFileSync(path.join(dir, 'patch.json'), 'utf8'));
+  assert.ok(stamped.baseFingerprint, 'patch.json phải được đóng dấu vân tay sơ đồ');
+
+  // "Luồng màn hình" chạy lại: cùng các màn nhưng ĐỔI id cạnh (đúng kiểu sự
+  // cố thật) → as-is.drawio mới, vân tay lệch.
+  const REGENERATED = [
+    vertex('od-start', 'Bắt đầu', 40, 40, 150, 50),
+    vertex('od-6-1-1', '6.1.1 · Trang chủ', 40, 200),
+    vertex('od-6-2-1', '6.2.1 · Danh sách gói', 340, 200),
+    vertex('od-6-4-1', '6.4.1 · Nhập thông tin', 640, 200),
+    vertex('od-end', 'Kết thúc', 940, 200, 150, 50),
+    edge('od-e-start-home', 'od-start', 'od-6-1-1', 'Mở app', 'exitX=0.5;exitY=1;entryX=0.5;entryY=0;'),
+    edge('od-e-home-list', 'od-6-1-1', 'od-6-2-1', 'Mua SIM'),
+    edge('od-e-list-form', 'od-6-2-1', 'od-6-4-1', 'Chọn gói'),
+    edge('od-e-form-end', 'od-6-4-1', 'od-end', 'Thanh toán'),
+  ].join('\n');
+  fs.writeFileSync(path.join(dir, SCREEN_FLOW_CELLS_FILE), REGENERATED);
+  assert.equal(fs.existsSync(path.join(dir, 'proposed.drawio')), true, 'bản đề xuất cũ còn trên đĩa trước khi finalize');
+  const sf = await finalizeScreenFlowXml(cwd);
+  assert.deepEqual(sf.errors, []);
+
+  const fin = await finalizeFlowUx(cwd);
+  const entry = fin.index.find((e) => e.id === SCREEN_FLOW_ID)!;
+  assert.equal(entry.hasProposal ?? false, false, 'không được dựng bản đề xuất từ patch của sơ đồ cũ');
+  assert.ok(
+    fin.warnings.some((w) => w.includes('viết cho sơ đồ TRƯỚC')),
+    `phải cảnh báo patch cũ, nhận: ${JSON.stringify(fin.warnings)}`,
+  );
+  assert.equal(fs.existsSync(path.join(dir, 'proposed.drawio')), false);
+});
+
+test('quá nửa số thao tác không áp được → bỏ hẳn bản cải thiện (không ghi proposed.drawio) + cảnh báo', async () => {
+  const { cwd, dir } = await setupFlow();
+  // 4 op: 1 áp được, 3 trỏ vào id không tồn tại (đúng tỉ lệ sự cố 7/11).
+  fs.writeFileSync(
+    path.join(dir, 'patch.json'),
+    JSON.stringify({
+      flowId: SCREEN_FLOW_ID,
+      ops: [
+        { op: 'mark', cell: 'od-6-2-1', change: 'modified', finding: 'UX-01' },
+        { op: 'relabel', cell: 'od-khong-co', label: 'X', finding: 'UX-01' },
+        { op: 'redirectEdge', edge: 'od-e-khong-co', to: 'od-end', finding: 'UX-01' },
+        { op: 'addEdge', id: 'od-e-moi', from: 'od-6-1-1', to: 'od-fail', label: 'Lỗi', finding: 'UX-01' },
+      ],
+    }),
+  );
+  const fin = await finalizeFlowUx(cwd);
+  const entry = fin.index.find((e) => e.id === SCREEN_FLOW_ID)!;
+  assert.equal(entry.hasProposal ?? false, false);
+  assert.equal(entry.patchSkipped?.length, 3);
+  assert.ok(
+    fin.warnings.some((w) => w.includes('bỏ qua bản cải thiện') && w.includes('3/4')),
+    `phải nêu tỉ lệ op chết, nhận: ${JSON.stringify(fin.warnings)}`,
+  );
+  assert.equal(fs.existsSync(path.join(dir, 'proposed.drawio')), false);
 });

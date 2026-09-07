@@ -20,6 +20,8 @@ import type {
   BasFeaturesResponse,
   ChatRunStatusResponse,
   DesignSystemSummary,
+  DocsReviewTracingResponse,
+  DocsTracingStagePayload,
   PipelineRunSource,
   PipelineAppsResponse,
   PipelineStatus,
@@ -48,6 +50,7 @@ import { ProjectDesignSystemPicker } from '../ProjectDesignSystemPicker';
 import { AppPoolTree } from './AppPoolTree';
 import { AppPoolLinkRows, useAppPoolRefMatch } from './AppPoolLinkPaste';
 import { LabRefsSection } from './LabRefsSection';
+import { PipelineTracingPanel } from './PipelineTracingPanel';
 import { PlModal } from './PlModal';
 import { UploadDropzone, toPendingFiles, type PendingFile } from './UploadDropzone';
 import {
@@ -3409,6 +3412,41 @@ export function isUiPreviewFile(name: string, pipelineId?: string): boolean {
 // PipelineResultView render the SAME rail + FileViewer from this state.
 type PipelineResultState = ReturnType<typeof usePipelineResultFiles>;
 
+// wp-docs-review-tracing: đọc nhật ký "Câu hỏi / Trả lời / Dẫn chứng" của
+// ĐÚNG stage đang mở. Chỉ dùng ở trang Quick result full-page
+// (`PipelineResultView`) — spec không yêu cầu mục này trong modal xl, và
+// modal không có `workflowId` để suy `wfDir`. `null` = chưa tải xong hoặc
+// stage này chưa có nhật ký (Ollama tắt / chưa từng chạy `tools docs search`)
+// → panel không hiện khung rỗng.
+function useDocsReviewTracingStage(
+  projectId: string,
+  pipelineId: string,
+  workflowId?: string,
+): DocsTracingStagePayload | null {
+  const [stage, setStage] = useState<DocsTracingStagePayload | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    setStage(null);
+    void (async () => {
+      try {
+        const qs = workflowId ? `?wfDir=${encodeURIComponent(workflowId)}` : '';
+        const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}/docs-review/tracing${qs}`);
+        if (!res.ok) return;
+        const data = (await res.json()) as DocsReviewTracingResponse;
+        const found = (data.stages ?? []).find((s) => s.stageId === pipelineId) ?? null;
+        if (!cancelled) setStage(found);
+      } catch {
+        // Best-effort: mất mạng/route lỗi không được làm gãy Quick result —
+        // panel đơn giản không hiện.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, pipelineId, workflowId]);
+  return stage;
+}
+
 export function usePipelineResultFiles(projectId: string, pipeline: PipelineView, workflowId?: string) {
   const [files, setFiles] = useState<ProjectFile[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -3936,6 +3974,7 @@ export function PipelineResultView({
 }) {
   const state = usePipelineResultFiles(projectId, pipeline, workflowId);
   const { active } = state;
+  const tracingStage = useDocsReviewTracingStage(projectId, pipeline.id, workflowId);
   // Toàn màn hình: phủ kín viewport bằng CSS (position fixed), KHÔNG dùng
   // Fullscreen API của browser — API đó chặn được bởi permission/iframe và
   // không test được trong jsdom; một lớp overlay thì hành xử y hệt ở mọi nơi.
@@ -3993,6 +4032,11 @@ export function PipelineResultView({
       <div className="pl-result-page__body">
         <PipelineResultBody projectId={projectId} projectKind={projectKind} state={state} />
       </div>
+      {/* Toàn màn hình chỉ dành cho việc xem file — ẩn mục tra cứu để không
+          tranh chỗ; Esc/"Thu nhỏ" quay lại thấy ngay. */}
+      {!fullscreen && tracingStage ? (
+        <PipelineTracingPanel stage={tracingStage} projectId={projectId} projectKind={projectKind} />
+      ) : null}
     </section>
   );
 }

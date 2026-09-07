@@ -19,7 +19,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { decodeMxfile, encodeMxfile, listCells, type MxPage } from './mxfile.js';
-import { applyPatch, parsePatchDoc, type PatchOp } from './patch.js';
+import { applyPatch, graphCellFingerprint, parsePatchDoc, type PatchOp } from './patch.js';
 import { drawioPageToFlowchart, mermaidToFlowchart, resolveScreenCells, type FlowchartDoc } from './to-flowchart.js';
 // WP dr-flow-improve: bản "Cải thiện" của SCREEN-FLOW — selection.json chọn
 // trang nào dựng flowchart/index, proposed.edited.json chặn áp lại patch,
@@ -863,9 +863,26 @@ export async function finalizeFlowUx(cwd: string): Promise<FinalizeResult> {
         } else {
           warnings.push(`${input.id}: có dấu sửa tay (proposed.edited.json) nhưng proposed.drawio không có trang Cải thiện — bỏ qua bản cải thiện`);
         }
+      } else if (patch && patch.ops.length && patch.baseFingerprint && patch.baseFingerprint !== graphCellFingerprint(page.graphXml)) {
+        // Patch được viết cho một SƠ ĐỒ KHÁC (as-is.drawio đã sinh lại sau
+        // đó): id cell không còn khớp nên áp vào chỉ ra một bản đề xuất sai
+        // lệch — thà không có bản đề xuất còn hơn có bản nửa vời. Không xoá
+        // patch.json: người dùng có thể còn muốn đọc/đối chiếu, và bước
+        // "Cải thiện luồng" chạy lại sẽ ghi đè.
+        warnings.push(
+          `${input.id}: patch.json được viết cho sơ đồ TRƯỚC (as-is.drawio đã sinh lại) — bỏ qua bản cải thiện, chạy lại bước "Cải thiện luồng"`,
+        );
+        // proposed.drawio còn sót của lượt trước nói về sơ đồ cũ — xoá, đừng
+        // để người review mở nhầm một bản đề xuất không còn khớp.
+        await fs.promises.rm(path.join(dir, 'proposed.drawio'), { force: true }).catch(() => {});
       } else if (patch && patch.ops.length) {
         const result = applyPatch(page.graphXml, patch);
-        if (result.applied > 0) {
+        // Quá nửa số thao tác chết = patch không còn nói về sơ đồ này nữa
+        // (thường vì sơ đồ được sinh lại, hoặc agent bịa id). Bản "Đề xuất"
+        // khi đó có node mới nhưng thiếu chính các cạnh nối chúng vào luồng —
+        // đọc còn hại hơn không có. Chặn ở đây, KHÔNG ghi proposed.drawio.
+        const tooManySkipped = result.skipped.length * 2 > patch.ops.length;
+        if (result.applied > 0 && !tooManySkipped) {
           const proposed = encodeMxfile([
             { id: `${page.id}`, name: 'Hiện trạng', graphXml: page.graphXml },
             { id: `${page.id}-proposed`, name: 'Đề xuất', graphXml: result.graphXml },
@@ -878,6 +895,12 @@ export async function finalizeFlowUx(cwd: string): Promise<FinalizeResult> {
         if (result.skipped.length) {
           entry.patchSkipped = result.skipped;
           warnings.push(`${input.id}: ${result.skipped.length} thao tác vá bị bỏ qua (${result.skipped.map((s) => s.reason).join('; ')})`);
+        }
+        if (tooManySkipped) {
+          await fs.promises.rm(path.join(dir, 'proposed.drawio'), { force: true }).catch(() => {});
+          warnings.push(
+            `${input.id}: bỏ qua bản cải thiện — ${result.skipped.length}/${patch.ops.length} thao tác không áp được, patch không còn khớp sơ đồ; chạy lại bước "Cải thiện luồng"`,
+          );
         }
       }
 

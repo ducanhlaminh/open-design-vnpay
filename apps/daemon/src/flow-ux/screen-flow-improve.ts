@@ -23,7 +23,8 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
 import { finalizeFlowUx, type FinalizeResult, type FlowIndexEntry, type UxReview } from './index.js';
-import { parsePatchDoc, type PatchDoc, type PatchOp } from './patch.js';
+import { graphCellFingerprint, parsePatchDoc, type PatchDoc, type PatchOp } from './patch.js';
+import { decodeMxfile } from './mxfile.js';
 import {
   PROPOSED_EDITED_FILE,
   SCREEN_FLOW_ID,
@@ -198,6 +199,20 @@ export interface ScreenFlowImproveResult {
   fin: FinalizeResult;
 }
 
+/** Vân tay sơ đồ hiện trạng (trang 1 của `as-is.drawio`) — `null` khi chưa
+ *  có file/không đọc được (fail-soft: không có vân tay thì không kiểm, hành
+ *  vi như trước WP này). */
+async function readAsIsFingerprint(dir: string): Promise<string | null> {
+  const raw = await fs.readFile(path.join(dir, 'as-is.drawio'), 'utf8').catch(() => null);
+  if (raw == null) return null;
+  try {
+    const graphXml = decodeMxfile(raw)[0]?.graphXml;
+    return graphXml ? graphCellFingerprint(graphXml) : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Sau khi agent xong (hoặc khi cần dựng lại từ patch.json trên đĩa):
  *  1. không patch VÀ không finding → "luồng tốt": không proposed, selection giữ;
  *  2. có patch → validate `screen`, xoá marker sửa tay (lượt mới áp patch
@@ -248,7 +263,16 @@ export async function finalizeScreenFlowImprove(
   for (const key of Object.values(screensFile.cells ?? {})) existingKeys.add(key);
   const validated = validateScreenOps(patchDoc, existingKeys);
   warnings.push(...validated.warnings);
-  if (validated.warnings.length) await writeJson(path.join(dir, 'patch.json'), validated.patch);
+  // Đóng dấu vân tay sơ đồ mà patch này vừa được viết dựa trên. Chạy lại
+  // "Luồng màn hình" sinh sơ đồ với bộ id khác → lần finalize sau vân tay
+  // lệch và finalizeFlowUx KHÔNG áp patch cũ nữa (thay vì tạo bản "Đề xuất"
+  // nửa vời như sự cố 2026-09-04).
+  const fingerprint = await readAsIsFingerprint(dir);
+  const stampedPatch: PatchDoc = fingerprint ? { ...validated.patch, baseFingerprint: fingerprint } : validated.patch;
+  if (validated.warnings.length || stampedPatch.baseFingerprint !== patchDoc.baseFingerprint) {
+    await writeJson(path.join(dir, 'patch.json'), stampedPatch);
+  }
+  validated.patch = stampedPatch;
   // Lượt agent mới → bản sửa tay cũ (nếu còn) không còn ý nghĩa.
   await fs.rm(path.join(dir, PROPOSED_EDITED_FILE), { force: true }).catch(() => {});
 

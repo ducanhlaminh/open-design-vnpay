@@ -3,7 +3,7 @@ import path from 'node:path';
 
 import express from 'express';
 import type { Express, Response } from 'express';
-import type { CreateDocsReviewStageCommentRequest, CreateDocsReviewStageCommentResponse, DocsReviewStageCommentsResponse, DocsReviewComponentSource, DocsReviewFigmaLink, PipelinePulseIssue, PipelinePulseRating, PipelineRunMode, PipelineRunSource, PipelineStatus, ProjectPipelineState, RunAllConfig, TargetPlatform, UiTarget, WorkflowTerminal } from '@open-design/contracts';
+import type { CreateDocsReviewStageCommentRequest, CreateDocsReviewStageCommentResponse, DocsReviewStageCommentsResponse, DocsReviewComponentSource, DocsReviewFigmaLink, DocsReviewTracingResponse, PipelinePulseIssue, PipelinePulseRating, PipelineRunMode, PipelineRunSource, PipelineStatus, ProjectPipelineState, RunAllConfig, TargetPlatform, UiTarget, WorkflowTerminal } from '@open-design/contracts';
 import { TARGETS_CONFIG_BASENAME, UI_TARGETS, buildTargetsConfig, isUiTarget } from '@open-design/contracts';
 
 import {
@@ -37,6 +37,7 @@ import {
   readDocsReviewConfirmationState,
   revokeDocsReviewConfirmation,
 } from './docs-review-feedback.js';
+import { listDocsTracingStages } from './docs-tracing.js';
 import {
   DEFAULT_WORKFLOW_ID,
   WORKFLOWS,
@@ -1359,6 +1360,34 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
     if (!getProject(db, projectId)) return res.status(404).json({ error: 'project not found' });
     try {
       res.json(await readDocsReviewConfirmationState(docsReviewWorkflowRoot(projectId)));
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  // Mục "Câu hỏi / Trả lời / Dẫn chứng" ở Quick result (wp-docs-review-
+  // tracing) — đọc nhật ký truy vấn daemon tự ghi (Gói A) ghép với trả lời
+  // agent tự khai (Gói C). `wfDir` tuỳ chọn (khớp cách `/api/docs/search`
+  // nhận wfDir) cho dự án có workflow docs-review ở thư mục khác mặc định;
+  // không route qua tool token — đây là route CHO WEB UI đọc, cùng khuôn với
+  // `/docs-review/comments/:stageId` ngay trên. Không auth riêng ngoài
+  // getProject vì chỉ đọc dữ liệu cục bộ đã thuộc project này (giống mọi
+  // route đọc docs-review khác trong file này).
+  app.get('/api/projects/:id/docs-review/tracing', async (req, res) => {
+    const projectId = req.params.id;
+    if (!getProject(db, projectId)) return res.status(404).json({ error: 'project not found' });
+    const wfDir = typeof req.query.wfDir === 'string' && req.query.wfDir.trim()
+      ? req.query.wfDir.trim()
+      : (workflowDirForPipeline('dr-docs') ?? 'docs-review');
+    // Cùng luật với POST /api/docs/search (bên ghi): wfDir là MỘT đoạn tên,
+    // không cho '..' hay dấu phân cách thoát ra ngoài thư mục dự án.
+    if (wfDir.includes('/') || wfDir.includes('\\') || wfDir.includes('..')) {
+      return res.status(400).json({ error: 'wfDir must be a single directory name' });
+    }
+    const workflowRoot = path.join(ctx.paths.PROJECTS_DIR, projectId, wfDir);
+    try {
+      const body: DocsReviewTracingResponse = { stages: await listDocsTracingStages(workflowRoot) };
+      res.json(body);
     } catch (error) {
       res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
     }

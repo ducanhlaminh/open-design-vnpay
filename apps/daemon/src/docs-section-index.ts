@@ -121,21 +121,42 @@ function topKeywords(bodyText: string, max = 8): string[] {
     .map(([word]) => word);
 }
 
-/** Sinh MỌI dòng `_sections.md` của một file (đã tách sẵn `rel`/`content`). */
-function sectionLinesForFile(rel: string, content: string): string[] {
+/** Một "section" = một heading (hoặc, khi file không có heading nào, cả
+ *  file). Đơn vị dùng chung giữa `_sections.md` (V1) và chunk embedding
+ *  (`docs-embed-index.ts`, WP tìm ngữ nghĩa) — xem `collectDocsSections`. */
+export interface DocsSection {
+  /** Đường dẫn tương đối (posix) từ root dir đang quét. */
+  rel: string;
+  /** Số dòng 1-based của heading (hoặc 1 khi file không có heading). */
+  line: number;
+  /** Breadcrumb `H1 › H2 › …` (hoặc title suy ra khi không có heading) —
+   *  ĐÃ escape `|`. Đây là cột 2 in ra `_sections.md`. */
+  crumb: string;
+  /** Nội dung từ ngay sau dòng heading tới ngay trước heading
+   *  cùng-hoặc-nông-hơn kế tiếp. */
+  body: string;
+  /** Tên trang từ frontmatter Confluence (`title:`) — rỗng khi không có.
+   *  Không in thành cột riêng, chỉ trộn vào cột tìm kiếm (cột 3). */
+  pageTitle: string;
+}
+
+/** Tách MỌI section của một file (đã tách sẵn `rel`/`content`) — PURE, không
+ *  fs. Logic gốc của `sectionLinesForFile` (V1), tách ra để
+ *  `collectDocsSections` (fs, dùng cho cả `_sections.md` lẫn embedding) và
+ *  `buildDocsSectionIndex` (pure, unit test trực tiếp bằng nội dung in-memory)
+ *  cùng dùng — đảm bảo hai đường không thể lệch nhau. */
+function sectionsForFile(rel: string, content: string): DocsSection[] {
   const lines = content.split(/\r\n|\r|\n/);
   const headings = collectHeadings(lines);
-  const out: string[] = [];
   if (headings.length === 0) {
     const title = escapePipe(titleFromFirstLine(content, path.posix.basename(rel).replace(/\.md$/i, '')));
     const { bodyOffset } = splitFrontmatter(content);
     const body = lines.slice(bodyOffset).join('\n');
-    const search = `${stripDiacritics(title)} ${topKeywords(body).join(' ')}`.trim();
-    out.push(`${rel}:1 | ${title} | ${search}`);
-    return out;
+    return [{ rel, line: 1, crumb: title, body, pageTitle: '' }];
   }
   const pageTitle = splitFrontmatter(content).title ?? '';
   const stack: HeadingHit[] = [];
+  const out: DocsSection[] = [];
   for (let i = 0; i < headings.length; i += 1) {
     const h = headings[i]!;
     while (stack.length > 0 && stack[stack.length - 1]!.level >= h.level) stack.pop();
@@ -152,12 +173,19 @@ function sectionLinesForFile(rel: string, content: string): string[] {
       }
     }
     const body = lines.slice(h.line, endLine).join('\n'); // h.line is 1-based == index of line AFTER heading
-    // Tên trang (frontmatter Confluence) đi vào cột tìm kiếm của MỌI section:
-    // người tìm hay gõ tên nghiệp vụ của trang chứ không phải tên mục con.
-    const search = `${stripDiacritics(`${pageTitle} ${breadcrumb}`)} ${topKeywords(body).join(' ')}`.trim();
-    out.push(`${rel}:${h.line} | ${breadcrumb} | ${search}`);
+    out.push({ rel, line: h.line, crumb: breadcrumb, body, pageTitle });
   }
   return out;
+}
+
+/** Cột 3 (`_sections.md`) từ một section: tên trang (frontmatter Confluence,
+ *  rỗng khi không có) + breadcrumb → strip dấu, cộng top keyword của body.
+ *  Khi `pageTitle` rỗng (file không heading, hoặc không frontmatter), công
+ *  thức rút gọn về đúng hành vi V1 (`stripDiacritics(crumb)`) nhờ `.trim()`
+ *  cắt khoảng trắng đầu chuỗi. */
+function formatSectionLine(section: DocsSection): string {
+  const search = `${stripDiacritics(`${section.pageTitle} ${section.crumb}`)} ${topKeywords(section.body).join(' ')}`.trim();
+  return `${section.rel}:${section.line} | ${section.crumb} | ${search}`;
 }
 
 const HEADER_COMMENT = [
@@ -174,8 +202,27 @@ const HEADER_COMMENT = [
  *  cùng input → cùng output byte (sort ổn định theo path rồi line). */
 export function buildDocsSectionIndex(files: DocsSectionSourceFile[]): string {
   const sorted = [...files].sort((a, b) => (a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0));
-  const dataLines = sorted.flatMap((f) => sectionLinesForFile(f.rel, f.content));
+  const dataLines = sorted.flatMap((f) => sectionsForFile(f.rel, f.content).map(formatSectionLine));
   return `${HEADER_COMMENT}${dataLines.join('\n')}\n`;
+}
+
+/** Sinh MỌI section (`{rel, line, crumb, body}` + `pageTitle` nội bộ) của
+ *  MỌI file `.md` dưới `rootDir` (đệ quy, cùng bộ lọc `_*`/`attachments/`
+ *  với `writeDocsSectionIndex`) — sort ổn định theo `rel` rồi thứ tự xuất
+ *  hiện heading, khớp thứ tự `buildDocsSectionIndex`. Đây là điểm dùng
+ *  chung DUY NHẤT giữa `_sections.md` (V1) và chunk embedding
+ *  (`docs-embed-index.ts`) — không parse lại markdown ở nơi thứ hai.
+ *  `rootDir` không tồn tại → trả `[]` (không ném lỗi). */
+export async function collectDocsSections(rootDir: string): Promise<DocsSection[]> {
+  const found: Array<{ rel: string; abs: string; mtimeMs: number }> = [];
+  await walkMarkdown(rootDir, '', found);
+  const sorted = [...found].sort((a, b) => (a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0));
+  const out: DocsSection[] = [];
+  for (const f of sorted) {
+    const content = await fs.promises.readFile(f.abs, 'utf8');
+    out.push(...sectionsForFile(f.rel, content));
+  }
+  return out;
 }
 
 const SECTIONS_FILENAME = '_sections.md';
@@ -249,10 +296,13 @@ export async function writeDocsSectionIndex(rootDir: string): Promise<{ sections
     }
   }
 
-  const files: DocsSectionSourceFile[] = await Promise.all(
-    found.map(async (f) => ({ rel: f.rel, content: await fs.promises.readFile(f.abs, 'utf8') })),
-  );
-  const text = buildDocsSectionIndex(files);
+  // Không fresh → rebuild thật: dùng lại `collectDocsSections` (đọc content +
+  // tách section) thay vì tự đọc file rồi gọi `buildDocsSectionIndex` — cùng
+  // MỘT đường parse với phía embedding, tránh lệch hành vi giữa hai nơi.
+  // (Đây là một lần `walkMarkdown` THỨ HAI so với lần lấy mtime ở trên; chấp
+  // nhận được vì chỉ chạy khi tài liệu vừa đổi, không phải đường nóng.)
+  const sections = await collectDocsSections(rootDir);
+  const text = `${HEADER_COMMENT}${sections.map(formatSectionLine).join('\n')}\n`;
   const tmp = path.join(
     rootDir,
     `.${SECTIONS_FILENAME}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`,

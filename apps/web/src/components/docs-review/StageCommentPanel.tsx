@@ -92,6 +92,7 @@ export function StageCommentPanel({
   target,
   collapsedByDefault = false,
   readOnly: readOnlyProp,
+  placement = 'right',
 }: {
   projectId: string;
   stageId: DocsReviewStageId;
@@ -99,6 +100,10 @@ export function StageCommentPanel({
    *  danh sách mặc định lọc theo mục (toggle "Chỉ mục này / Tất cả bước"). */
   target?: StageCommentTarget;
   collapsedByDefault?: boolean;
+  /** 'right' (mặc định) = cột bên phải nội dung; 'bottom' = dải ngang dưới
+   *  cùng. Chỉ đổi hướng khung — mọi hành vi giữ nguyên. Dùng cho màn có bố
+   *  cục "cạnh nhau", nơi cột phải làm nội dung chính bị bóp. */
+  placement?: 'right' | 'bottom';
   /** Chỉ xem: không composer, không nút xoá — danh sách + lọc giữ nguyên.
    *  Mặc định suy từ `projectId` (dự án ảo `drsnap.*` của báo cáo docs-review
    *  chỉ đọc); truyền tường minh để override/test. */
@@ -216,7 +221,12 @@ export function StageCommentPanel({
 
   if (collapsed) {
     return (
-      <aside className={`${styles.panel} ${styles.panelCollapsed}`} aria-label="Bình luận bước" {...dataAttrs} data-collapsed="true">
+      <aside
+        className={`${styles.panel} ${styles.panelCollapsed} ${placement === 'bottom' ? styles.panelBottom : ''}`}
+        aria-label="Bình luận bước"
+        {...dataAttrs}
+        data-collapsed="true"
+      >
         <button
           type="button"
           className={styles.toggle}
@@ -232,7 +242,12 @@ export function StageCommentPanel({
   }
 
   return (
-    <aside className={styles.panel} aria-label="Bình luận bước" {...dataAttrs} data-collapsed="false">
+    <aside
+      className={`${styles.panel} ${placement === 'bottom' ? styles.panelBottom : ''}`}
+      aria-label="Bình luận bước"
+      {...dataAttrs}
+      data-collapsed="false"
+    >
       <div className={styles.head}>
         <span className={styles.title}>
           Bình luận ({count})

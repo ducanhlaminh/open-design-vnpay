@@ -2718,10 +2718,13 @@
   flex-direction: column;
   flex: 1 1 auto;
   min-height: 0;
-  /* Fill the entry-main inner column; the 128px accounts for the app header
-     + page padding so the FileViewer gets a tall, near-viewport stage. */
-  height: calc(100vh - 128px);
-  height: calc(100dvh - 128px);
+  /* Chiều cao theo NỘI DUNG, không khoá cứng: sơ đồ luồng (FlowUxReviewPreview
+     bố cục cạnh nhau + panel dưới) cần nhiều hơn một màn hình, khoá cứng thì
+     sơ đồ bị bóp còn ~200px. `min-height` giữ nguyên "sân" cao gần bằng
+     viewport cho FileViewer khi nội dung ngắn; `.entry-main--scroll` (tổ tiên,
+     overflow-y: auto) lo phần cuộn khi nội dung dài hơn. */
+  min-height: calc(100vh - 128px);
+  min-height: calc(100dvh - 128px);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   overflow: hidden;

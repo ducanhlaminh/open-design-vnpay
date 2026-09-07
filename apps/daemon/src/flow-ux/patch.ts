@@ -7,6 +7,8 @@
 // wrapper that links every changed cell to its finding are all computed here,
 // so the output is always valid XML with a consistent visual language.
 
+import crypto from 'node:crypto';
+
 import { type CheerioAPI } from 'cheerio';
 import { listCells, loadGraph, serializeGraph, styleSet, type MxCellInfo } from './mxfile.js';
 
@@ -37,6 +39,12 @@ export type PatchOp =
 
 export interface PatchDoc {
   flowId?: string;
+  /** Vân tay của SƠ ĐỒ mà patch này được viết dựa trên (xem
+   *  `graphCellFingerprint`). Daemon đóng dấu lúc bước "Cải thiện luồng"
+   *  finalize; `finalizeFlowUx` đối chiếu trước khi áp. Sơ đồ sinh lại (chạy
+   *  lại "Luồng màn hình") đổi id cell → vân tay lệch → KHÔNG áp patch cũ.
+   *  Thiếu field (patch viết trước WP này) = không kiểm được, vẫn áp. */
+  baseFingerprint?: string;
   ops: PatchOp[];
 }
 
@@ -100,6 +108,23 @@ function escapeAttrSet(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+/** Vân tay của một trang sơ đồ = tập ID cell của nó (đã sắp xếp) băm lại.
+ *  MỌI op trong patch đều trỏ tới cell/edge theo id, nên "patch còn khớp sơ
+ *  đồ hay không" quy về "tập id có đổi không" — vị trí/nhãn đổi không làm
+ *  patch hỏng, nên KHÔNG đưa vào vân tay (tránh báo lệch giả khi người dùng
+ *  chỉ kéo lại node).
+ *
+ *  Sự cố có thật 2026-09-04: sơ đồ sinh lại lúc 16:45 đổi id cạnh từ
+ *  `od-e-auth-result`… sang `od-e1…od-e25`, patch cũ 14:54 vẫn được áp →
+ *  7/11 op chết, bản "Đề xuất" có node mới nhưng không cạnh nào nối vào. */
+export function graphCellFingerprint(graphXml: string): string {
+  const ids = listCells(graphXml)
+    .map((c) => c.id)
+    .filter((id) => id && id !== '0' && id !== '1')
+    .sort();
+  return crypto.createHash('sha256').update(ids.join('\n')).digest('hex').slice(0, 16);
+}
+
 /** Tolerant parse of the agent's patch.json → PatchDoc (bad ops are dropped,
  *  reported as skipped by `applyPatch`). */
 export function parsePatchDoc(raw: string): PatchDoc {
@@ -115,7 +140,11 @@ export function parsePatchDoc(raw: string): PatchDoc {
   for (const item of list) {
     if (item && typeof item === 'object' && typeof (item as { op?: unknown }).op === 'string') ops.push(item as PatchOp);
   }
-  return { ...(typeof obj.flowId === 'string' ? { flowId: obj.flowId } : {}), ops };
+  return {
+    ...(typeof obj.flowId === 'string' ? { flowId: obj.flowId } : {}),
+    ...(typeof obj.baseFingerprint === 'string' && obj.baseFingerprint ? { baseFingerprint: obj.baseFingerprint } : {}),
+    ops,
+  };
 }
 
 /** Find the element that owns a cell id: the `<object>`/`<UserObject>` wrapper

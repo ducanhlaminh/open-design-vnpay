@@ -12,6 +12,10 @@
   min-height: 0;
   min-width: 0;
 }
+/* Host xếp DỌC khi panel ở dưới (component cha đặt data-placement). */
+.host[data-placement='bottom'] {
+  flex-direction: column;
+}
 .host > :first-child {
   flex: 1 1 auto;
   min-width: 0;
@@ -34,6 +38,20 @@
   align-items: center;
   padding: 6px 4px;
   overflow: hidden;
+}
+
+/* placement="bottom": dải ngang dưới nội dung thay vì cột phải. Chiều cao có
+   trần để nội dung chính luôn giữ phần lớn khung. */
+.panelBottom {
+  flex: 0 0 auto;
+  max-height: 30vh;
+  border-left: none;
+  border-top: 1px solid var(--border-soft, var(--border, #e1e5eb));
+}
+.panelBottom.panelCollapsed {
+  flex-basis: auto;
+  align-items: flex-start;
+  padding: 4px 8px;
 }
 
 .head {

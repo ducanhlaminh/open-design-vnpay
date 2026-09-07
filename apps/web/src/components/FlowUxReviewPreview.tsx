@@ -800,9 +800,13 @@ export function FlowUxReviewPreview({
   // (mở as-is.drawio) không tải review nên không có gì để hiện — cũng không
   // hiện tab dọc "Hiện chú giải".
   const showPanel = presentation === 'compare';
+  // Bố cục "Cạnh nhau" → cả panel lý do UX lẫn cột bình luận xuống đáy: hai
+  // sơ đồ cần trọn bề ngang, thêm bất kỳ cột phải nào cũng bóp cả hai.
+  const commentPlacement: 'right' | 'bottom' =
+    !screensOpen && effectiveLayout === 'side' ? 'bottom' : 'right';
   const changeTotal = changeCounts.added + changeCounts.modified + changeCounts.removed;
   // Badge "N thay đổi · a thêm · b sửa · c bỏ" (B3) — chỉ khi có thay đổi.
-  const changesBadge = (where: 'tab' | 'pane') =>
+  const changesBadge = (where: 'tab' | 'bar') =>
     proposedElements && changeTotal > 0 ? (
       <span className={styles.changesBadge ?? ''} data-testid={`changes-badge-${where}`}>
         {changeTotal} thay đổi · {changeCounts.added} thêm · {changeCounts.modified} sửa · {changeCounts.removed} bỏ
@@ -991,17 +995,34 @@ export function FlowUxReviewPreview({
       {/* wp-docs-review-confirm-v2: cột bình luận cấp bước bên phải cả khung
           (ngoài grid sơ đồ+panel UX). Bước theo cách mở: đối chiếu (ux-review
           / proposed) = dr-flow-improve, còn lại = dr-flow; neo theo luồng. */}
-      <div className={stageCommentStyles.host}>
-      <div className={`${styles.body} ${panelOpen && showPanel ? '' : styles.bodyPanelHidden ?? ''}`}>
+      {/* Bố cục "Cạnh nhau": cột bình luận cũng xuống đáy (data-placement)
+          để hai sơ đồ giữ trọn bề ngang. */}
+      <div className={stageCommentStyles.host} data-placement={commentPlacement}>
+      {/* Bố cục "Cạnh nhau": panel lý do UX xuống ĐÁY thay vì cột phải — hai
+          sơ đồ cần trọn bề ngang để đối chiếu, nhét thêm cột 380px làm cả hai
+          bị bóp lại. "Từng bản" giữ cột phải như cũ. */}
+      <div
+        className={[
+          styles.body,
+          panelOpen && showPanel ? '' : styles.bodyPanelHidden ?? '',
+          !screensOpen && effectiveLayout === 'side' ? styles.bodyStacked ?? '' : '',
+        ]
+          .filter(Boolean)
+          .join(' ')}
+      >
         <section className={styles.diagram} aria-label="Sơ đồ luồng">
           <div className={styles.diagramBar}>
             {effectiveLayout === 'single' || isScreenFlow ? (
               <div className={styles.modeBar} role="tablist" aria-label="Chế độ xem sơ đồ">
+                {/* Ở "Cạnh nhau" hai bản đã hiện song song — giữ thêm cặp
+                    tab chọn bản chỉ làm rối; chuyển bản vẫn qua "Từng bản". */}
+                {effectiveLayout === 'side' ? null : (
                 <button type="button" role="tab" aria-selected={!screensOpen && mode === 'as-is'} className={`${styles.modeBtn} ${!screensOpen && mode === 'as-is' ? styles.modeBtnActive : ''}`} onClick={() => selectMode('as-is')}>
                   Nguyên bản
                   {usingBadge('original')}
                 </button>
-                {hasProposal ? (
+                )}
+                {hasProposal && effectiveLayout !== 'side' ? (
                   <button type="button" role="tab" aria-selected={!screensOpen && mode === 'proposed'} className={`${styles.modeBtn} ${!screensOpen && mode === 'proposed' ? styles.modeBtnActive : ''}`} onClick={() => selectMode('proposed')}>
                     Cải thiện
                     {usingBadge('improved')}
@@ -1044,14 +1065,11 @@ export function FlowUxReviewPreview({
                 </button>
               </div>
             ) : null}
-            {hasProposal && effectiveLayout === 'single' ? (
-              <div className={styles.legend} aria-label="Chú giải màu đề xuất">
-                <span className={`${styles.legendItem} ${styles.legend_added}`}>Thêm mới</span>
-                <span className={`${styles.legendItem} ${styles.legend_modified}`}>Sửa đổi</span>
-                <span className={`${styles.legendItem} ${styles.legend_removed}`}>Đề nghị bỏ</span>
-              </div>
-            ) : null}
-            {hasProposal && effectiveLayout === 'single' && !screensOpen && mode === 'proposed' ? dimToggle : null}
+            {/* Số thay đổi + bộ lọc "Chỉ xem thay đổi": ở "Cạnh nhau" chúng
+                thuộc về cả khối đối chiếu nên nằm trên thanh này; ở "Từng bản"
+                badge đã gắn trên tab Cải thiện nên chỉ còn nút lọc. */}
+            {hasProposal && effectiveLayout === 'side' && !screensOpen ? changesBadge('bar') : null}
+            {hasProposal && !screensOpen && (effectiveLayout === 'side' || mode === 'proposed') ? dimToggle : null}
             {/* Cụm phải gom trong MỘT container margin-left:auto — trước đây
                 mỗi nút tự margin-left:auto, flexbox chia đều khoảng trống cho
                 từng auto-margin nên 3 nút bị rải ra giữa thanh thay vì nhóm
@@ -1132,16 +1150,14 @@ export function FlowUxReviewPreview({
                   </div>
                 </div>
                 <div className={styles.sidePane} data-testid="side-pane-right">
+                  {/* Đầu hai khung PHẢI cùng khuôn (tên + tối đa một badge)
+                      — nhồi badge số thay đổi / nút lọc / chú giải vào riêng
+                      khung phải làm hai sơ đồ bắt đầu ở hai độ cao khác nhau,
+                      rất khó đối chiếu. Những thứ đó đã dời lên thanh công cụ
+                      và dòng chú giải chung bên dưới. */}
                   <div className={styles.sidePaneHead}>
                     <h3 className={styles.paneTitle}>Cải thiện</h3>
                     {usingBadge('improved')}
-                    {changesBadge('pane')}
-                    {dimToggle}
-                    <div className={styles.legend} aria-label="Chú giải màu đề xuất">
-                      <span className={`${styles.legendItem} ${styles.legend_added}`}>Thêm mới</span>
-                      <span className={`${styles.legendItem} ${styles.legend_modified}`}>Sửa đổi</span>
-                      <span className={`${styles.legendItem} ${styles.legend_removed}`}>Đề nghị bỏ</span>
-                    </div>
                   </div>
                   <div className={styles.sidePaneBox}>
                     {!showViewer ? (
@@ -1214,6 +1230,17 @@ export function FlowUxReviewPreview({
               </>
             )}
           </div>
+          {/* Chú giải màu: MỘT dòng dưới sơ đồ, dùng chung cho cả hai bố cục —
+              trước đây nằm trong đầu khung Cải thiện và làm hai khung lệch
+              nhau. Chỉ hiện khi thật sự có bản đề xuất để đối chiếu. */}
+          {hasProposal && !screensOpen ? (
+            <div className={styles.legend} aria-label="Chú giải màu đề xuất">
+              <span className={styles.legendLabel}>Chú giải</span>
+              <span className={`${styles.legendItem} ${styles.legend_added}`}>Thêm mới</span>
+              <span className={`${styles.legendItem} ${styles.legend_modified}`}>Sửa đổi</span>
+              <span className={`${styles.legendItem} ${styles.legend_removed}`}>Đề nghị bỏ</span>
+            </div>
+          ) : null}
           {editWarnings.length ? (
             <div className={styles.warn}>
               Đã lưu bản sửa, kèm cảnh báo: {editWarnings.join(' · ')}
@@ -1250,8 +1277,10 @@ export function FlowUxReviewPreview({
                 <span>Phát hiện UX</span>
               )}
               <span className={styles.panelMeta}>{proposedElements && panelMode === 'elements' ? proposedElements.elements.length : findings.length}</span>
+              {/* Mũi tên theo hướng panel đang nằm: ']' đẩy sang phải, '⌄'
+                  gập xuống dưới. */}
               <button type="button" className={styles.panelToggleBtn ?? ''} aria-label="Ẩn chú giải" onClick={togglePanel}>
-                Ẩn ]
+                {commentPlacement === 'bottom' ? 'Ẩn ⌄' : 'Ẩn ]'}
               </button>
             </div>
             {showVariantSelect && readOnly ? (
@@ -1471,6 +1500,7 @@ export function FlowUxReviewPreview({
         stageId={presentation === 'compare' ? 'dr-flow-improve' : 'dr-flow'}
         target={{ kind: 'flow', key: loc.flowId, label: title }}
         collapsedByDefault={showPanel}
+        placement={commentPlacement}
       />
       </div>
     </>

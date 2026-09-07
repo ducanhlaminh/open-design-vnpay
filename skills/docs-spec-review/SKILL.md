@@ -86,7 +86,12 @@ tài liệu.
 
 **Bố cục tài liệu:** review bản gốc theo path kickoff (`docs/…` hoặc `docs-feature/…`) ở chế độ chỉ đọc; `docs-app/` không thuộc phạm vi review.
 
-**Tìm trong tài liệu:** cần thông tin ngoài lát cắt/trang đang đọc → grep KHÔNG DẤU trên `./docs-feature/_sections.md` → mở đúng `path:line` đọc nguyên văn rồi mới dùng; `docs-app/` vẫn ngoài phạm vi review, không tra ở đó. Không đoán nội dung từ tên trang.
+- **Tra cứu khi cần thông tin ngoài lát cắt/trang đang đọc — CHẠY LỆNH NÀY TRƯỚC, `rg`/grep sau:**
+  `"$OD_NODE_BIN" "$OD_BIN" tools docs search "<câu hỏi tiếng Việt đầy đủ>" --scope feature`
+  → trả `path:line` xếp theo độ liên quan; tìm theo NGHĨA nên bắt được cả cách diễn đạt
+  khác/không dấu. Mở đúng dòng đó đọc nguyên văn rồi mới dùng; `rg` chỉ dùng khi đã biết
+  chính xác từ khoá. Lệnh báo chưa bật → grep KHÔNG DẤU trên `./docs-feature/_sections.md`.
+  `docs-app/` vẫn NGOÀI phạm vi review — không tra ở đó.
 
 - **Lát cắt của bạn (ĐỌC TRỌN, CHỈ ĐỌC — KHÔNG sửa):**
   `review/docs/<page>.s<NN>.slice.md` — daemon đã tách sẵn, chứa ĐÚNG và ĐỦ

@@ -138,9 +138,11 @@ describe('FlowUxReviewPreview (draw.io, bố cục Cạnh nhau — wp17a mặc �
     expect(screen.getByRole('heading', { level: 3, name: 'Cải thiện' })).toBeTruthy();
     // Không còn tab Hiện trạng/Đề xuất (đó là hành vi của chế độ Từng bản).
     expect(screen.queryByRole('tab', { name: 'Nguyên bản' })).toBeNull();
-    // Legend đề xuất nằm ở khung phải khi ở bố cục cạnh nhau (không lẫn với
-    // chip "Thêm mới" trên card finding UX-01 ở panel bên phải trang).
-    expect(within(screen.getByTestId('side-pane-right')).getByText('Thêm mới')).toBeTruthy();
+    // Chú giải là MỘT dòng chung dưới sơ đồ (không còn nhét trong đầu khung
+    // Cải thiện — hai đầu khung phải cân nhau), và đầu khung phải sạch.
+    const legend = screen.getByLabelText('Chú giải màu đề xuất');
+    expect(within(legend).getByText('Thêm mới')).toBeTruthy();
+    expect(within(screen.getByTestId('side-pane-right')).queryByText('Thêm mới')).toBeNull();
   });
 
   it('bấm finding → khung trái nhận highlight cells.asIs, khung phải nhận cells.proposed (không fallback chéo)', async () => {
@@ -677,13 +679,12 @@ describe('FlowUxReviewPreview — SCREEN-FLOW có bản Cải thiện (WP dr-flo
       expect(screen.getByRole('heading', { level: 3, name: 'Cải thiện' })).toBeTruthy();
       expect(screen.queryByText('Hiện trạng')).toBeNull();
       expect(screen.queryByText('Đề xuất')).toBeNull();
-      // Badge theo index.selection = improved — ở CẢ tab lẫn tiêu đề khung phải
-      // (SCREEN-FLOW hiện tablist cùng lúc với bố cục cạnh nhau).
-      expect(screen.getAllByTestId('using-improved').length).toBe(2);
+      // Badge theo index.selection = improved. Ở bố cục Cạnh nhau cặp tab
+      // Nguyên bản|Cải thiện bị ẩn (hai bản đã hiện song song) nên badge chỉ
+      // xuất hiện MỘT lần, ở tiêu đề khung phải.
+      expect(screen.getAllByTestId('using-improved').length).toBe(1);
       expect(screen.queryByTestId('using-original')).toBeNull();
-      // Tablist vẫn hiện với SCREEN-FLOW: tab Cải thiện mang badge.
-      const improvedTab = screen.getByRole('tab', { name: /^Cải thiện/ });
-      expect(within(improvedTab).getByText('đang dùng')).toBeTruthy();
+      expect(screen.queryByRole('tab', { name: /^Cải thiện/ })).toBeNull();
 
       const group = screen.getByRole('radiogroup', { name: 'Dùng bản để chạy tiếp' });
       const radioOriginal = within(group).getByRole('radio', { name: 'Nguyên bản' }) as HTMLInputElement;
@@ -707,7 +708,7 @@ describe('FlowUxReviewPreview — SCREEN-FLOW có bản Cải thiện (WP dr-flo
       expect(radioOriginal.checked).toBe(true);
       expect(screen.getByText('Các bước sau (Màn hình → Component…) đang theo bản trước — Chạy lại để cập nhật.')).toBeTruthy();
       // Badge chuyển sang Nguyên bản.
-      expect(screen.getAllByTestId('using-original').length).toBe(2);
+      expect(screen.getAllByTestId('using-original').length).toBe(1);
       expect(screen.queryByTestId('using-improved')).toBeNull();
     } finally {
       vi.unstubAllGlobals();
@@ -720,13 +721,13 @@ describe('FlowUxReviewPreview — SCREEN-FLOW có bản Cải thiện (WP dr-flo
     try {
       render(<FlowUxReviewPreview projectId="p" file={file('docs-review/flows/SCREEN-FLOW/ux-review.json')} />);
       await waitFor(() => expect(screen.getAllByTestId('drawio-stub').length).toBe(2));
-      expect(screen.getAllByTestId('using-original').length).toBe(2);
+      expect(screen.getAllByTestId('using-original').length).toBe(1);
       const radioImproved = screen.getByRole('radio', { name: 'Cải thiện' }) as HTMLInputElement;
       expect(radioImproved.checked).toBe(false);
       fireEvent.click(radioImproved);
       await waitFor(() => expect(screen.getByText(/Không lưu được lựa chọn: daemon lỗi/)).toBeTruthy());
       expect((screen.getByRole('radio', { name: 'Nguyên bản' }) as HTMLInputElement).checked).toBe(true);
-      expect(screen.getAllByTestId('using-original').length).toBe(2);
+      expect(screen.getAllByTestId('using-original').length).toBe(1);
       expect(screen.queryByTestId('using-improved')).toBeNull();
     } finally {
       vi.unstubAllGlobals();
@@ -929,10 +930,12 @@ describe('FlowUxReviewPreview — chế độ theo file mở + highlight thay đ
     // Mặc định: chưa chọn finding → highlight = changed (bỏ od-legend-*) / hợp asIs.
     await waitFor(() => expect(lastPropsForPage(1)?.highlightCells?.join(',')).toBe(CHANGED));
     expect(lastPropsForPage(0)?.highlightCells?.join(',')).toBe('s1,s2');
-    // Badge trên tab Cải thiện + tiêu đề khung phải: 4 thay đổi · 2 thêm · 1 sửa · 1 bỏ.
+    // Badge số thay đổi chỉ Ở MỘT CHỖ: thanh công cụ (bố cục Cạnh nhau) —
+    // trước đây lặp ở cả tab lẫn đầu khung phải.
     const badgeText = '4 thay đổi · 2 thêm · 1 sửa · 1 bỏ';
-    expect(screen.getByTestId('changes-badge-tab').textContent).toBe(badgeText);
-    expect(screen.getByTestId('changes-badge-pane').textContent).toBe(badgeText);
+    expect(screen.getByTestId('changes-badge-bar').textContent).toBe(badgeText);
+    expect(screen.queryByTestId('changes-badge-pane')).toBeNull();
+    expect(screen.queryByTestId('changes-badge-tab')).toBeNull();
     expect(within(screen.getByTestId('side-pane-right')).getByRole('heading', { level: 3, name: 'Cải thiện' })).toBeTruthy();
     // Panel Theo phần tử đếm cùng con số với badge.
     expect(screen.getByRole('button', { name: 'Theo phần tử' })).toBeTruthy();
@@ -952,12 +955,13 @@ describe('FlowUxReviewPreview — chế độ theo file mở + highlight thay đ
     delete (FILES as Record<string, unknown>)['docs-review/flows/SCREEN-FLOW/proposed.drawio'];
   });
 
-  it('"Chỉ xem thay đổi" (aria-pressed) ở tiêu đề khung Cải thiện → khung phải nhận dimCellsExcept = changed, khung trái không; tắt → bỏ; Từng bản/trang Cải thiện cũng nhận', async () => {
+  it('"Chỉ xem thay đổi" (aria-pressed) trên thanh công cụ → khung phải nhận dimCellsExcept = changed, khung trái không; tắt → bỏ; Từng bản/trang Cải thiện cũng nhận', async () => {
     seed();
     render(<FlowUxReviewPreview projectId="p" file={file('docs-review/flows/SCREEN-FLOW/ux-review.json')} />);
     await waitFor(() => expect(screen.getAllByTestId('drawio-stub').length).toBe(2));
-    const right = screen.getByTestId('side-pane-right');
-    const toggle = within(right).getByRole('button', { name: 'Chỉ xem thay đổi' });
+    const toggle = screen.getByRole('button', { name: 'Chỉ xem thay đổi' });
+    // Nút thuộc thanh công cụ chung, KHÔNG nằm trong đầu khung Cải thiện.
+    expect(within(screen.getByTestId('side-pane-right')).queryByRole('button', { name: 'Chỉ xem thay đổi' })).toBeNull();
     // WP dr-flow-edit-highlight: mặc định BẬT khi có bản Cải thiện có thay đổi.
     await waitFor(() => expect(toggle.getAttribute('aria-pressed')).toBe('true'));
     await waitFor(() => expect(lastPropsForPage(1)?.dimCellsExcept?.join(',')).toBe(CHANGED));

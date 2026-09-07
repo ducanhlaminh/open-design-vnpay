@@ -19,6 +19,7 @@ export * from './api/files.js';
 export * from './api/feedback.js';
 export * from './api/docs-review-feedback.js';
 export * from './api/docs-review-reports.js';
+export * from './api/docs-review-tracing.js';
 export * from './api/error-reports.js';
 export * from './api/design-system-criteria.js';
 export * from './api/design-system-update.js';

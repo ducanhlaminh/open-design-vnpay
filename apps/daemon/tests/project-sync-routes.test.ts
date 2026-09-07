@@ -763,7 +763,19 @@ describe('project-sync route contract', () => {
     try {
       state.projects = [{ id: 'local', name: 'Local', metadata: { studioConfig: {} } }];
       const dir = path.join(root, 'local');
-      for (const rel of ['outputs/a.md', '.od-skills/SKILL.md', 'docs-review/.od-skills/SKILL.md', '.tmp/scratch.txt', '.odhistory/HEAD', 'node_modules/x/index.js']) {
+      // `docs-review/tracing/…` (wp-docs-review-tracing): nhật ký "Câu hỏi /
+      // Trả lời / Dẫn chứng" daemon-owned — GIAI ĐOẠN THỬ NGHIỆM cố tình
+      // không đồng bộ tự động, cùng khuôn `.od-skills`/`.tmp` ở trên.
+      for (const rel of [
+        'outputs/a.md',
+        '.od-skills/SKILL.md',
+        'docs-review/.od-skills/SKILL.md',
+        '.tmp/scratch.txt',
+        '.odhistory/HEAD',
+        'node_modules/x/index.js',
+        'docs-review/tracing/dr-flow.json',
+        'docs-review/tracing/dr-flow.answers.json',
+      ]) {
         await fs.mkdir(path.dirname(path.join(dir, rel)), { recursive: true });
         await fs.writeFile(path.join(dir, rel), rel);
       }
@@ -773,7 +785,7 @@ describe('project-sync route contract', () => {
       expect(planned.status).toBe(200);
       const paths = planned.body.data.entries.map((entry: any) => entry.path);
       expect(paths).toContain('feature/outputs/a.md');
-      expect(paths.filter((value: string) => value.includes('.od-skills') || value.includes('.tmp/') || value.includes('.odhistory') || value.includes('node_modules'))).toEqual([]);
+      expect(paths.filter((value: string) => value.includes('.od-skills') || value.includes('.tmp/') || value.includes('.odhistory') || value.includes('node_modules') || value.includes('/tracing/'))).toEqual([]);
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }

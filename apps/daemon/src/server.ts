@@ -794,6 +794,9 @@ import {
   stageAppDocsPool,
 } from './app-pool.js';
 import { writeDocsSectionIndex } from './docs-section-index.js';
+import { buildDocsEmbedIndex } from './docs-embed-index.js';
+import { registerDocsEmbedRoutes } from './docs-embed-routes.js';
+import { clearDocsTracingLog, runTracingRegistry } from './docs-tracing.js';
 import { registerAppPoolRoutes } from './app-pool-routes.js';
 import { registerAppContextRoutes } from './app-context-routes.js';
 import { registerOverviewRoutes } from './overview-routes.js';
@@ -6989,6 +6992,18 @@ export async function startServer({
     auth: authDeps,
     http: httpDeps,
     figma: { desktop: figmaDesktop, resolveScope: resolveFigmaDesktopScope },
+  });
+  // wp-docs-review-embed-search: `/api/docs/search` — tìm docs-review theo
+  // ngữ nghĩa (embedding local qua Ollama), cạnh `_sections.md` cơ học.
+  registerDocsEmbedRoutes(app, {
+    auth: authDeps,
+    http: httpDeps,
+    paths: { PROJECTS_DIR, RUNTIME_DATA_DIR },
+    resolveProjectDir: async (projectId) => {
+      const project = getProject(db, projectId);
+      if (!project) return null;
+      return resolveProjectDir(PROJECTS_DIR, projectId, project.metadata);
+    },
   });
   registerXaiRoutes(app, {
     http: httpDeps,
@@ -19006,6 +19021,17 @@ export async function startServer({
         } catch (error) {
           console.warn('[docs-review] refresh _sections.md failed (continuing):', error);
         }
+        // wp-docs-review-embed-search: build nền cache vector (embedding qua
+        // Ollama) NGAY sau khi `_sections.md` refresh xong — fire-and-forget,
+        // để lần agent gọi `/api/docs/search` đầu tiên thường đã có cache
+        // sẵn. No-op im lặng nếu Ollama chưa bật; không được làm chậm kickoff.
+        buildDocsEmbedIndex(path.join(cwd, 'docs-feature'), { runtimeDataDir: RUNTIME_DATA_DIR }).catch(console.warn);
+        buildDocsEmbedIndex(path.join(cwd, 'docs-app'), { runtimeDataDir: RUNTIME_DATA_DIR }).catch(console.warn);
+        // wp-docs-review-tracing: mỗi lần chạy lại là một nhật ký truy vấn
+        // MỚI — xoá bản cũ của ĐÚNG stage này (`dr-review`) trước khi fan-out
+        // (từng page-run đăng ký registry riêng ngay khi run được tạo, xem
+        // `design.runs.create` bên dưới trong `runOneSectionOfPage`).
+        await clearDocsTracingLog(cwd, pipelineId).catch(() => {});
 
         // Dọn thông báo "không chạy được" còn sót từ lần chạy TRƯỚC — nó nằm
         // ngang hàng review/ (xem writeDocsReviewFailureNote), cố tình không
@@ -19307,6 +19333,12 @@ export async function startServer({
             clientRequestId: `docs-review-${pg.slug}-s${sec.index}-${randomUUID()}`,
             agentId: agentId!,
           });
+          // wp-docs-review-tracing: registry chỉ biết runId ↔ {workflowRoot,
+          // stageId} SAU khi run có id thật — hook kickoff chung (phía trên,
+          // trước fan-out) chạy trước khi bất kỳ page-run nào tồn tại, nên
+          // đăng ký từng run NGAY tại đây (không phải ở hook) là chỗ sớm
+          // nhất có runId thật cho stage fan-out này.
+          runTracingRegistry.set(run.id, { workflowRoot: cwd, stageId: pipelineId });
           activeRuns.add(run);
           upsertMessage(db, conversationId, { id: `pipeline-user-${run.id}`, role: 'user', content: kickoff });
           upsertMessage(db, conversationId, {
@@ -19340,6 +19372,7 @@ export async function startServer({
           );
           const final = await design.runs.wait(run);
           activeRuns.delete(run);
+          runTracingRegistry.clear(run.id);
           db.prepare(`UPDATE messages SET run_status = ?, ended_at = ? WHERE id = ?`).run(final.status, Date.now(), assistantMessageId);
           if (final.status === 'succeeded') {
             task.status = 'succeeded';
@@ -23479,6 +23512,13 @@ export async function startServer({
     // `_sections.md` từ app-pool.ts khi pool đổi (stageAppDocsPool copy mọi
     // `.md`, kể cả file này) — chỉ bù khi thiếu (pool cũ/staging lệch).
     // Best-effort: lỗi (fs hỏng, quyền…) không được chặn kickoff.
+    //
+    // wp-docs-review-tracing: `docsTracingRunCtx` ghi nhớ workflowRoot/stageId
+    // của stage này (chỉ khi thuộc workflow docs-review) để dùng LẦN SAU
+    // trong hàm này, tại đúng chỗ `run.id` thật xuất hiện (`design.runs.create`
+    // bên dưới) — registry cần runId thật, không có ở đây. `dr-review` KHÔNG
+    // bao giờ chạm nhánh này (return sớm qua runDocsReviewFanout ở trên).
+    let docsTracingRunCtx: { workflowRoot: string; stageId: string } | null = null;
     if (getWorkflow('docs-review')?.pipelineIds.includes(def.id)) {
       try {
         const projectRoot = await ensureProject(PROJECTS_DIR, projectId);
@@ -23487,6 +23527,14 @@ export async function startServer({
         const appSectionsPath = path.join(runCwd, 'docs-app', '_sections.md');
         const hasAppSections = await fs.promises.stat(appSectionsPath).then(() => true, () => false);
         if (!hasAppSections) await writeDocsSectionIndex(path.join(runCwd, 'docs-app'));
+        // wp-docs-review-embed-search: build nền cache vector — fire-and-forget,
+        // không được làm chậm kickoff (xem hook y hệt ở runDocsReviewFanout).
+        buildDocsEmbedIndex(path.join(runCwd, 'docs-feature'), { runtimeDataDir: RUNTIME_DATA_DIR }).catch(console.warn);
+        buildDocsEmbedIndex(path.join(runCwd, 'docs-app'), { runtimeDataDir: RUNTIME_DATA_DIR }).catch(console.warn);
+        // Mỗi lần chạy lại là một nhật ký truy vấn MỚI — xoá bản cũ trước khi
+        // agent (single-run stage) bắt đầu.
+        await clearDocsTracingLog(runCwd, def.id).catch(() => {});
+        docsTracingRunCtx = { workflowRoot: runCwd, stageId: def.id };
       } catch (error) {
         console.warn('[docs-review] refresh _sections.md failed (continuing):', error);
       }
@@ -23631,6 +23679,10 @@ export async function startServer({
       clientRequestId: `pipeline-${pipelineId}-${randomUUID()}`,
       agentId,
     });
+    // wp-docs-review-tracing: registry cần runId thật — chỗ sớm nhất có nó
+    // trong hàm này là ngay sau design.runs.create (xem docsTracingRunCtx
+    // ở hook kickoff phía trên).
+    if (docsTracingRunCtx) runTracingRegistry.set(run.id, docsTracingRunCtx);
     upsertMessage(db, conversationId, {
       id: `pipeline-user-${run.id}`,
       role: 'user',
@@ -23782,6 +23834,7 @@ export async function startServer({
     const completion: Promise<'succeeded' | 'failed' | 'idle'> = (async () => {
       try {
         const finalStatus = await design.runs.wait(run);
+        runTracingRegistry.clear(run.id);
         db.prepare(`UPDATE messages SET run_status = ?, ended_at = ? WHERE id = ?`)
           .run(finalStatus.status, Date.now(), assistantMessageId);
         let next: 'succeeded' | 'failed' | 'idle' = finalStatus.status === 'succeeded'

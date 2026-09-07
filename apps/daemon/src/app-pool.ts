@@ -444,12 +444,26 @@ const APP_NAV_STAGES = new Set(['ux', 'dr-flow', 'cj', 'prd-cj']);
  *  staged keeps the kickoff byte-identical to the legacy one. */
 export function appDocsPoolDirective(stagedFiles: string[], stageId?: string): string {
   if (stagedFiles.length === 0) return '';
+  // `_index.md` chỉ là CÂY TÊN TRANG — hai lần chạy thật cho thấy agent đọc nó
+  // rồi đoán nội dung/`rg` mù thay vì tra nội dung. Nêu thẳng lệnh tìm theo
+  // nghĩa ngay trong kickoff (chỉ dẫn kickoff lấn át chỉ dẫn trong skill).
+  // wp-docs-review-tracing (Gói C): daemon tự ghi CÂU HỎI + kết quả tìm kiếm
+  // (`tracing/<stageId>.json`), nhưng phần TRẢ LỜI + DẪN CHỨNG chỉ agent biết
+  // — bắt buộc khai lại vào `<stageId>.answers.json` để card Quick result
+  // ghép được câu hỏi ↔ trả lời. Chỉ nêu khi có stageId thật (tên file cần
+  // đúng stage đang chạy); daemon ghép theo NGUYÊN VĂN câu hỏi nên agent phải
+  // chép lại y hệt, không diễn đạt lại.
+  const answersFileDirective = stageId
+    ? ` Sau khi xong việc, ghi \`tracing/${stageId}.answers.json\`: {"answers":[{"question":"<CHÉP Y HỆT câu đã hỏi ở trên>","answer":"<1-2 câu kết luận>","citations":["docs-app/<path>.md#<heading>"],"usedFor":"<màn/mục nào dùng, để trống nếu không dùng>"}]} cho MỌI câu đã hỏi bằng \`tools docs search\` — câu tra không ra căn cứ thì \`answer\` ghi "không tìm thấy căn cứ" và \`citations: []\`.`
+    : '';
+  const search =
+    `Cần TÌM NỘI DUNG trong pool (không chỉ tên trang) thì chạy \`"$OD_NODE_BIN" "$OD_BIN" tools docs search "<câu hỏi tiếng Việt đầy đủ>" --scope app\` — trả \`path:line\` xếp theo độ liên quan, mở đúng dòng đó đọc nguyên văn; \`rg\`/grep chỉ dùng khi đã biết chính xác từ khoá. Tài liệu feature hay TRỎ SANG tài liệu khác (Business Rules kiểu "Xem tại [URD]…", dòng Document reference, link wiki): MỖI tham chiếu như vậy là MỘT truy vấn \`tools docs search\` TRƯỚC khi dựng phần liên quan — đừng suy ra nội dung trang được trỏ. ĐỌC CẢ danh sách lệnh trả về (không chỉ dòng đầu): điểm KHÔNG nói lên đúng/sai và thứ hạng trong nhóm đầu là nhiễu (chênh ~0.02). Căn cứ là ĐOẠN ĐÃ ĐỌC — không đoạn nào nói điều đang cần thì ghi rõ chưa xác định được, KHÔNG suy từ tên trang, KHÔNG tự dựng. Hỏi bằng CÂU ĐẦY ĐỦ, đừng ghép chuỗi từ khoá kiểu tên tài liệu.${answersFileDirective}`;
   const base =
     ' Tài liệu App: trang cho feature này ở `docs-feature/` (nguồn sự thật). TOÀN BỘ pool App nạp read-only ở `docs-app/` — đọc `docs-app/_index.md` để nắm danh mục';
   if (stageId && APP_NAV_STAGES.has(stageId)) {
-    return `${base}. Bước này PHẢI xác định ĐƯỜNG VÀO tính năng ở cấp app: người dùng đứng ở màn gốc nào, đi qua menu/bước nào để tới màn của feature. Căn cứ theo thứ tự: câu mô tả cách vào trong \`docs-feature/\`, rồi cây thư mục trong \`docs-app/_index.md\` (thường phản chiếu cấu trúc menu) — mở trang trong \`docs-app/\` để lấy đúng tên menu như tài liệu viết. KHÔNG bịa tên menu: không có căn cứ thì bỏ phần đường vào và ghi rõ là chưa xác định được.`;
+    return `${base}. ${search} Bước này PHẢI xác định ĐƯỜNG VÀO tính năng ở cấp app: người dùng đứng ở màn gốc nào, đi qua menu/bước nào để tới màn của feature. Căn cứ theo thứ tự: câu mô tả cách vào trong \`docs-feature/\`, rồi cây thư mục trong \`docs-app/_index.md\` (thường phản chiếu cấu trúc menu) — tra tên menu bằng lệnh tìm ở trên rồi mở trang trong \`docs-app/\` để lấy đúng tên như tài liệu viết. KHÔNG bịa tên menu: không có căn cứ thì bỏ phần đường vào và ghi rõ là chưa xác định được.`;
   }
-  return `${base}, chỉ mở trang khi cần đối chiếu ngoài phạm vi feature; KHÔNG audit/fan-out/deliverable từ \`docs-app/\`.`;
+  return `${base}, chỉ mở trang khi cần đối chiếu ngoài phạm vi feature; KHÔNG audit/fan-out/deliverable từ \`docs-app/\`. ${search}`;
 }
 
 /** §2.2 DELETE pool/pages: remove manifest entries + their files, regenerate

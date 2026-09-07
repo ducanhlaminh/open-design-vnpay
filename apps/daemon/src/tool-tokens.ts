@@ -10,6 +10,7 @@ export const CHAT_TOOL_ENDPOINTS = [
   '/api/tools/connectors/list',
   '/api/tools/connectors/execute',
   '/api/tools/design-systems/read',
+  '/api/docs/search',
 ] as const;
 
 export const CHAT_TOOL_OPERATIONS = [
@@ -20,6 +21,7 @@ export const CHAT_TOOL_OPERATIONS = [
   'connectors:list',
   'connectors:execute',
   'design-systems:read',
+  'docs:search',
 ] as const;
 
 export const FIGMA_TOOL_ENDPOINTS = [
