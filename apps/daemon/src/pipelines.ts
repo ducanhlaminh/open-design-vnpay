@@ -337,7 +337,20 @@ const PIPELINE_DEFS_BASE: readonly PipelineDef[] = [
   // re-run of dr-review untouched). skillId MUST stay 'confluence-ingest' for
   // dr-docs: runDocsDeterministic (server.ts) only takes the tool-only
   // Confluence path for that exact skillId.
-  { id: 'dr-docs',          name: 'Tài liệu (nạp)',                   skillId: 'confluence-ingest',     dependsOn: [],                   outputs: ['docs/', 'docs-feature/'], inputPlaceholder: 'Confluence page URL/id', inputKind: 'source', acceptsUpload: true },
+  // WP hotfix-sync (2026-09): `docs-app/` (stageAppDocsPool) and `docs-feature/`
+  // (runDocsFromAppPool step 1) are DETERMINISTIC copies of the App Context
+  // pool + tick list, reconstructible from the bound Context version on any
+  // machine (see materializeDocsReviewFromAppContext in app-context-version.ts
+  // and the Feature-pull APPLY step in project-sync-routes.ts). Excluding them
+  // here means Push/Pull never move these ~thousands of pool-copy files over
+  // the wire — the timeout root cause — while a Feature pull still restores
+  // both folders locally from the immutable package + `appPool.paths`. Only
+  // dr-docs (this workflow's ingest stage) sets this; `lab-docs` under ds-lab
+  // is a SEPARATE pipeline id sharing the same `confluence-ingest` skill and
+  // `docs-feature/` output name, so it is untouched (see isSyncExcluded's
+  // per-workflow def filtering).
+  { id: 'dr-docs',          name: 'Tài liệu (nạp)',                   skillId: 'confluence-ingest',     dependsOn: [],                   outputs: ['docs/', 'docs-feature/'], inputPlaceholder: 'Confluence page URL/id', inputKind: 'source', acceptsUpload: true,
+    syncExclude: ['docs-app/', 'docs-feature/'] },
   // Rút SƠ ĐỒ LUỒNG MÀN HÌNH từ tài liệu GỐC (`docs/`): mỗi luồng nghiệp vụ
   // thành một `flows/<FLOW-ID>.flowchart.json` (node start/end/action/decision
   // + edge có nhãn, node action có thể gắn `screen` = SCREEN-KEY của màn) để

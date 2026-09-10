@@ -699,6 +699,24 @@ test('isSyncExcluded: non-react outputs are untouched by the react exclusions', 
   assert.equal(isSyncExcluded('react/index.html'), true);
 });
 
+test('dr-docs syncExclude bars docs-review pool copies (docs-app/docs-feature) only; other docs-review outputs and ds-lab stay untouched', () => {
+  // WP hotfix-sync (2026-09): docs-app/ and docs-feature/ are deterministic
+  // App-Context pool copies — a Feature pull reconstructs them locally
+  // (materializeDocsReviewFromAppContext), so Push/Pull must never move them
+  // as raw sync entries.
+  assert.equal(isSyncExcluded('docs-review/docs-app/x.md'), true);
+  assert.equal(isSyncExcluded('docs-review/docs-feature/a/b.md'), true);
+  assert.equal(isSyncExcluded('docs-review/docs-feature/attachments/i.png'), true);
+  // Sibling docs-review outputs are unaffected.
+  assert.equal(isSyncExcluded('docs-review/review/x.md'), false);
+  assert.equal(isSyncExcluded('docs-review/docs/x.md'), false);
+  assert.equal(isSyncExcluded('docs-review/flows/f.json'), false);
+  // ds-lab's lab-docs shares the `docs-feature/` output NAME with dr-docs but
+  // is a fully independent pipeline id in a different workflow — its own
+  // syncExclude list is untouched (still empty).
+  assert.equal(isSyncExcluded('ds-lab/docs-feature/x.md'), false);
+});
+
 test('history artifacts (_v/ snapshots + changelog.json) never light a stage', () => {
   // Frozen snapshot paths repeat real output shapes — every classifier must
   // ignore them or old versions would re-mark stages done forever.
