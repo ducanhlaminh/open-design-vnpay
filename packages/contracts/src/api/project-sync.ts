@@ -2,6 +2,12 @@
 // surface; keep it deliberately independent from the legacy `/api/kg/*` sync.
 
 export type ProjectSyncDirection = 'pull' | 'push';
+/** Pull-only knob. `view` (default) fetches just enough to open Quick result
+ * and Xác nhận hoàn tất — no App Context package, no docs-review binding.
+ * `work` is the pre-existing full pull (Context + docs-review materialize).
+ * Missing on an older mapping means `work` (that machine already pulled the
+ * full copy before this knob existed). */
+export type ProjectSyncPullMode = 'view' | 'work';
 export type ProjectSyncScopeKind = 'app' | 'feature';
 export type ProjectSyncChange = 'new' | 'unchanged' | 'changed' | 'deleted';
 /** Human-facing status for an App or Feature. File-level changes deliberately
@@ -76,6 +82,8 @@ export interface ProjectSyncMapping {
   originId: string;
   originAppId?: string | null;
   mappedAt: string;
+  /** Absent = `'work'` (pre-existing mapping written before this knob). */
+  pullMode?: ProjectSyncPullMode;
 }
 
 /** A content snapshot. `checksum` is a bare SHA-256 hex string. */
@@ -167,6 +175,9 @@ export interface ProjectSyncPlan {
   features: SyncEntitySummary[];
   entries: ProjectSyncEntry[];
   summary: ProjectSyncSummary;
+  /** Present for a Pull plan; mirrors the resolved request `pullMode`
+   * (defaulting to `'view'`) so APPLY reads it straight from the plan. */
+  pullMode?: ProjectSyncPullMode;
 }
 
 export interface ProjectSyncStatusRequest {
@@ -192,6 +203,9 @@ export interface ProjectSyncScopeStatus {
   summary: ProjectSyncSummary;
   entries: ProjectSyncEntry[];
   error?: string;
+  /** Present only when a mapping exists (App: mapping file; Feature: metadata
+   * mapping). Absent field on an existing mapping means `'work'`. */
+  pullMode?: ProjectSyncPullMode;
 }
 
 export interface ProjectSyncPlanRequest {
@@ -201,6 +215,8 @@ export interface ProjectSyncPlanRequest {
   origin?: ProjectSyncOriginSelection;
   /** Surface current-file deletions. Historical `_v/` artifacts are never deleted. */
   includeDeleted?: boolean;
+  /** Only meaningful for `direction: 'pull'`. Missing ⇒ `'view'`. */
+  pullMode?: ProjectSyncPullMode;
 }
 
 export interface ProjectSyncApplyRequest {
@@ -311,6 +327,8 @@ export interface ProjectSyncFeaturePullBatchPlanRequest {
   localAppId: string;
   originAppId: string;
   originFeatureIds: string[];
+  /** Missing ⇒ `'view'`. */
+  pullMode?: ProjectSyncPullMode;
 }
 
 export type ProjectSyncFeaturePullMode = 'create' | 'update';
@@ -333,6 +351,7 @@ export interface ProjectSyncFeaturePullBatchPlan {
   originAppId: string;
   features: ProjectSyncFeaturePullBatchPlanItem[];
   totalItems: number;
+  pullMode: ProjectSyncPullMode;
 }
 
 export type ProjectSyncFeaturePullBatchItemState = 'succeeded' | 'failed';

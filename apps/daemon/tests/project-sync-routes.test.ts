@@ -14,6 +14,7 @@ const state = vi.hoisted(() => ({
   failDownloads: new Set<string>(),
   downloads: [] as string[],
   sessionOpens: [] as string[],
+  listCalls: [] as string[],
   failAppUpsert: false,
   history: [] as Array<{ cwd: string; kind: string; input?: string }>,
   confluenceCreds: null as { base: string; token: string } | null,
@@ -68,7 +69,23 @@ vi.mock('../src/kg-sync/media-client.js', () => ({
       const row = state.origins.find((origin) => origin.projectId === projectId);
       return Buffer.from(JSON.stringify({ appId: row?.appId }));
     }
-    async listFiles(projectId: string) { return state.mediaFiles[projectId] ?? []; }
+    async listFiles(projectId: string) { state.listCalls.push(projectId); return state.mediaFiles[projectId] ?? []; }
+    // Resolves one row by path WITHOUT listing the folder (mirrors the real
+    // tag-search endpoint) — never pushes to state.listCalls/sessionOpens, so
+    // a view-only App pull that only needs `app.json` never triggers the
+    // full-listing assertions below.
+    async findFileByPath(projectId: string, filePath: string) {
+      const file = state.mediaFiles[projectId]?.find((candidate) => candidate.path === filePath);
+      if (!file) return null;
+      const id = file.id ?? `${projectId}:${filePath}`;
+      return { id, path: file.path, checksum: file.checksum ?? '', stage: file.stage ?? '', name: file.path.split('/').pop() ?? file.path, mime: file.mime ?? '', size: 0 };
+    }
+    async downloadById(id: string) {
+      const sep = id.indexOf(':');
+      const projectId = sep === -1 ? id : id.slice(0, sep);
+      const filePath = sep === -1 ? '' : id.slice(sep + 1);
+      return this.downloadFile(projectId, filePath);
+    }
     async uploadFile(projectId: string, _name: string, filePath: string, _mime: string, content: Buffer) {
       state.uploads.push({ projectId, path: filePath, content });
     }
@@ -153,7 +170,7 @@ async function pollFeaturePullOperation(table: Map<string, Handler>, operationId
 }
 
 describe('project-sync route contract', () => {
-  beforeEach(() => { state.projects = []; state.origins = []; state.mediaFiles = {}; state.uploads = []; state.deletes = []; state.appUpserts = []; state.pipelineApps = []; state.failDownloads = new Set(); state.downloads = []; state.sessionOpens = []; state.failAppUpsert = false; state.history = []; state.confluenceCreds = null; state.confluenceFetch = null; state.confluenceRequests = []; });
+  beforeEach(() => { state.projects = []; state.origins = []; state.mediaFiles = {}; state.uploads = []; state.deletes = []; state.appUpserts = []; state.pipelineApps = []; state.failDownloads = new Set(); state.downloads = []; state.sessionOpens = []; state.listCalls = []; state.failAppUpsert = false; state.history = []; state.confluenceCreds = null; state.confluenceFetch = null; state.confluenceRequests = []; });
 
   it('filters origins to visible rows and supports the Feature App filter', async () => {
     state.origins = [
@@ -210,7 +227,7 @@ describe('project-sync route contract', () => {
       state.mediaFiles = { 'shared-app': [{ path: 'app.json', content: JSON.stringify({ kind: 'app', name: 'Shared App' }) }] };
       const table = handlers(root);
       const planned = await call(table.get('POST /api/project-sync/plan')!, {
-        direction: 'pull', scope: { kind: 'app', projectId: 'local-app' }, origin: { mode: 'existing', originId: 'shared-app' },
+        direction: 'pull', scope: { kind: 'app', projectId: 'local-app' }, origin: { mode: 'existing', originId: 'shared-app' }, pullMode: 'work',
       });
       state.failAppUpsert = true;
       await expect(call(table.get('POST /api/project-sync/apply')!, { planId: planned.body.data.planId })).rejects.toThrow('app upsert failed');
@@ -366,7 +383,7 @@ describe('project-sync route contract', () => {
       await fs.writeFile(path.join(root, 'local-app', '_studio', 'project-sync-mapping.json'), JSON.stringify({ schemaVersion: 1, localId: 'local-app', originId: 'shared-app' }));
       const table = handlers(root);
       const planned = await call(table.get('POST /api/project-sync/feature-pulls/plan')!, {
-        localAppId: 'local-app', originAppId: 'shared-app', originFeatureIds: ['feature-a', 'feature-b'],
+        localAppId: 'local-app', originAppId: 'shared-app', originFeatureIds: ['feature-a', 'feature-b'], pullMode: 'work',
       });
       expect(planned.status).toBe(200);
       expect(planned.body.data.features).toEqual([
@@ -405,7 +422,7 @@ describe('project-sync route contract', () => {
       // the existing mapped local id.
       state.mediaFiles['feature-a'] = state.mediaFiles['feature-a']!.filter((file) => file.path !== 'outputs/a.md');
       const updatePlan = await call(table.get('POST /api/project-sync/feature-pulls/plan')!, {
-        localAppId: 'local-app', originAppId: 'shared-app', originFeatureIds: ['feature-a'],
+        localAppId: 'local-app', originAppId: 'shared-app', originFeatureIds: ['feature-a'], pullMode: 'work',
       });
       expect(updatePlan.body.data.features[0]).toMatchObject({ mode: 'update', localId: 'feature-a' });
       expect(updatePlan.body.data.features[0].entries).toEqual(expect.arrayContaining([expect.objectContaining({ path: 'feature/outputs/a.md', change: 'deleted', resolution: 'skip' })]));
@@ -437,7 +454,7 @@ describe('project-sync route contract', () => {
       await fs.mkdir(path.join(root, 'local-app', '_studio'), { recursive: true });
       await fs.writeFile(path.join(root, 'local-app', '_studio', 'project-sync-mapping.json'), JSON.stringify({ schemaVersion: 1, localId: 'local-app', originId: 'shared-app' }));
       const table = handlers(root);
-      const planned = await call(table.get('POST /api/project-sync/feature-pulls/plan')!, { localAppId: 'local-app', originAppId: 'shared-app', originFeatureIds: ['feature-a', 'feature-b'] });
+      const planned = await call(table.get('POST /api/project-sync/feature-pulls/plan')!, { localAppId: 'local-app', originAppId: 'shared-app', originFeatureIds: ['feature-a', 'feature-b'], pullMode: 'work' });
       state.failDownloads.add('feature-b:b.md');
       const started = await call(table.get('POST /api/project-sync/feature-pulls/operations')!, { planId: planned.body.data.planId });
       const partial = await pollFeaturePullOperation(table, started.body.data.operationId);
@@ -594,6 +611,7 @@ describe('project-sync route contract', () => {
         direction: 'pull',
         scope: { kind: 'app', projectId: 'local-app' },
         origin: { mode: 'existing', originId: 'shared-app' },
+        pullMode: 'work',
       });
 
       expect(planned.status).toBe(200);
@@ -663,7 +681,7 @@ describe('project-sync route contract', () => {
       ] };
       const table = handlers(root);
       const planned = await call(table.get('POST /api/project-sync/plan')!, {
-        direction: 'pull', scope: { kind: 'app', projectId: 'local-app' }, origin: { mode: 'existing', originId: 'shared-app' },
+        direction: 'pull', scope: { kind: 'app', projectId: 'local-app' }, origin: { mode: 'existing', originId: 'shared-app' }, pullMode: 'work',
       });
       expect(planned.status).toBe(200);
       const applied = await call(table.get('POST /api/project-sync/apply')!, { planId: planned.body.data.planId });
@@ -875,7 +893,7 @@ describe('project-sync route contract', () => {
       await fs.writeFile(path.join(root, 'local-app', '_studio', 'project-sync-mapping.json'), JSON.stringify({ schemaVersion: 1, localId: 'local-app', originId: 'shared-app' }));
       const table = handlers(root);
       const planned = await call(table.get('POST /api/project-sync/feature-pulls/plan')!, {
-        localAppId: 'local-app', originAppId: 'shared-app', originFeatureIds: ['shared-feature'],
+        localAppId: 'local-app', originAppId: 'shared-app', originFeatureIds: ['shared-feature'], pullMode: 'work',
       });
       expect(planned.status).toBe(200);
       const started = await call(table.get('POST /api/project-sync/feature-pulls/operations')!, { planId: planned.body.data.planId });
@@ -951,7 +969,7 @@ describe('project-sync route contract', () => {
       await fs.writeFile(path.join(root, 'local-app', '_studio', 'project-sync-mapping.json'), JSON.stringify({ schemaVersion: 1, localId: 'local-app', originId: 'shared-app' }));
       const table = handlers(root);
       const planned = await call(table.get('POST /api/project-sync/feature-pulls/plan')!, {
-        localAppId: 'local-app', originAppId: 'shared-app', originFeatureIds: ['shared-feature'],
+        localAppId: 'local-app', originAppId: 'shared-app', originFeatureIds: ['shared-feature'], pullMode: 'work',
       });
       expect(planned.status).toBe(200);
       const started = await call(table.get('POST /api/project-sync/feature-pulls/operations')!, { planId: planned.body.data.planId });
@@ -1020,7 +1038,7 @@ describe('project-sync route contract', () => {
       await fs.writeFile(path.join(root, 'local-app', '_studio', 'project-sync-mapping.json'), JSON.stringify({ schemaVersion: 1, localId: 'local-app', originId: 'shared-app' }));
       const table = handlers(root);
       const planned = await call(table.get('POST /api/project-sync/feature-pulls/plan')!, {
-        localAppId: 'local-app', originAppId: 'shared-app', originFeatureIds: ['shared-feature'],
+        localAppId: 'local-app', originAppId: 'shared-app', originFeatureIds: ['shared-feature'], pullMode: 'work',
       });
       expect(planned.status).toBe(200);
       const started = await call(table.get('POST /api/project-sync/feature-pulls/operations')!, { planId: planned.body.data.planId });
@@ -1180,7 +1198,7 @@ describe('project-sync route contract', () => {
       await fs.mkdir(path.join(root, 'local-app', '_studio'), { recursive: true });
       await fs.writeFile(path.join(root, 'local-app', '_studio', 'project-sync-mapping.json'), JSON.stringify({ schemaVersion: 1, localId: 'local-app', originId: 'shared-app' }));
       const batch = handlers(root);
-      const created = await call(batch.get('POST /api/project-sync/feature-pulls/plan')!, { localAppId: 'local-app', originAppId: 'shared-app', originFeatureIds: ['feature-a'] });
+      const created = await call(batch.get('POST /api/project-sync/feature-pulls/plan')!, { localAppId: 'local-app', originAppId: 'shared-app', originFeatureIds: ['feature-a'], pullMode: 'work' });
       expect(created.body.data.features[0]).toMatchObject({ mode: 'create', localId: 'feature-a' });
       const createdOp = await call(batch.get('POST /api/project-sync/feature-pulls/operations')!, { planId: created.body.data.planId });
       const createdDone = await pollFeaturePullOperation(batch, createdOp.body.data.operationId);
@@ -1190,7 +1208,7 @@ describe('project-sync route contract', () => {
 
       state.history = [];
       state.mediaFiles['feature-a']![1] = { path: 'outputs/a.md', content: 'A2' };
-      const updated = await call(batch.get('POST /api/project-sync/feature-pulls/plan')!, { localAppId: 'local-app', originAppId: 'shared-app', originFeatureIds: ['feature-a'] });
+      const updated = await call(batch.get('POST /api/project-sync/feature-pulls/plan')!, { localAppId: 'local-app', originAppId: 'shared-app', originFeatureIds: ['feature-a'], pullMode: 'work' });
       expect(updated.body.data.features[0]).toMatchObject({ mode: 'update', localId: 'feature-a' });
       const updatedOp = await call(batch.get('POST /api/project-sync/feature-pulls/operations')!, { planId: updated.body.data.planId });
       const updatedDone = await pollFeaturePullOperation(batch, updatedOp.body.data.operationId);
@@ -1271,14 +1289,14 @@ describe('project-sync route contract', () => {
       await fs.mkdir(path.join(root, 'local-app', '_studio'), { recursive: true });
       await fs.writeFile(path.join(root, 'local-app', '_studio', 'project-sync-mapping.json'), JSON.stringify({ schemaVersion: 1, localId: 'local-app', originId: 'shared-app' }));
       const table = handlers(root);
-      const created = await call(table.get('POST /api/project-sync/feature-pulls/plan')!, { localAppId: 'local-app', originAppId: 'shared-app', originFeatureIds: ['feature-a'] });
+      const created = await call(table.get('POST /api/project-sync/feature-pulls/plan')!, { localAppId: 'local-app', originAppId: 'shared-app', originFeatureIds: ['feature-a'], pullMode: 'work' });
       const createdOp = await call(table.get('POST /api/project-sync/feature-pulls/operations')!, { planId: created.body.data.planId });
       expect((await pollFeaturePullOperation(table, createdOp.body.data.operationId)).body.data.result.state).toBe('succeeded');
 
       // Owner produces a local-only output (not pushed yet); colleague adds a new remote file.
       await fs.writeFile(path.join(root, 'feature-a', 'outputs', 'local-only.md'), 'mine');
       state.mediaFiles['feature-a']!.push({ path: 'outputs/new.md', content: 'theirs' });
-      const updated = await call(table.get('POST /api/project-sync/feature-pulls/plan')!, { localAppId: 'local-app', originAppId: 'shared-app', originFeatureIds: ['feature-a'] });
+      const updated = await call(table.get('POST /api/project-sync/feature-pulls/plan')!, { localAppId: 'local-app', originAppId: 'shared-app', originFeatureIds: ['feature-a'], pullMode: 'work' });
       expect(updated.body.data.features[0]).toMatchObject({ mode: 'update', localId: 'feature-a' });
       expect(updated.body.data.features[0].entries).toEqual(expect.arrayContaining([
         expect.objectContaining({ path: 'feature/outputs/local-only.md', change: 'deleted', resolution: 'skip' }),
@@ -1321,7 +1339,7 @@ describe('project-sync route contract', () => {
       await fs.mkdir(path.join(root, 'local-app', '_studio'), { recursive: true });
       await fs.writeFile(path.join(root, 'local-app', '_studio', 'project-sync-mapping.json'), JSON.stringify({ schemaVersion: 1, localId: 'local-app', originId: 'shared-app' }));
       const table = handlers(root);
-      const planned = await call(table.get('POST /api/project-sync/feature-pulls/plan')!, { localAppId: 'local-app', originAppId: 'shared-app', originFeatureIds: ['feature-a', 'feature-b'] });
+      const planned = await call(table.get('POST /api/project-sync/feature-pulls/plan')!, { localAppId: 'local-app', originAppId: 'shared-app', originFeatureIds: ['feature-a', 'feature-b'], pullMode: 'work' });
       expect(planned.status).toBe(200);
       // Ordinary files carry the LISTING checksum, without any download.
       expect(planned.body.data.features[0].entries.find((entry: any) => entry.path === 'feature/outputs/a.md')).toMatchObject({ change: 'new', origin: { checksum: sha('A') } });
@@ -1362,7 +1380,7 @@ describe('project-sync route contract', () => {
       await fs.mkdir(path.join(root, 'local-app', '_studio'), { recursive: true });
       await fs.writeFile(path.join(root, 'local-app', '_studio', 'project-sync-mapping.json'), JSON.stringify({ schemaVersion: 1, localId: 'local-app', originId: 'shared-app' }));
       const table = handlers(root);
-      const planned = await call(table.get('POST /api/project-sync/feature-pulls/plan')!, { localAppId: 'local-app', originAppId: 'shared-app', originFeatureIds: ['feature-a'] });
+      const planned = await call(table.get('POST /api/project-sync/feature-pulls/plan')!, { localAppId: 'local-app', originAppId: 'shared-app', originFeatureIds: ['feature-a'], pullMode: 'work' });
       expect(planned.status).toBe(200);
       expect(planned.body.data.features[0].entries.find((entry: any) => entry.path === 'feature/outputs/nochk.md')).toMatchObject({ change: 'new', origin: { checksum: sha('NOCHK') } });
       expect(state.downloads).toContain('feature-a:outputs/nochk.md');
@@ -1625,7 +1643,7 @@ describe('project-sync route contract', () => {
         await fs.mkdir(path.join(root, 'local-app', '_studio'), { recursive: true });
         await fs.writeFile(path.join(root, 'local-app', '_studio', 'project-sync-mapping.json'), JSON.stringify({ schemaVersion: 1, localId: 'local-app', originId: 'shared-app' }));
         const table = handlers(root);
-        const planned = await call(table.get('POST /api/project-sync/feature-pulls/plan')!, { localAppId: 'local-app', originAppId: 'shared-app', originFeatureIds: ['feature-a'] });
+        const planned = await call(table.get('POST /api/project-sync/feature-pulls/plan')!, { localAppId: 'local-app', originAppId: 'shared-app', originFeatureIds: ['feature-a'], pullMode: 'work' });
         expect(planned.status).toBe(200);
         const entries = planned.body.data.features[0].entries;
         expect(entries.find((row: any) => row.path === 'feature/outputs/attachments/_sources.json')).toMatchObject({ change: 'new', confluenceGroup: { files: 2, bytes: 7, missing: 2 }, origin: { checksum: sha(featureLedger) } });
@@ -1663,7 +1681,7 @@ describe('project-sync route contract', () => {
         // Second batch PLAN for the now-mapped Feature: a.png matches its ledger (no entry, not read),
         // gone.png is still missing → the ledger remains actionable; ctx.png is present → bound Context ledger unchanged.
         state.confluenceRequests = [];
-        const replanned = await call(table.get('POST /api/project-sync/feature-pulls/plan')!, { localAppId: 'local-app', originAppId: 'shared-app', originFeatureIds: ['feature-a'] });
+        const replanned = await call(table.get('POST /api/project-sync/feature-pulls/plan')!, { localAppId: 'local-app', originAppId: 'shared-app', originFeatureIds: ['feature-a'], pullMode: 'work' });
         expect(replanned.status).toBe(200);
         const again = replanned.body.data.features[0].entries;
         expect(replanned.body.data.features[0].mode).toBe('update');
@@ -1680,6 +1698,317 @@ describe('project-sync route contract', () => {
         expect(await fs.readFile(path.join(root, 'feature-a', 'outputs', 'attachments', 'a.png'), 'utf8')).toBe('AAA');
       } finally {
         await fs.rm(root, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe('pull view mode', () => {
+    async function seedAppContext(seed: string) {
+      const { createAppContextVersion } = await import('../src/app-context-version.js');
+      await fs.mkdir(path.join(seed, 'shared-app', 'docs', 'guide'), { recursive: true });
+      await fs.writeFile(path.join(seed, 'shared-app', 'docs', '_manifest.json'), JSON.stringify({ version: 1, pages: [] }));
+      await fs.writeFile(path.join(seed, 'shared-app', 'docs', 'guide', 'page.md'), '# Trang 1\n');
+      const result = await createAppContextVersion({ projectsDir: seed, appId: 'shared-app', appName: 'Shared App', designSystemId: null });
+      const manifest = (result as { manifest: { contextVersion: string; contentDigest: string } }).manifest;
+      const packaged: Array<{ path: string; checksum: string; content: Buffer }> = [];
+      const walk = async (dir: string, rel: string) => {
+        for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
+          const childRel = rel ? `${rel}/${entry.name}` : entry.name;
+          if (entry.isDirectory()) await walk(path.join(dir, entry.name), childRel);
+          else {
+            const content = await fs.readFile(path.join(dir, entry.name));
+            packaged.push({ path: childRel, checksum: createHash('sha256').update(content).digest('hex'), content });
+          }
+        }
+      };
+      await walk(path.join(seed, 'shared-app', 'context'), 'context');
+      return { manifest, packaged };
+    }
+
+    it('Feature pull in view mode transfers only the Feature outputs and never touches the App context', async () => {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), 'od-feature-pull-view-'));
+      const seed = await fs.mkdtemp(path.join(os.tmpdir(), 'od-feature-pull-view-seed-'));
+      try {
+        const { manifest, packaged } = await seedAppContext(seed);
+        state.pipelineApps = [{ id: 'local-app', name: 'Local App' }];
+        state.origins = [
+          { projectId: 'shared-app', name: 'Shared App', isApp: true, inMedia: true, visibility: 'visible' },
+          { projectId: 'shared-feature', name: 'Checkout', isApp: false, appId: 'shared-app', inMedia: true, visibility: 'visible' },
+        ];
+        const featureControl = JSON.stringify({
+          name: 'Checkout', appId: 'shared-app',
+          appContextBinding: { appId: 'shared-app', contextVersion: manifest.contextVersion, contentDigest: manifest.contentDigest },
+          appPool: { appId: 'shared-app', paths: ['guide/page.md'] },
+        });
+        state.mediaFiles = {
+          'shared-app': [{ path: 'app.json', content: JSON.stringify({ name: 'Shared App' }) }, ...packaged],
+          'shared-feature': [{ path: 'project.json', content: featureControl }, { path: 'outputs/spec.md', content: 'ok' }],
+        };
+        await fs.mkdir(path.join(root, 'local-app', '_studio'), { recursive: true });
+        await fs.writeFile(path.join(root, 'local-app', '_studio', 'project-sync-mapping.json'), JSON.stringify({ schemaVersion: 1, localId: 'local-app', originId: 'shared-app' }));
+        const table = handlers(root);
+        const planned = await call(table.get('POST /api/project-sync/feature-pulls/plan')!, {
+          localAppId: 'local-app', originAppId: 'shared-app', originFeatureIds: ['shared-feature'],
+        });
+        expect(planned.status).toBe(200);
+        expect(planned.body.data.pullMode).toBe('view');
+        expect(planned.body.data.features[0].entries.some((entry: any) => entry.path.startsWith('bound-context/'))).toBe(false);
+        expect(state.sessionOpens.includes('shared-app')).toBe(false);
+
+        const started = await call(table.get('POST /api/project-sync/feature-pulls/operations')!, { planId: planned.body.data.planId });
+        const done = await pollFeaturePullOperation(table, started.body.data.operationId);
+        expect(done.body.data.result).toMatchObject({ state: 'succeeded' });
+
+        const localId = state.projects[0]!.id as string;
+        expect(await fs.readFile(path.join(root, localId, 'outputs', 'spec.md'), 'utf8')).toBe('ok');
+        expect(await fs.readFile(path.join(root, localId, 'docs-review', 'docs-feature', 'guide', 'page.md'), 'utf8')).toBe('# Trang 1\n');
+        await expect(fs.stat(path.join(root, 'local-app', 'context', 'versions', manifest.contextVersion))).rejects.toMatchObject({ code: 'ENOENT' });
+        expect((state.projects[0]!.metadata as { appContextBinding?: unknown }).appContextBinding).toBeUndefined();
+        expect((state.projects[0]!.metadata as { runAllConfig?: { appPool?: unknown } }).runAllConfig?.appPool).toBeUndefined();
+        expect((state.projects[0]!.metadata as any).studioConfig.projectSyncMapping.pullMode).toBe('view');
+        // amend_view_mode_no_listing: even the ticked-page fetch (the trang
+        // tick loop) must resolve the App's docs page via findFileByPath +
+        // downloadById — never opening/listing the origin App's folder. The
+        // Feature's own origin folder IS listed/opened (it isn't the App).
+        expect(state.sessionOpens).not.toContain('shared-app');
+        expect(state.listCalls).not.toContain('shared-app');
+        expect(state.sessionOpens).toContain('shared-feature');
+
+        const status = await call(table.get('POST /api/project-sync/status')!, {
+          scopes: [{ kind: 'feature', projectId: localId, appId: 'local-app' }],
+        });
+        expect(status.body.data.results[0]).toMatchObject({ status: 'up_to_date', pullMode: 'view' });
+      } finally {
+        await fs.rm(root, { recursive: true, force: true });
+        await fs.rm(seed, { recursive: true, force: true });
+      }
+    });
+
+    it('Feature pull in work mode keeps the 0.8.171 behaviour and marks the mapping work', async () => {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), 'od-feature-pull-work-'));
+      const seed = await fs.mkdtemp(path.join(os.tmpdir(), 'od-feature-pull-work-seed-'));
+      try {
+        const { manifest, packaged } = await seedAppContext(seed);
+        state.pipelineApps = [{ id: 'local-app', name: 'Local App' }];
+        state.origins = [
+          { projectId: 'shared-app', name: 'Shared App', isApp: true, inMedia: true, visibility: 'visible' },
+          { projectId: 'shared-feature', name: 'Checkout', isApp: false, appId: 'shared-app', inMedia: true, visibility: 'visible' },
+        ];
+        const featureControl = JSON.stringify({
+          name: 'Checkout', appId: 'shared-app',
+          appContextBinding: { appId: 'shared-app', contextVersion: manifest.contextVersion, contentDigest: manifest.contentDigest },
+          appPool: { appId: 'shared-app', paths: ['guide/page.md'] },
+        });
+        state.mediaFiles = {
+          'shared-app': [{ path: 'app.json', content: JSON.stringify({ name: 'Shared App' }) }, ...packaged],
+          'shared-feature': [{ path: 'project.json', content: featureControl }, { path: 'outputs/spec.md', content: 'ok' }],
+        };
+        await fs.mkdir(path.join(root, 'local-app', '_studio'), { recursive: true });
+        await fs.writeFile(path.join(root, 'local-app', '_studio', 'project-sync-mapping.json'), JSON.stringify({ schemaVersion: 1, localId: 'local-app', originId: 'shared-app' }));
+        const table = handlers(root);
+        const planned = await call(table.get('POST /api/project-sync/feature-pulls/plan')!, {
+          localAppId: 'local-app', originAppId: 'shared-app', originFeatureIds: ['shared-feature'], pullMode: 'work',
+        });
+        expect(planned.status).toBe(200);
+        expect(planned.body.data.pullMode).toBe('work');
+        const started = await call(table.get('POST /api/project-sync/feature-pulls/operations')!, { planId: planned.body.data.planId });
+        const done = await pollFeaturePullOperation(table, started.body.data.operationId);
+        expect(done.body.data.result).toMatchObject({ state: 'succeeded' });
+
+        const localId = state.projects[0]!.id as string;
+        expect(await fs.readFile(path.join(root, 'local-app', 'context', 'versions', manifest.contextVersion, 'files', 'docs', 'guide', 'page.md'), 'utf8')).toBe('# Trang 1\n');
+        const dr = path.join(root, localId, 'docs-review');
+        expect(await fs.readFile(path.join(dr, 'docs-feature', 'guide', 'page.md'), 'utf8')).toBe('# Trang 1\n');
+        expect(await fs.readFile(path.join(dr, 'docs-app', 'guide', 'page.md'), 'utf8')).toBe('# Trang 1\n');
+        expect((state.projects[0]!.metadata as any).appContextBinding).toMatchObject({ appId: 'local-app', contextVersion: manifest.contextVersion });
+        expect((state.projects[0]!.metadata as any).runAllConfig.appPool).toEqual({ appId: 'local-app', paths: ['guide/page.md'] });
+        expect((state.projects[0]!.metadata as any).studioConfig.projectSyncMapping.pullMode).toBe('work');
+      } finally {
+        await fs.rm(root, { recursive: true, force: true });
+        await fs.rm(seed, { recursive: true, force: true });
+      }
+    });
+
+    it('refuses a Push PLAN for a view-only Feature and App but keeps PULL/STATUS working', async () => {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), 'od-view-only-push-'));
+      try {
+        state.projects = [{
+          id: 'local-feature', name: 'Checkout',
+          metadata: {
+            studioConfig: { appId: 'local-app', projectSyncMapping: { schemaVersion: 1, localId: 'local-feature', originId: 'feature--f', originAppId: 'app--x', mappedAt: 'now', pullMode: 'view' } },
+          },
+        }];
+        state.origins = [
+          { projectId: 'app--x', name: 'X', isApp: true, inMedia: true, visibility: 'visible' },
+          { projectId: 'feature--f', name: 'Checkout', isApp: false, appId: 'app--x', inMedia: true, visibility: 'visible' },
+        ];
+        state.mediaFiles = { 'app--x': [], 'feature--f': [] };
+        const table = handlers(root);
+        const featurePush = await call(table.get('POST /api/project-sync/plan')!, {
+          direction: 'push', scope: { kind: 'feature', projectId: 'local-feature', appId: 'local-app' },
+        });
+        expect(featurePush.status).toBe(409);
+        expect(featurePush.body.error.code).toBe('PROJECT_SYNC_VIEW_ONLY');
+
+        state.pipelineApps = [{ id: 'local-app', name: 'Local App' }];
+        await fs.mkdir(path.join(root, 'local-app', '_studio'), { recursive: true });
+        await fs.writeFile(path.join(root, 'local-app', '_studio', 'project-sync-mapping.json'), JSON.stringify({ schemaVersion: 1, localId: 'local-app', originId: 'app--x', pullMode: 'view' }));
+        const appPush = await call(table.get('POST /api/project-sync/plan')!, {
+          direction: 'push', scope: { kind: 'app', projectId: 'local-app' },
+        });
+        expect(appPush.status).toBe(409);
+        expect(appPush.body.error.code).toBe('PROJECT_SYNC_VIEW_ONLY');
+
+        const pull = await call(table.get('POST /api/project-sync/plan')!, {
+          direction: 'pull', scope: { kind: 'feature', projectId: 'local-feature', appId: 'local-app' },
+        });
+        expect(pull.status).toBe(200);
+
+        const status = await call(table.get('POST /api/project-sync/status')!, { scopes: [{ kind: 'feature', projectId: 'local-feature', appId: 'local-app' }] });
+        expect(status.status).toBe(200);
+        expect(status.body.data.results[0].status).not.toBe('unavailable');
+      } finally {
+        await fs.rm(root, { recursive: true, force: true });
+      }
+    });
+
+    it('mapping without pullMode still pushes', async () => {
+      state.pipelineApps = [{ id: 'local-app', name: 'Local App' }];
+      state.projects = [{
+        id: 'local-feature', name: 'Checkout',
+        metadata: { studioConfig: { appId: 'local-app', projectSyncMapping: { schemaVersion: 1, localId: 'local-feature', originId: 'feature--f', originAppId: 'app--x', mappedAt: 'now' } } },
+      }];
+      state.origins = [
+        { projectId: 'app--x', name: 'X', isApp: true, inMedia: true, visibility: 'visible' },
+        { projectId: 'feature--f', name: 'Checkout', isApp: false, appId: 'app--x', inMedia: true, visibility: 'visible' },
+      ];
+      state.mediaFiles = { 'app--x': [], 'feature--f': [] };
+      const push = await call(handlers().get('POST /api/project-sync/plan')!, {
+        direction: 'push', scope: { kind: 'feature', projectId: 'local-feature', appId: 'local-app' },
+      });
+      expect(push.status).toBe(200);
+    });
+
+    it('App pull in view mode installs only app.json, the pipeline_apps row and a view mapping', async () => {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), 'od-app-pull-view-'));
+      try {
+        state.origins = [{ projectId: 'shared-app', name: 'Shared App', isApp: true, inMedia: true, visibility: 'visible' }];
+        state.mediaFiles = { 'shared-app': [
+          { path: 'app.json', content: JSON.stringify({ kind: 'app', name: 'Shared App' }) },
+          { path: 'context/current.json', content: JSON.stringify({ schemaVersion: 1, appId: 'shared-app', contextVersion: 'v1' }) },
+          { path: 'context/versions/v1/manifest.json', content: '{"contextVersion":"v1"}' },
+          { path: 'context/versions/v1/files/app-context/x.md', content: 'hello' },
+        ] };
+        const table = handlers(root);
+        const planned = await call(table.get('POST /api/project-sync/plan')!, {
+          direction: 'pull', scope: { kind: 'app', projectId: 'local-app' }, origin: { mode: 'existing', originId: 'shared-app' },
+        });
+        expect(planned.status).toBe(200);
+        expect(planned.body.data.pullMode).toBe('view');
+        expect(planned.body.data.entries.map((entry: any) => entry.path)).toEqual(['app/app.json']);
+        // View mode must never pull the full remote listing — with a large
+        // Context history this is thousands of rows just to filter one file.
+        // downloadFile()/openFolderSession() both list-then-serve internally,
+        // so PLAN must resolve app.json via findFileByPath (no listing) and
+        // never open a MediaFolderSession on the App's origin at all.
+        expect(state.listCalls).not.toContain('shared-app');
+        expect(state.sessionOpens).not.toContain('shared-app');
+
+        const applied = await call(table.get('POST /api/project-sync/apply')!, { planId: planned.body.data.planId });
+        expect(applied.status).toBe(200);
+        expect(applied.body.data.stale).toEqual([]);
+        expect(state.pipelineApps).toHaveLength(1);
+        expect(JSON.parse(await fs.readFile(path.join(root, 'local-app', '_studio', 'project-sync-mapping.json'), 'utf8'))).toMatchObject({ pullMode: 'view' });
+        await expect(fs.stat(path.join(root, 'local-app', 'context'))).rejects.toMatchObject({ code: 'ENOENT' });
+        expect(state.listCalls).not.toContain('shared-app');
+        expect(state.sessionOpens).not.toContain('shared-app');
+
+        const status = await call(table.get('POST /api/project-sync/status')!, { scopes: [{ kind: 'app', projectId: 'local-app' }] });
+        expect(status.body.data.results[0]).toMatchObject({ status: 'up_to_date', pullMode: 'view' });
+        expect(state.listCalls).not.toContain('shared-app');
+        expect(state.sessionOpens).not.toContain('shared-app');
+      } finally {
+        await fs.rm(root, { recursive: true, force: true });
+      }
+    });
+
+    it('refuses a work Feature pull under a view-only App', async () => {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), 'od-feature-pull-app-view-only-'));
+      try {
+        state.pipelineApps = [{ id: 'local-app', name: 'Local App' }];
+        state.origins = [
+          { projectId: 'shared-app', name: 'Shared App', isApp: true, inMedia: true, visibility: 'visible' },
+          { projectId: 'shared-feature', name: 'Checkout', isApp: false, appId: 'shared-app', inMedia: true, visibility: 'visible' },
+        ];
+        state.mediaFiles = {
+          'shared-app': [{ path: 'app.json', content: JSON.stringify({ name: 'Shared App' }) }],
+          'shared-feature': [{ path: 'project.json', content: JSON.stringify({ name: 'Checkout', appId: 'shared-app' }) }],
+        };
+        await fs.mkdir(path.join(root, 'local-app', '_studio'), { recursive: true });
+        await fs.writeFile(path.join(root, 'local-app', '_studio', 'project-sync-mapping.json'), JSON.stringify({ schemaVersion: 1, localId: 'local-app', originId: 'shared-app', pullMode: 'view' }));
+        const table = handlers(root);
+        const workPlan = await call(table.get('POST /api/project-sync/feature-pulls/plan')!, {
+          localAppId: 'local-app', originAppId: 'shared-app', originFeatureIds: ['shared-feature'], pullMode: 'work',
+        });
+        expect(workPlan.status).toBe(409);
+        expect(workPlan.body.error.code).toBe('FEATURE_PULL_APP_VIEW_ONLY');
+
+        const viewPlan = await call(table.get('POST /api/project-sync/feature-pulls/plan')!, {
+          localAppId: 'local-app', originAppId: 'shared-app', originFeatureIds: ['shared-feature'],
+        });
+        expect(viewPlan.status).toBe(200);
+      } finally {
+        await fs.rm(root, { recursive: true, force: true });
+      }
+    });
+
+    it('upgrading a view Feature to work installs the Context and rewrites the mapping', async () => {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), 'od-feature-pull-upgrade-'));
+      const seed = await fs.mkdtemp(path.join(os.tmpdir(), 'od-feature-pull-upgrade-seed-'));
+      try {
+        const { manifest, packaged } = await seedAppContext(seed);
+        state.pipelineApps = [{ id: 'local-app', name: 'Local App' }];
+        state.origins = [
+          { projectId: 'shared-app', name: 'Shared App', isApp: true, inMedia: true, visibility: 'visible' },
+          { projectId: 'shared-feature', name: 'Checkout', isApp: false, appId: 'shared-app', inMedia: true, visibility: 'visible' },
+        ];
+        const featureControl = JSON.stringify({
+          name: 'Checkout', appId: 'shared-app',
+          appContextBinding: { appId: 'shared-app', contextVersion: manifest.contextVersion, contentDigest: manifest.contentDigest },
+          appPool: { appId: 'shared-app', paths: ['guide/page.md'] },
+        });
+        state.mediaFiles = {
+          'shared-app': [{ path: 'app.json', content: JSON.stringify({ name: 'Shared App' }) }, ...packaged],
+          'shared-feature': [{ path: 'project.json', content: featureControl }, { path: 'outputs/spec.md', content: 'ok' }],
+        };
+        await fs.mkdir(path.join(root, 'local-app', '_studio'), { recursive: true });
+        await fs.writeFile(path.join(root, 'local-app', '_studio', 'project-sync-mapping.json'), JSON.stringify({ schemaVersion: 1, localId: 'local-app', originId: 'shared-app', pullMode: 'work' }));
+        const table = handlers(root);
+
+        const viewPlanned = await call(table.get('POST /api/project-sync/feature-pulls/plan')!, {
+          localAppId: 'local-app', originAppId: 'shared-app', originFeatureIds: ['shared-feature'],
+        });
+        expect(viewPlanned.status).toBe(200);
+        const viewStarted = await call(table.get('POST /api/project-sync/feature-pulls/operations')!, { planId: viewPlanned.body.data.planId });
+        await pollFeaturePullOperation(table, viewStarted.body.data.operationId);
+        expect((state.projects[0]!.metadata as any).studioConfig.projectSyncMapping.pullMode).toBe('view');
+        await expect(fs.stat(path.join(root, 'local-app', 'context', 'versions', manifest.contextVersion))).rejects.toMatchObject({ code: 'ENOENT' });
+
+        const workPlanned = await call(table.get('POST /api/project-sync/feature-pulls/plan')!, {
+          localAppId: 'local-app', originAppId: 'shared-app', originFeatureIds: ['shared-feature'], pullMode: 'work',
+        });
+        expect(workPlanned.status).toBe(200);
+        expect(workPlanned.body.data.features[0].mode).toBe('update');
+        const workStarted = await call(table.get('POST /api/project-sync/feature-pulls/operations')!, { planId: workPlanned.body.data.planId });
+        const workDone = await pollFeaturePullOperation(table, workStarted.body.data.operationId);
+        expect(workDone.body.data.result).toMatchObject({ state: 'succeeded' });
+
+        expect(await fs.readFile(path.join(root, 'local-app', 'context', 'versions', manifest.contextVersion, 'files', 'docs', 'guide', 'page.md'), 'utf8')).toBe('# Trang 1\n');
+        expect((state.projects[0]!.metadata as any).appContextBinding).toMatchObject({ appId: 'local-app', contextVersion: manifest.contextVersion });
+        expect((state.projects[0]!.metadata as any).studioConfig.projectSyncMapping.pullMode).toBe('work');
+      } finally {
+        await fs.rm(root, { recursive: true, force: true });
+        await fs.rm(seed, { recursive: true, force: true });
       }
     });
   });

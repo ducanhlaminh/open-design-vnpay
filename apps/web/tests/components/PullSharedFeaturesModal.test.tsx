@@ -61,7 +61,7 @@ const origins: ProjectSyncOrigin[] = [
 ];
 
 const plan: ProjectSyncFeaturePullBatchPlan = {
-  planId: 'batch-1', createdAt: '', localAppId: 'local-app', originAppId: 'remote-app', totalItems: 4,
+  planId: 'batch-1', createdAt: '', localAppId: 'local-app', originAppId: 'remote-app', totalItems: 4, pullMode: 'view',
   features: [
     {
       originId: 'f-a', name: 'Feature A', localId: 'local-f-a', mode: 'update',
@@ -135,7 +135,7 @@ describe('PullSharedFeaturesModal', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Lấy 2 tính năng' }));
 
     await waitFor(() => expect(planMock).toHaveBeenCalledWith({
-      localAppId: 'local-app', originAppId: 'remote-app', originFeatureIds: ['f-a', 'f-b'],
+      localAppId: 'local-app', originAppId: 'remote-app', originFeatureIds: ['f-a', 'f-b'], pullMode: 'view',
     }));
     // Per-row: đếm CHỈ entries output có thay đổi, breakdown theo stage; entry
     // context/binding không lẫn vào con số output.
@@ -358,5 +358,43 @@ describe('PullSharedFeaturesModal', () => {
 
     await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('mất quá nhiều thời gian'));
     await waitFor(() => expect((screen.getByRole('button', { name: 'Lấy 2 tính năng' }) as HTMLButtonElement).disabled).toBe(false));
+  });
+
+  it('defaults to "Chỉ xem", lets the user switch to "Để chạy tiếp" and sends the chosen mode to plan', async () => {
+    listMock.mockResolvedValue(origins);
+    planMock.mockResolvedValue({ ...plan, pullMode: 'work' });
+    createMock.mockResolvedValue(operation({
+      state: 'succeeded', phase: 'finalizing', progress: { completedItems: 4, totalItems: 4, percent: 100 }, result: result(),
+    }));
+    render(
+      <PullSharedFeaturesModal
+        localAppId="local-app" remoteAppOriginId="remote-app" preselectedOriginIds={['f-a', 'f-b']}
+        onClose={() => {}} onCompleted={() => {}}
+      />,
+    );
+    await screen.findByText('Feature A');
+    expect((screen.getByRole('radio', { name: /Chỉ xem/ }) as HTMLInputElement).checked).toBe(true);
+
+    fireEvent.click(screen.getByRole('radio', { name: /Để chạy tiếp/ }));
+    expect((screen.getByRole('radio', { name: /Để chạy tiếp/ }) as HTMLInputElement).checked).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Lấy 2 tính năng' }));
+
+    await waitFor(() => expect(planMock).toHaveBeenCalledWith({
+      localAppId: 'local-app', originAppId: 'remote-app', originFeatureIds: ['f-a', 'f-b'], pullMode: 'work',
+    }));
+  });
+
+  it('disables "Để chạy tiếp" when the App itself was only pulled in view mode', async () => {
+    listMock.mockResolvedValue(origins);
+    render(
+      <PullSharedFeaturesModal
+        localAppId="local-app" remoteAppOriginId="remote-app" preselectedOriginIds={['f-a', 'f-b']}
+        appPullMode="view" onClose={() => {}} onCompleted={() => {}}
+      />,
+    );
+    await screen.findByText('Feature A');
+    const workOption = screen.getByRole('radio', { name: /Để chạy tiếp/ }) as HTMLInputElement;
+    expect(workOption.disabled).toBe(true);
+    expect((screen.getByRole('radio', { name: /Chỉ xem/ }) as HTMLInputElement).checked).toBe(true);
   });
 });

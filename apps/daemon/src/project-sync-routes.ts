@@ -23,6 +23,7 @@ import {
   type ProjectSyncOrigin,
   type ProjectSyncOriginSelection,
   type ProjectSyncPlanRequest,
+  type ProjectSyncPullMode,
   type ProjectSyncScope,
   type ProjectSyncScopeStatus,
   type SyncEntitySummary,
@@ -187,6 +188,9 @@ type Unit = {
    * selected by the remote `context/current.json` pointer. App Push retains
    * the full-tree behaviour and never sets this flag. */
   latestAppContextOnly?: boolean;
+  /** App pull/status in Chỉ xem mode: local walk and remote listing both keep
+   * ONLY `app.json` — no Context package is listed, downloaded, or installed. */
+  appShellOnly?: boolean;
   pulledDesignSystemId?: string | null;
   pulledComponentSource?: import('@open-design/contracts').DocsReviewComponentSource;
 };
@@ -239,6 +243,13 @@ export function originIdOf(project: LocalProject): string | null {
   const config = studioConfigOf(project.metadata);
   return config.remoteId ?? config.approvedMapping?.approvedProjectId ?? null;
 }
+/** `null` = no mapping at all (never pulled/pushed) — push must never be
+ * blocked for that case. A mapping without the field reads as `'work'`. */
+function featurePullModeOf(project: LocalProject | null | undefined): ProjectSyncPullMode | null {
+  const mapping = project ? mappingPropertyOf(project) : null;
+  if (!mapping || typeof mapping !== 'object' || Array.isArray(mapping)) return null;
+  return (mapping as Record<string, unknown>).pullMode === 'view' ? 'view' : 'work';
+}
 function originAppIdOf(project: LocalProject): string | null {
   const versioned = versionedMappingOf(project);
   if (versioned?.originAppId) return versioned.originAppId;
@@ -251,19 +262,19 @@ function safeSegment(value: string | null | undefined): value is string {
 function safeRelativePath(value: string): boolean {
   return value.length > 0 && !value.includes('\\') && value.split('/').every((segment) => segment.length > 0 && segment !== '.' && segment !== '..');
 }
-async function readAppMapping(projectsDir: string, appId: string): Promise<{ originId: string } | null> {
+async function readAppMapping(projectsDir: string, appId: string): Promise<{ originId: string; pullMode: ProjectSyncPullMode } | null> {
   if (!safeSegment(appId)) return null;
   try {
     const raw = JSON.parse(await fs.readFile(path.join(projectsDir, appId, LOCAL_MAPPING_PATH), 'utf8')) as Record<string, unknown>;
     return raw.schemaVersion === 1 && raw.localId === appId && typeof raw.originId === 'string' && raw.originId
-      ? { originId: raw.originId }
+      ? { originId: raw.originId, pullMode: raw.pullMode === 'view' ? 'view' : 'work' }
       : null;
   } catch { return null; }
 }
-async function writeAppMapping(projectsDir: string, appId: string, originId: string): Promise<void> {
+async function writeAppMapping(projectsDir: string, appId: string, originId: string, pullMode: ProjectSyncPullMode): Promise<void> {
   const target = path.join(projectsDir, appId, LOCAL_MAPPING_PATH);
   await fs.mkdir(path.dirname(target), { recursive: true });
-  await fs.writeFile(target, `${JSON.stringify({ schemaVersion: 1, localId: appId, originId, mappedAt: new Date().toISOString() }, null, 2)}\n`);
+  await fs.writeFile(target, `${JSON.stringify({ schemaVersion: 1, localId: appId, originId, mappedAt: new Date().toISOString(), pullMode }, null, 2)}\n`);
 }
 function stateOf(summary: ReturnType<typeof emptyTotals>): 'new' | 'unchanged' | 'changed' {
   if (summary.changed) return 'changed';
@@ -464,9 +475,22 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
     const localContentByPath = new Map<string, Buffer>();
     const ledgerItemsByPath = new Map<string, LedgerRef>();
     for (const unit of units) {
-      const remoteFiles = unit.originId ? await media.listFiles(unit.originId).catch(() => []) : [];
+      // Chỉ xem App (appShellOnly): app.json là ứng viên DUY NHẤT trên cả hai
+      // phía (xem includeLatestAppContext bên dưới) — với App có lịch sử
+      // Context lớn (hàng chục nghìn row), liệt kê cả cây origin chỉ để lọc
+      // lấy một file là lãng phí. `findFileByPath` dùng tag-search phía
+      // media-service (không listAllFiles) để giải quyết app.json trực tiếp;
+      // vắng mặt (App chưa từng push) ⇒ coi như remote rỗng, không phải lỗi.
+      const remoteFiles = unit.originId
+        ? unit.appShellOnly
+          ? await media
+              .findFileByPath(unit.originId, 'app.json')
+              .then((file) => (file ? [{ path: 'app.json', checksum: file.checksum, id: file.id }] : []))
+              .catch(() => [])
+          : await media.listFiles(unit.originId).catch(() => [])
+        : [];
       let latestRemoteContextVersion: `v${number}` | null = null;
-      if (unit.latestAppContextOnly && remoteFiles.some((file) => file.path === 'context/current.json')) {
+      if (!unit.appShellOnly && unit.latestAppContextOnly && remoteFiles.some((file) => file.path === 'context/current.json')) {
         try {
           const pointer = JSON.parse((await media.downloadFile(unit.originId, 'context/current.json')).toString('utf8')) as Record<string, unknown>;
           if (typeof pointer.contextVersion === 'string' && /^v[1-9]\d*$/.test(pointer.contextVersion)) {
@@ -478,6 +502,10 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
         }
       }
       const includeLatestAppContext = (rel: string): boolean => {
+        // Chỉ xem App pull/status: the ONLY candidate on either side is
+        // `app.json` — no Context package is ever listed, downloaded, or
+        // walked, on either the local root or the remote listing.
+        if (unit.appShellOnly) return rel === 'app.json';
         if (!unit.latestAppContextOnly) return true;
         if (rel === 'app.json' || rel === 'context/current.json') return true;
         if (!latestRemoteContextVersion) return false;
@@ -636,8 +664,9 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
 
   const planFor = async (request: ProjectSyncPlanRequest, options: { retain?: boolean; origins?: ProjectSyncOrigin[]; statusScope?: boolean } = {}) => {
     const localProject = projects().find((project) => project.id === request.scope.projectId);
+    const appMapping = request.scope.kind === 'app' ? await readAppMapping(ctx.paths.PROJECTS_DIR, request.scope.projectId) : null;
     const mappedOrigin = request.scope.kind === 'app'
-      ? (await readAppMapping(ctx.paths.PROJECTS_DIR, request.scope.projectId))?.originId ?? null
+      ? appMapping?.originId ?? null
       : localProject ? originIdOf(localProject) : null;
     if (!request.origin && !mappedOrigin) {
       const error = new Error('origin mapping is required; choose an existing origin or a new origin id') as Error & { code?: string };
@@ -693,9 +722,18 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
     // Context resolves against the right origin App.
     const unitOrigin = reparentedByPreFixPush && diagnosticOrigin ? { ...diagnosticOrigin, appId: expectedOriginAppId } : diagnosticOrigin;
     const units = await unitsFor(request.scope, defaultOrigin, request.direction === 'pull', unitOrigin, expectedOriginAppId);
+    // Only a Pull request resolves a mode; every other caller of planFor
+    // (Push, STATUS's internal push-shaped diff) reads the mode off the
+    // existing App mapping / Feature metadata instead (see below).
+    const resolvedPullMode: ProjectSyncPullMode | undefined = request.direction === 'pull'
+      ? (request.pullMode === 'work' ? 'work' : 'view')
+      : undefined;
     if (options.statusScope && request.scope.kind === 'app') {
       units.splice(1);
-      if (units[0]) units[0].latestAppContextOnly = true;
+      if (units[0]) {
+        units[0].latestAppContextOnly = true;
+        if ((appMapping?.pullMode ?? 'work') === 'view') units[0].appShellOnly = true;
+      }
     }
     if (request.direction === 'pull' && request.scope.kind === 'app') {
       // App Pull is deliberately a context-only operation. Keep one App unit,
@@ -707,6 +745,9 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
         appUnit.localId = request.scope.projectId;
         appUnit.name = diagnosticOrigin?.name || appUnit.name;
         appUnit.latestAppContextOnly = true;
+        // Chỉ xem: no Context package is even listed — only `app.json` is
+        // ever a candidate on either side.
+        if (resolvedPullMode === 'view') appUnit.appShellOnly = true;
       }
     }
     // App Push sees origin-only Features as `deleted`, which APPLY converts
@@ -720,6 +761,17 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
     // expire at APPLY (`plan baseline changed`). STATUS and the post-apply /
     // post-pull verification passes (retain: false) are read-only and exempt.
     if (request.direction === 'push' && !options.statusScope && options.retain !== false) {
+      const viewOnlyError = () => {
+        const error = new Error('Dự án này được lấy về ở chế độ Chỉ xem — không đẩy lên kho chung được. Lấy đầy đủ (Để chạy tiếp) rồi đẩy lại.') as Error & { code?: string };
+        error.code = 'PROJECT_SYNC_VIEW_ONLY';
+        return error;
+      };
+      if (request.scope.kind === 'app' && appMapping?.pullMode === 'view') throw viewOnlyError();
+      for (const unit of units) {
+        if (unit.isApp || !unit.localId) continue;
+        const project = projects().find((candidate) => candidate.id === unit.localId);
+        if (featurePullModeOf(project) === 'view') throw viewOnlyError();
+      }
       const running: string[] = [];
       for (const unit of units) {
         if (unit.isApp || !unit.localId) continue;
@@ -735,6 +787,7 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
     }
     const files = await snapshot(units, request.direction);
     const built = planProjectSync({ direction: request.direction, scope: request.scope, origin: defaultOrigin, local: files.localFiles, originFiles: files.originFiles });
+    if (resolvedPullMode) built.plan.pullMode = resolvedPullMode;
     const totalsFor = (predicate: (entry: typeof built.plan.entries[number]) => boolean) => {
       const totals = emptyTotals();
       for (const entry of built.plan.entries.filter(predicate)) {
@@ -946,9 +999,13 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
       || new Set(request.originFeatureIds).size !== request.originFeatureIds.length) {
       throw new ProjectSyncFeaturePullPlanError('FEATURE_PULL_INVALID_REQUEST', 'localAppId, originAppId, and unique safe originFeatureIds are required');
     }
+    const requestedPullMode: ProjectSyncPullMode = request.pullMode === 'work' ? 'work' : 'view';
     const origins = await remoteOrigins();
     const localApp = getPipelineApp(db, request.localAppId) as { id: string } | null;
     const appMapping = await readAppMapping(ctx.paths.PROJECTS_DIR, request.localAppId);
+    if (requestedPullMode === 'work' && (appMapping?.pullMode ?? 'work') === 'view') {
+      throw new ProjectSyncFeaturePullPlanError('FEATURE_PULL_APP_VIEW_ONLY', 'Lấy App đầy đủ (Để chạy tiếp) trước khi lấy Feature để chạy tiếp');
+    }
     const localFeatures = projects().filter((project) => appIdOf(project) === request.localAppId);
     const originApp = origins.find((origin) => origin.originId === request.originAppId && origin.kind === 'app') ?? null;
     const executionByOrigin = new Map<string, Omit<BatchExecutionFeature, 'localId' | 'mode'>>();
@@ -968,13 +1025,20 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
       const rawBinding = feature.projectConfig.appContextBinding;
       const contextVersion = rawBinding && typeof rawBinding === 'object' && !Array.isArray(rawBinding) && typeof (rawBinding as Record<string, unknown>).contextVersion === 'string'
         ? (rawBinding as Record<string, unknown>).contextVersion as string : null;
-      const context = await boundContextSnapshot(appSession, request.originAppId, request.localAppId, contextVersion, originId, contextCache);
+      // Chỉ xem: the App's immutable Context package is never listed for this
+      // batch — no `bound-context/…` entry, no origin App folder session open
+      // for it. `contextVersion` itself is still recorded (from the Feature's
+      // own project.json) so the tick-list download in APPLY still knows which
+      // remote package to read individual docs pages from.
+      const context = requestedPullMode === 'work'
+        ? await boundContextSnapshot(appSession, request.originAppId, request.localAppId, contextVersion, originId, contextCache)
+        : { localFiles: [] as ProjectSyncSnapshotFile[], originFiles: [] as ProjectSyncSnapshotFile[], contextFiles: [] as BatchExecutionFeature['contextFiles'] };
       const built = planProjectSync({ direction: 'pull', scope: { kind: 'feature', projectId: mapped?.id ?? originId, appId: request.localAppId }, origin: { mode: 'existing', originId }, local: [...feature.localFiles, ...context.localFiles], originFiles: [...feature.originFiles, ...context.originFiles] });
       originFeatures.push({ originId, originAppId: origin.appId ?? '', name: origin.name, summary: built.plan.summary, entries: built.plan.entries });
       executionByOrigin.set(originId, { originId, name: origin.name, featureFiles: feature.featureFiles, contextVersion, contextFiles: context.contextFiles });
     }
-    const plan = planProjectSyncFeaturePullBatch(request, {
-      localApp: localApp ? { localId: localApp.id, originAppId: appMapping?.originId ?? null } : null,
+    const plan = planProjectSyncFeaturePullBatch({ ...request, pullMode: requestedPullMode }, {
+      localApp: localApp ? { localId: localApp.id, originAppId: appMapping?.originId ?? null, pullMode: appMapping?.pullMode ?? null } : null,
       originApp: originApp ? { originId: originApp.originId, visibility: originApp.visibility } : null,
       localFeatures: localFeatures.map((project) => ({ localId: project.id, originId: originIdOf(project) })),
       originFeatures,
@@ -1008,7 +1072,7 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
     try { res.json({ ok: true, data: (await planFor(body as ProjectSyncPlanRequest)).plan }); }
     catch (error) {
       const code = (error as { code?: string }).code;
-      if (code === ERR_PROJECT_SYNC_ORIGIN_HIDDEN || code === 'ORIGIN_ID_EXISTS' || code === 'ORIGIN_MAPPING_INVALID' || code === 'PROJECT_SYNC_STAGE_RUNNING') return sendApiError(res, 409, code, (error as Error).message);
+      if (code === ERR_PROJECT_SYNC_ORIGIN_HIDDEN || code === 'ORIGIN_ID_EXISTS' || code === 'ORIGIN_MAPPING_INVALID' || code === 'PROJECT_SYNC_STAGE_RUNNING' || code === 'PROJECT_SYNC_VIEW_ONLY') return sendApiError(res, 409, code, (error as Error).message);
       if (code === 'ORIGIN_REQUIRED') return sendApiError(res, 400, 'ORIGIN_REQUIRED', (error as Error).message);
       sendApiError(res, 502, 'PROJECT_SYNC_PLAN_FAILED', (error as Error).message);
     }
@@ -1028,29 +1092,37 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
     for (const scope of requested) {
       let mapped: string | null = null;
       let diagnostic: DiagnosticOrigin | null = null;
+      // Present only once a mapping exists at all (App mapping file / Feature
+      // metadata mapping); an existing mapping missing the field reads 'work'.
+      let mappedPullMode: ProjectSyncPullMode | undefined;
       try {
         const localProject = projects().find((project) => project.id === scope.projectId);
-        mapped = scope.kind === 'app'
-          ? (await readAppMapping(ctx.paths.PROJECTS_DIR, scope.projectId))?.originId ?? null
-          : localProject ? originIdOf(localProject) : null;
+        if (scope.kind === 'app') {
+          const appMappingRow = await readAppMapping(ctx.paths.PROJECTS_DIR, scope.projectId);
+          mapped = appMappingRow?.originId ?? null;
+          mappedPullMode = appMappingRow?.pullMode;
+        } else {
+          mapped = localProject ? originIdOf(localProject) : null;
+          mappedPullMode = featurePullModeOf(localProject) ?? undefined;
+        }
         if (!mapped) {
           results.push({ scope, origin: null, status: 'not_shared', reason: 'mapping_missing', checkedAt, state: 'new', mappingValid: false, features: [], summary: { created: 1, unchanged: 0, changed: 0, deleted: 0 }, entries: [] });
           continue;
         }
         if (!statusOrigins) {
           const baseline = syncState.get(scope, { originId: mapped });
-          results.push({ scope, status: 'unavailable', reason: 'status_check_failed', checkedAt, ...(baseline ? { lastSyncedAt: baseline.lastSyncedAt } : {}), state: 'changed', mappingValid: true, features: [], summary: emptyTotals(), entries: [], error: 'origin registry unavailable' });
+          results.push({ scope, status: 'unavailable', reason: 'status_check_failed', checkedAt, ...(baseline ? { lastSyncedAt: baseline.lastSyncedAt } : {}), state: 'changed', mappingValid: true, features: [], summary: emptyTotals(), entries: [], error: 'origin registry unavailable', ...(mappedPullMode ? { pullMode: mappedPullMode } : {}) });
           continue;
         }
         diagnostic = statusOrigins.find((origin) => origin.originId === mapped) ?? null;
         if (diagnostic?.parentLookupFailed) {
           const baseline = syncState.get(scope, { originId: mapped });
-          results.push({ scope, origin: diagnostic, status: 'unavailable', reason: 'status_check_failed', checkedAt, ...(baseline ? { lastSyncedAt: baseline.lastSyncedAt } : {}), state: 'changed', mappingValid: true, features: [], summary: emptyTotals(), entries: [], error: 'origin parent could not be verified' });
+          results.push({ scope, origin: diagnostic, status: 'unavailable', reason: 'status_check_failed', checkedAt, ...(baseline ? { lastSyncedAt: baseline.lastSyncedAt } : {}), state: 'changed', mappingValid: true, features: [], summary: emptyTotals(), entries: [], error: 'origin parent could not be verified', ...(mappedPullMode ? { pullMode: mappedPullMode } : {}) });
           continue;
         }
         if (!diagnostic || diagnostic.visibility === 'hidden' || diagnostic.kind !== scope.kind) {
           const baseline = syncState.get(scope, { originId: mapped, originAppId: diagnostic?.appId ?? null });
-          results.push({ scope, origin: diagnostic, status: 'origin_missing', reason: 'origin_missing_or_hidden', checkedAt, ...(baseline ? { lastSyncedAt: baseline.lastSyncedAt } : {}), state: 'new', mappingValid: false, features: [], summary: emptyTotals(), entries: [] });
+          results.push({ scope, origin: diagnostic, status: 'origin_missing', reason: 'origin_missing_or_hidden', checkedAt, ...(baseline ? { lastSyncedAt: baseline.lastSyncedAt } : {}), state: 'new', mappingValid: false, features: [], summary: emptyTotals(), entries: [], ...(mappedPullMode ? { pullMode: mappedPullMode } : {}) });
           continue;
         }
         const planned = await planFor(
@@ -1059,15 +1131,15 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
         );
         const baselineIdentity = { originId: mapped, originAppId: diagnostic.appId ?? null };
         const evaluated = evaluateProjectSyncStatus(digestProjectSyncSides(planned.files.localFiles, planned.files.originFiles), syncState.get(scope, baselineIdentity));
-        results.push({ scope, origin: planned.origin, ...evaluated, checkedAt, state: stateOf(planned.plan.summary), mappingValid: planned.mappingValid, ...(planned.plan.app ? { app: planned.plan.app } : {}), ...(planned.plan.context ? { context: planned.plan.context } : {}), features: planned.plan.features, summary: planned.plan.summary, entries: planned.plan.entries });
+        results.push({ scope, origin: planned.origin, ...evaluated, checkedAt, state: stateOf(planned.plan.summary), mappingValid: planned.mappingValid, ...(planned.plan.app ? { app: planned.plan.app } : {}), ...(planned.plan.context ? { context: planned.plan.context } : {}), features: planned.plan.features, summary: planned.plan.summary, entries: planned.plan.entries, ...(mappedPullMode ? { pullMode: mappedPullMode } : {}) });
       } catch (error) {
         const code = (error as Error & { code?: string }).code;
         if (code === ERR_PROJECT_SYNC_ORIGIN_HIDDEN || code === 'ORIGIN_MAPPING_INVALID') {
           diagnostic = mapped ? statusOrigins?.find((origin) => origin.originId === mapped) ?? null : null;
-          results.push({ scope, origin: diagnostic, status: 'origin_missing', reason: 'origin_missing_or_hidden', checkedAt, state: 'new', mappingValid: false, features: [], summary: { created: 1, unchanged: 0, changed: 0, deleted: 0 }, entries: [], error: (error as Error).message });
+          results.push({ scope, origin: diagnostic, status: 'origin_missing', reason: 'origin_missing_or_hidden', checkedAt, state: 'new', mappingValid: false, features: [], summary: { created: 1, unchanged: 0, changed: 0, deleted: 0 }, entries: [], error: (error as Error).message, ...(mappedPullMode ? { pullMode: mappedPullMode } : {}) });
         } else {
           const baseline = mapped ? syncState.get(scope, { originId: mapped, originAppId: diagnostic?.appId ?? null }) : null;
-          results.push({ scope, status: 'unavailable', reason: 'status_check_failed', checkedAt, ...(baseline ? { lastSyncedAt: baseline.lastSyncedAt } : {}), state: 'changed', mappingValid: Boolean(mapped), features: [], summary: emptyTotals(), entries: [], error: (error as Error).message });
+          results.push({ scope, status: 'unavailable', reason: 'status_check_failed', checkedAt, ...(baseline ? { lastSyncedAt: baseline.lastSyncedAt } : {}), state: 'changed', mappingValid: Boolean(mapped), features: [], summary: emptyTotals(), entries: [], error: (error as Error).message, ...(mappedPullMode ? { pullMode: mappedPullMode } : {}) });
         }
       }
     }
@@ -1257,7 +1329,10 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
         updateProgress('finalizing', feature.originId, null);
         // Context is immutable and shared by Features, so copying an exact
         // verified package is safe even when another item already installed it.
-        if (feature.contextVersion) {
+        // Chỉ xem never installs the App Context package at all (see
+        // `buildFeaturePullBatch`'s `requestedPullMode === 'work'` gate on
+        // `boundContextSnapshot`); it fetches only the ticked docs pages below.
+        if (stored.plan.pullMode === 'work' && feature.contextVersion) {
           const stagedVersion = path.join(stageContext, 'context', 'versions', feature.contextVersion);
           const targetVersion = path.join(ctx.paths.PROJECTS_DIR, stored.plan.localAppId, 'context', 'versions', feature.contextVersion);
           if (await fs.stat(stagedVersion).then(() => true, () => false)) {
@@ -1286,6 +1361,34 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
               }
             }
           }
+        } else if (stored.plan.pullMode === 'view' && feature.contextVersion && appPoolPaths) {
+          // Chỉ xem trang tick: best-effort per-page fetch straight from the
+          // origin App's immutable package (never touches local context/
+          // versions/). Per amend_view_mode_no_listing: view mode must never
+          // list (or even open a session on) the origin App's folder — a
+          // single-tag search + download-by-id resolves one row without
+          // paging through the App's (potentially huge) Context history.
+          // Missing/unreadable pages are skipped with a warning — the
+          // Feature itself still installs cleanly.
+          const docsFeatureDir = path.join(stageFeature, 'docs-review', 'docs-feature');
+          await fs.rm(docsFeatureDir, { recursive: true, force: true });
+          for (const page of appPoolPaths) {
+            if (!page.endsWith('.md') || !safeRelativePath(page)) continue;
+            const rel = `context/versions/${feature.contextVersion}/files/docs/${page}`;
+            try {
+              const row = await media.findFileByPath(stored.plan.originAppId, rel);
+              if (!row) {
+                console.warn(`[project-sync] feature pull ${feature.originId}: Chỉ xem — docs page ${page} not found in App Context ${feature.contextVersion}`);
+                continue;
+              }
+              const content = await media.downloadById(row.id);
+              const target = path.join(docsFeatureDir, page);
+              await fs.mkdir(path.dirname(target), { recursive: true });
+              await fs.writeFile(target, content);
+            } catch (error) {
+              console.warn(`[project-sync] feature pull ${feature.originId}: Chỉ xem — could not fetch docs page ${page} from App Context ${feature.contextVersion}:`, error);
+            }
+          }
         }
         if (await fs.stat(destination).then(() => true, () => false)) {
           await fs.rename(destination, backup);
@@ -1302,20 +1405,34 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
           ? previousMetadata.studioConfig as Record<string, unknown> : {};
         const previousRunAllConfig = previousMetadata.runAllConfig && typeof previousMetadata.runAllConfig === 'object' && !Array.isArray(previousMetadata.runAllConfig)
           ? previousMetadata.runAllConfig as Record<string, unknown> : undefined;
+        // A Chỉ xem re-pull over an already-`work` Feature must never downgrade
+        // the mapping (its installed Context/binding stay exactly as they
+        // are — this pull only refreshed `feature/**`). An existing mapping
+        // missing the field is a pre-this-feature `work` pull.
+        const previousStudioMapping = oldStudio.projectSyncMapping && typeof oldStudio.projectSyncMapping === 'object' && !Array.isArray(oldStudio.projectSyncMapping)
+          ? oldStudio.projectSyncMapping as Record<string, unknown> : null;
+        const previousPullMode: ProjectSyncPullMode | null = existing && previousStudioMapping
+          ? (previousStudioMapping.pullMode === 'view' ? 'view' : 'work')
+          : null;
+        const effectivePullMode: ProjectSyncPullMode = previousPullMode === 'work' ? 'work' : stored.plan.pullMode;
         const metadata = {
           ...previousMetadata,
           source: 'kg-pull',
-          ...(remoteBinding ? { appContextBinding: remoteBinding } : {}),
+          // Chỉ xem never writes the binding/tick-list keys at all — an
+          // upgrade pull (mode 'work') writes them fresh; a repeat Chỉ xem
+          // pull over an already-`work` Feature leaves the previous ones
+          // (spread above) untouched.
+          ...(stored.plan.pullMode === 'work' && remoteBinding ? { appContextBinding: remoteBinding } : {}),
           // WP hotfix-sync (2026-09): restore the tick list into the pulled
           // Feature's own run-all config (local App id) so a re-run of
           // `dr-docs`'s pool-copy step reproduces the identical materialized
           // folders — same invariant as `appContextBinding` above.
-          ...(appPoolPaths ? { runAllConfig: { ...previousRunAllConfig, appPool: { appId: stored.plan.localAppId, paths: appPoolPaths } } } : {}),
+          ...(stored.plan.pullMode === 'work' && appPoolPaths ? { runAllConfig: { ...previousRunAllConfig, appPool: { appId: stored.plan.localAppId, paths: appPoolPaths } } } : {}),
           studioConfig: {
             ...oldStudio,
             appId: stored.plan.localAppId,
             remoteId: feature.originId,
-            projectSyncMapping: { schemaVersion: 1, localId: feature.localId, originId: feature.originId, originAppId: stored.plan.originAppId, mappedAt: new Date().toISOString() },
+            projectSyncMapping: { schemaVersion: 1, localId: feature.localId, originId: feature.originId, originAppId: stored.plan.originAppId, mappedAt: new Date().toISOString(), pullMode: effectivePullMode },
           },
         };
         if (existing) updateProject(db, feature.localId, { name: feature.name, metadata, updatedAt: Date.now() });
@@ -1582,7 +1699,18 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
               } });
               deferred = true;
             } else {
-              const content = await (await sessionFor(unit.originId)).download(rel);
+              // Chỉ xem App (appShellOnly): app.json is the only entry for this
+              // unit — opening a MediaFolderSession here would list the whole
+              // origin folder (thousands of Context rows) just to serve one
+              // download. Resolve + fetch it directly instead; the checksum was
+              // already confirmed fresh against the plan by `snapshot()` above.
+              const content = unit.appShellOnly
+                ? await (async () => {
+                    const file = await media.findFileByPath(unit.originId, rel);
+                    if (!file) throw new Error(`downloadFile: not found ${unit.originId}/${rel}`);
+                    return media.downloadById(file.id);
+                  })()
+                : await (await sessionFor(unit.originId)).download(rel);
               if (unit.featureId && rel === 'project.json') {
                 const remote = JSON.parse(content.toString('utf8')) as Record<string, unknown>;
                 const project = getProject(db, unit.localId!) as LocalProject;
@@ -1691,7 +1819,11 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
       if (stale.length === 0) for (const unit of exec.units) {
         if (!unit.localId || !unit.originId || unit.persistMapping === false) continue;
         if (unit.isApp && !unit.featureId) {
-          await writeAppMapping(ctx.paths.PROJECTS_DIR, unit.localId, unit.originId);
+          // Push refuses a Chỉ xem mapping before it ever reaches APPLY (see
+          // the PROJECT_SYNC_VIEW_ONLY guard in planFor), so a Push here always
+          // belongs to a `work` App and must not downgrade it.
+          const appPullMode: ProjectSyncPullMode = stored.plan.direction === 'pull' ? (stored.plan.pullMode ?? 'view') : 'work';
+          await writeAppMapping(ctx.paths.PROJECTS_DIR, unit.localId, unit.originId, appPullMode);
           if (stored.plan.direction === 'pull') {
             upsertPipelineAppName(db, { id: unit.localId, name: unit.name, createdAt: Date.now() });
             setPipelineAppDesignSystem(db, {
@@ -1706,7 +1838,7 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
               source: unit.pulledComponentSource ?? { mode: 'app-design-system' },
               createdAt: Date.now(),
             });
-            if (exec.scope.kind === 'app') {
+            if (exec.scope.kind === 'app' && stored.plan.pullMode !== 'view') {
               // The pulled package is immutable under context/versions/<vN>/;
               // the Tài liệu tab and every stage read the mutable App root
               // (docs/_manifest.json, app-context/), so the version must be
@@ -1714,7 +1846,9 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
               // project-sync path used to skip it and the pool showed 0 pages.
               // Best-effort: an App that never published a Context, or wiki
               // attachments this machine cannot fetch, must not fail an APPLY
-              // that already transferred cleanly.
+              // that already transferred cleanly. Chỉ xem App pull never lists
+              // a Context package in the first place (see `appShellOnly`), so
+              // there is nothing on disk to materialize from.
               try {
                 const current = await readCurrentAppContextManifest(ctx.paths.PROJECTS_DIR, unit.localId);
                 if (current) {

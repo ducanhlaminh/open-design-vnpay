@@ -98,6 +98,20 @@ export function needsFigmaSource(stageIds: readonly string[], source: DocsReview
   return stageIds.includes('dr-comp') && source?.mode === 'figma-links';
 }
 
+/** Dự án được lấy về ở chế độ "Chỉ xem" (pull view mode) — không kéo App
+ *  Context, không thể đẩy lên kho chung, và các bước chạy tiếp bị khoá. */
+export function isViewOnlyProject(project: PipelineProject | undefined | null): boolean {
+  return project?.syncPullMode === 'view';
+}
+
+/** Nút "Xác nhận hoàn tất" chỉ cần `dr-flow` và `dr-review` thành công — KHÔNG
+ *  còn đòi hỏi bước "Tài liệu (nạp)" (dr-docs) phải chạy xong, vì ở chế độ
+ *  Chỉ xem dự án không có bước nạp tài liệu nào chạy được. */
+export function docsReviewReadyToConfirmOf(pipelines: readonly PipelineView[]): boolean {
+  const succeededIds = new Set(pipelines.filter((pipeline) => pipeline.status === 'succeeded').map((pipeline) => pipeline.id));
+  return succeededIds.has('dr-flow') && succeededIds.has('dr-review');
+}
+
 /**
  * Gate của dòng rail "Concept tham khảo" + section `labRefs` trong modal cấu
  * hình (WP-lab-refs-web): chỉ workflow CÓ bước `lab-compose` (ds-lab) mới cần
@@ -203,6 +217,8 @@ interface OverflowMenuItem {
    *  "destructive" meaning, áp dụng ở cấp mục menu vì nút không còn đứng độc
    *  lập nữa mà đã gom vào overflow). */
   danger?: boolean;
+  /** Giải thích khi mục bị disabled (vd. project ở chế độ Chỉ xem). */
+  title?: string;
 }
 
 // Overflow ("⋯") dùng chung cho mọi hàng bước + toolbar đầu trang: MỘT nút kích
@@ -313,6 +329,7 @@ function OverflowMenu({ items, label = 'Thêm thao tác' }: { items: OverflowMen
                 tabIndex={-1}
                 className={`pl-menu__item${it.danger ? ' pl-menu__item--danger' : ''}`}
                 disabled={it.disabled}
+                title={it.title}
                 onClick={() => {
                   close(true);
                   it.onClick();
@@ -608,7 +625,14 @@ export function staleInputsForRunAll(
   return out;
 }
 
-export function PipelinesView() {
+export interface PipelinesViewProps {
+  /** Bấm "Lấy đầy đủ để chạy tiếp" trên banner Chỉ xem — PipelinesRoute mở
+   *  luồng pull App/Feature ở chế độ "Để chạy tiếp" cho project này. Absent
+   *  ⇒ nút không hiển thị (giữ PipelinesView dùng được không cần route cha). */
+  onRequestFullPull?: (projectId: string) => void;
+}
+
+export function PipelinesView({ onRequestFullPull }: PipelinesViewProps = {}) {
   const t = useT();
   const [runAllOpen, setRunAllOpen] = useState(false);
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
@@ -1022,7 +1046,7 @@ export function PipelinesView() {
   const docsReviewReadyToConfirm =
     workflowId === 'docs-review' &&
     pipelines.length > 0 &&
-    pipelines.every((pipeline) => pipeline.status === 'succeeded');
+    docsReviewReadyToConfirmOf(pipelines);
   const prevRunningRef = useRef(false);
 
   useEffect(() => {
@@ -1767,6 +1791,16 @@ export function PipelinesView() {
   // normal flow proceeds. A first run — or a terminal with no downstream — skips
   // straight to it (a re-run there still clears its own output daemon-side).
   const onRunClick = (p: PipelineView) => {
+    // Chốt an toàn cho MỌI call-site (nút primary, overflow rerun/retry, picker
+    // UI-spec) — project ở chế độ Chỉ xem không được chạy bước, kể cả khi một
+    // nút nào đó lỡ quên gate `disabled`.
+    if (viewOnly) {
+      pushToast({
+        message:
+          "Bản này lấy về ở chế độ Chỉ xem — không chạy được bước. Bấm 'Lấy đầy đủ để chạy tiếp'.",
+      });
+      return;
+    }
     if (p.status === 'succeeded' && downstreamOf(p.id).length > 0) setResetScopeFor(p);
     else proceedRun(p);
   };
@@ -1858,6 +1892,9 @@ export function PipelinesView() {
   // Pipeline Studio khi chưa từng chạy).
   const railProject = projects.find((pr) => pr.id === projectId);
   const railCfg: RunAllConfig | undefined = railProject?.savedRunAll ?? railProject?.config;
+  // Tính một lần, dùng lại ở mọi nút chạy/chạy lại (primary, overflow, picker,
+  // Chạy full luồng) — chốt an toàn thật sự nằm ở onRunClick phía trên.
+  const viewOnly = isViewOnlyProject(railProject);
   const railSourceSummary = railCfg?.appPool?.paths?.length
     ? `Tài liệu dự án · ${railCfg.appPool.paths.length} trang`
     : railCfg?.confluencePages?.length
@@ -2467,6 +2504,29 @@ export function PipelinesView() {
           ))}
         </div>
       ) : (
+        <>
+        {viewOnly ? (
+          <div className="pl-view-only-banner">
+            <span className="pl-view-only-banner__icon" aria-hidden="true">
+              <Icon name="info" size={18} />
+            </span>
+            <div className="pl-view-only-banner__body">
+              <p>
+                Bản này lấy về ở chế độ Chỉ xem — xem Quick result, ghi bình luận và Xác nhận hoàn tất
+                được; muốn chạy tiếp các bước hãy lấy đầy đủ.
+              </p>
+              {onRequestFullPull && projectId ? (
+                <button
+                  type="button"
+                  className="pl-view-only-banner__btn"
+                  onClick={() => onRequestFullPull(projectId)}
+                >
+                  Lấy đầy đủ để chạy tiếp
+                </button>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
         <div className="pl-run-layout">
         {/* Rail cấu hình (Task 2): thay modal Run-all 9 câu hỏi khỏi đường mặc
             định — hiển thị SẴN giá trị đang dùng, "Đổi" mới mở lại modal đó.
@@ -2715,7 +2775,10 @@ export function PipelinesView() {
                   label: 'Chạy lại',
                   icon: isBusy ? 'spinner' : 'refresh',
                   onClick: () => onRunClick(p),
-                  disabled: isBusy,
+                  disabled: isBusy || viewOnly,
+                  title: viewOnly
+                    ? 'Dự án này đang ở chế độ Chỉ xem — lấy đầy đủ (Để chạy tiếp) để chạy các bước.'
+                    : undefined,
                   // Task 5: đỏ khi việc này THỰC SỰ phá dữ liệu — có bước sau
                   // phụ thuộc thì chạy lại sẽ mở RerunScopeModal cảnh báo xóa
                   // luôn output của các bước đó (onRunClick, giữ nguyên).
@@ -2741,7 +2804,10 @@ export function PipelinesView() {
                   label: 'Thử lại',
                   icon: isBusy ? 'spinner' : 'refresh',
                   onClick: () => onRunClick(p),
-                  disabled: isBusy,
+                  disabled: isBusy || viewOnly,
+                  title: viewOnly
+                    ? 'Dự án này đang ở chế độ Chỉ xem — lấy đầy đủ (Để chạy tiếp) để chạy các bước.'
+                    : undefined,
                 },
                 historyItem,
                 ...(uploadItem ? [uploadItem] : []),
@@ -2754,11 +2820,13 @@ export function PipelinesView() {
                   className={isSkipped ? 'pl-btn' : 'pl-btn pl-btn--run'}
                   data-testid={`pipeline-run-stage-${p.id}`}
                   onClick={() => onRunClick(p)}
-                  disabled={isBusy}
+                  disabled={isBusy || viewOnly}
                   title={
-                    isSkipped
-                      ? 'Chạy riêng bước này dù chế độ Tiết kiệm bỏ qua nó'
-                      : 'Chạy bước này trong nền'
+                    viewOnly
+                      ? 'Dự án này đang ở chế độ Chỉ xem — lấy đầy đủ (Để chạy tiếp) để chạy các bước.'
+                      : isSkipped
+                        ? 'Chạy riêng bước này dù chế độ Tiết kiệm bỏ qua nó'
+                        : 'Chạy bước này trong nền'
                   }
                 >
                   <Icon name={isBusy ? 'spinner' : 'play'} size={14} />
@@ -3016,9 +3084,17 @@ export function PipelinesView() {
               className="pl-btn pl-btn--run"
               data-testid="pipeline-run-all-btn"
               onClick={() => void runAllWithSavedConfig()}
-              disabled={!projectId || pipelines.length === 0 || runAllBusy || railScreenPlatformMissing}
+              disabled={
+                !projectId ||
+                pipelines.length === 0 ||
+                runAllBusy ||
+                railScreenPlatformMissing ||
+                viewOnly
+              }
               title={
-                railScreenPlatformMissing
+                viewOnly
+                  ? 'Dự án này đang ở chế độ Chỉ xem — lấy đầy đủ (Để chạy tiếp) để chạy các bước.'
+                  : railScreenPlatformMissing
                   ? 'Chưa chọn Nền tảng màn hình — bấm Đổi ở dòng "Nền tảng màn hình" bên phải trước khi chạy'
                   : 'Chạy full luồng từ các bước đã chọn ở rail bên cạnh và XOÁ kết quả cũ của những bước đó (đã lưu vào lịch sử trước khi xoá) — đổi cấu hình trước bằng nút Đổi nếu cần khác đi'
               }
@@ -3104,10 +3180,11 @@ export function PipelinesView() {
         </div>
       </div>
           </aside>
-          
+
           </div>
         ) : null}
         </div>
+        </>
       )}
       {railNarrow && configDrawerOpen ? (
         <PlModal
@@ -3300,8 +3377,14 @@ export function PipelinesView() {
                             <button
                               type="button"
                               className="pl-btn pl-btn--run"
-                              disabled={busyId === o.id || !o.active || o.held === true}
-                              title={o.held ? t('pipelines.held.tooltip') : undefined}
+                              disabled={busyId === o.id || !o.active || o.held === true || viewOnly}
+                              title={
+                                viewOnly
+                                  ? 'Dự án này đang ở chế độ Chỉ xem — lấy đầy đủ (Để chạy tiếp) để chạy các bước.'
+                                  : o.held
+                                    ? t('pipelines.held.tooltip')
+                                    : undefined
+                              }
                               onClick={() => {
                                 setUiSpecPickerOpen(false);
                                 onRunClick(o);

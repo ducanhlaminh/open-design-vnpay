@@ -29,6 +29,8 @@ vi.mock('../../../src/components/project-sync', () => ({
   SyncStatusBadge: ({ status }: { status: string }) => <span data-sync-status={status}>{status}</span>,
   projectSyncUserStatusOf: (value: { status?: string; state?: string; mappingValid: boolean }) =>
     value.status ?? (!value.mappingValid || value.state === 'new' ? 'not_shared' : value.state === 'unchanged' ? 'up_to_date' : 'needs_review'),
+  PullModeChip: ({ pullMode }: { pullMode?: string }) =>
+    pullMode === 'view' ? <span data-pull-mode-chip="view">Chỉ xem</span> : null,
 }));
 
 vi.mock('../../../src/components/pipelines/PullSharedFeaturesModal', () => ({

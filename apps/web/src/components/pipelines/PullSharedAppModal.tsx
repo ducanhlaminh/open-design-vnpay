@@ -17,6 +17,7 @@ import type {
   ProjectSyncOrigin,
   ProjectSyncOriginSelection,
   ProjectSyncPlan,
+  ProjectSyncPullMode,
   ProjectSyncScope,
 } from '@open-design/contracts';
 
@@ -62,6 +63,9 @@ export interface PullSharedAppListModeProps extends PullSharedAppModalBaseProps 
 export interface PullSharedAppScopeModeProps extends PullSharedAppModalBaseProps {
   scope: ProjectSyncScope;
   subjectName: string;
+  /** Mặc định của scope này (đọc từ status hiện có). Missing ⇒ `'work'` — máy
+   *  chưa từng pull qua đường Chỉ xem thì "chạy lại" giữ đúng hành vi cũ. */
+  pullMode?: ProjectSyncPullMode;
   mappedOriginIds?: never;
   localAppIds?: never;
 }
@@ -73,6 +77,7 @@ interface PullTarget {
   /** Chỉ mode danh sách cần: scope chưa có mapping để daemon tự suy. */
   origin?: ProjectSyncOriginSelection;
   subjectName: string;
+  pullMode: ProjectSyncPullMode;
 }
 
 const PLAN_EXPIRED_MESSAGE = 'Kế hoạch đã hết hạn. Bấm "Lấy dự án về máy" để chạy lại.';
@@ -83,10 +88,12 @@ function errorMessage(cause: unknown, fallback: string): string {
 
 export function PullSharedAppModal(props: PullSharedAppModalProps) {
   const { onClose, onApplied, scope: scopeProp, subjectName: subjectNameProp, mappedOriginIds, localAppIds } = props;
+  const scopePullMode = 'pullMode' in props ? props.pullMode ?? 'work' : 'work';
   const [origins, setOrigins] = useState<ProjectSyncOrigin[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [listPullMode, setListPullMode] = useState<ProjectSyncPullMode>('view');
   const [pulling, setPulling] = useState<PullTarget | null>(() => (
-    scopeProp ? { scope: scopeProp, subjectName: subjectNameProp ?? '' } : null
+    scopeProp ? { scope: scopeProp, subjectName: subjectNameProp ?? '', pullMode: scopePullMode } : null
   ));
   const [plan, setPlan] = useState<ProjectSyncPlan | null>(null);
   const [planning, setPlanning] = useState(false);
@@ -210,6 +217,7 @@ export function PullSharedAppModal(props: PullSharedAppModalProps) {
         scope: target.scope,
         ...(target.origin ? { origin: target.origin } : {}),
         includeDeleted: true,
+        pullMode: target.pullMode,
       });
     } catch (cause) {
       if (generation !== runGenerationRef.current) return;
@@ -259,6 +267,7 @@ export function PullSharedAppModal(props: PullSharedAppModalProps) {
       scope: { kind: 'app', projectId: appId },
       origin: { mode: 'existing', originId: origin.originId },
       subjectName: origin.name,
+      pullMode: listPullMode,
     });
   };
 
@@ -391,6 +400,24 @@ export function PullSharedAppModal(props: PullSharedAppModalProps) {
         ) : null}
         {!loadError && origins !== null && available.length === 0 ? (
           <p className={styles.empty}>Chưa có dự án nào khác đã chia sẻ mà máy này chưa có.</p>
+        ) : null}
+        {available.length > 0 ? (
+          <fieldset className={styles.modeGroup}>
+            <label className={styles.modeOption}>
+              <input type="radio" name="app-pull-mode" checked={listPullMode === 'view'} onChange={() => setListPullMode('view')} />
+              <span>
+                <strong>Chỉ xem</strong>
+                <small>Đủ để mở Quick result và Xác nhận hoàn tất, nhẹ, không cần PAT Confluence.</small>
+              </span>
+            </label>
+            <label className={styles.modeOption}>
+              <input type="radio" name="app-pull-mode" checked={listPullMode === 'work'} onChange={() => setListPullMode('work')} />
+              <span>
+                <strong>Để chạy tiếp</strong>
+                <small>Kéo cả Context để chạy các bước.</small>
+              </span>
+            </label>
+          </fieldset>
         ) : null}
         {available.length > 0 ? (
           <ul className={styles.list}>

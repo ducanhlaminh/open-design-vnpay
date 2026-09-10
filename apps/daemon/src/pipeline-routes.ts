@@ -616,6 +616,13 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
         const scRec = (sc && typeof sc === 'object' ? sc : {}) as Record<string, unknown>;
         const appId = typeof scRec.appId === 'string' ? scRec.appId : '';
         const appName = typeof scRec.appName === 'string' ? scRec.appName : '';
+        // Chỉ xem/Để chạy tiếp: mirrors the project-sync mapping's pullMode.
+        // Absent mapping ⇒ never shared/pulled — field omitted entirely (not
+        // 'work'); a mapping missing the field itself reads as 'work'.
+        const mapping = scRec.projectSyncMapping;
+        const mappingRec = mapping && typeof mapping === 'object' && !Array.isArray(mapping)
+          ? mapping as Record<string, unknown> : null;
+        const syncPullMode = mappingRec ? (mappingRec.pullMode === 'view' ? 'view' as const : 'work' as const) : undefined;
         return {
           id: p.id,
           name: p.name,
@@ -630,6 +637,7 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
           ...(featureContextBindingFromMetadata(p.metadata)
             ? { appContextBinding: featureContextBindingFromMetadata(p.metadata)! }
             : {}),
+          ...(syncPullMode ? { syncPullMode } : {}),
         };
       }),
     );

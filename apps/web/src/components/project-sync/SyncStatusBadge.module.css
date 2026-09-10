@@ -92,3 +92,19 @@
 @media (prefers-reduced-motion: reduce) {
   .tooltip { transition: none; }
 }
+
+.pullModeChip {
+  display: inline-flex;
+  align-items: center;
+  width: max-content;
+  max-width: 100%;
+  padding: 3px 7px;
+  border: 1px solid var(--amber-border, var(--border));
+  border-radius: var(--radius-sm);
+  color: var(--amber);
+  background: var(--amber-bg);
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1.2;
+  white-space: nowrap;
+}
