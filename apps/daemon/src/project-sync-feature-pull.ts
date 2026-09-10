@@ -5,6 +5,7 @@ import type {
   ProjectSyncFeaturePullBatchPlan,
   ProjectSyncFeaturePullBatchPlanItem,
   ProjectSyncFeaturePullBatchPlanRequest,
+  ProjectSyncPullMode,
   ProjectSyncSummary,
 } from '@open-design/contracts';
 
@@ -17,7 +18,8 @@ export type ProjectSyncFeaturePullPlanErrorCode =
   | 'FEATURE_PULL_APP_MAPPING_MISMATCH'
   | 'FEATURE_PULL_ORIGIN_FEATURE_NOT_FOUND'
   | 'FEATURE_PULL_FEATURE_PARENT_MISMATCH'
-  | 'FEATURE_PULL_LOCAL_MAPPING_COLLISION';
+  | 'FEATURE_PULL_LOCAL_MAPPING_COLLISION'
+  | 'FEATURE_PULL_APP_VIEW_ONLY';
 
 export class ProjectSyncFeaturePullPlanError extends Error {
   constructor(
@@ -33,6 +35,9 @@ export interface ProjectSyncFeaturePullLocalApp {
   localId: string;
   /** A batch pull requires the App pull/mapping to have completed first. */
   originAppId: string | null;
+  /** Absent mapping (App never pulled) reads as `null`; an existing mapping
+   * without the field reads as `'work'`. */
+  pullMode?: ProjectSyncPullMode | null;
 }
 
 export interface ProjectSyncFeaturePullOriginApp {
@@ -167,6 +172,13 @@ export function planProjectSyncFeaturePullBatch(
       `Local App ${request.localAppId} is not mapped to origin App ${request.originAppId}`,
     );
   }
+  const pullMode: ProjectSyncPullMode = request.pullMode === 'work' ? 'work' : 'view';
+  if (pullMode === 'work' && (data.localApp.pullMode ?? 'work') === 'view') {
+    throw new ProjectSyncFeaturePullPlanError(
+      'FEATURE_PULL_APP_VIEW_ONLY',
+      'Lấy App đầy đủ (Để chạy tiếp) trước khi lấy Feature để chạy tiếp',
+    );
+  }
 
   const localByOrigin = new Map<string, ProjectSyncFeaturePullLocalFeature>();
   const occupied = new Set<string>();
@@ -223,6 +235,7 @@ export function planProjectSyncFeaturePullBatch(
     createdAt,
     localAppId: request.localAppId,
     originAppId: request.originAppId,
+    pullMode,
     features,
     // One unit per actionable entry plus one per wiki file a ledger expands.
     totalItems: features.reduce((total, feature) => total + feature.entries

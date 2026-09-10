@@ -1637,6 +1637,58 @@
   text-align: center;
 }
 
+.pl-view-only-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 14px;
+  padding: 14px 16px;
+  border-radius: var(--radius-lg);
+  background: var(--amber-bg);
+  border: 1px solid var(--amber-border, var(--border));
+}
+
+.pl-view-only-banner__icon {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  color: var(--amber);
+}
+
+.pl-view-only-banner__body {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 16px;
+}
+
+.pl-view-only-banner__body p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text);
+  flex: 1 1 320px;
+}
+
+.pl-view-only-banner__btn {
+  flex: none;
+  padding: 7px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--amber);
+  background: var(--bg-panel);
+  border: 1px solid var(--amber-border, var(--border));
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.pl-view-only-banner__btn:hover {
+  background: var(--amber-bg);
+}
+
 /* ---- Stepper flow ---------------------------------------- */
 .pipelines-flow {
   list-style: none;

@@ -18,6 +18,7 @@ import type {
   ProjectSyncOriginSelection,
   ProjectSyncOperation,
   ProjectSyncPlan,
+  ProjectSyncPullMode,
   ProjectSyncResolution,
   ProjectSyncScope,
   ProjectSyncScopeStatus,
@@ -42,6 +43,7 @@ import {
   PROJECT_SYNC_PUSH_PLAN_EXPIRED_MESSAGE,
   ProjectSyncPlanExpiredError,
   ProjectSyncStageRunningError,
+  ProjectSyncViewOnlyError,
   createProjectSyncOperation,
   getProjectSyncOperation,
   getProjectSyncStatuses,
@@ -147,6 +149,11 @@ export function PipelinesRoute() {
   const [pullAppDialog, setPullAppDialog] = useState<{
     scope: ProjectSyncScope;
     subjectName: string;
+    pullMode?: ProjectSyncPullMode;
+    // Nâng cấp "Lấy đầy đủ để chạy tiếp" (openFullPull): App đang Chỉ xem phải
+    // được pull 'work' trước — sau khi modal App áp dụng xong, dây tiếp sang
+    // PullSharedFeaturesModal 'work' cho đúng Feature đang xem.
+    thenOpenFeaturePull?: { remoteAppOriginId: string; preselectedOriginIds: string[] };
   } | null>(null);
   // "Lấy dự án về máy" khi App chưa tồn tại cục bộ — không cần scope, chỉ có
   // trạng thái mở/đóng: picker tự chọn App origin rồi tự tạo App cục bộ.
@@ -156,6 +163,8 @@ export function PipelinesRoute() {
     remoteAppOriginId: string;
     existingFeatureMappings: ReadonlyMap<string, string>;
     preselectedOriginIds: string[];
+    pullMode?: ProjectSyncPullMode;
+    appPullMode?: ProjectSyncPullMode;
   } | null>(null);
   const [shareDialog, setShareDialog] = useState<{
     initialFeatureIds: string[];
@@ -207,6 +216,10 @@ export function PipelinesRoute() {
       }
       if (cause instanceof ProjectSyncPlanExpiredError) {
         setSyncToast({ message: PROJECT_SYNC_PUSH_PLAN_EXPIRED_MESSAGE, error: true });
+        return true;
+      }
+      if (cause instanceof ProjectSyncViewOnlyError) {
+        setSyncToast({ message: cause.message, error: true });
         return true;
       }
       return false;
@@ -488,6 +501,49 @@ export function PipelinesRoute() {
       />
     );
 
+  // Banner "Chỉ xem" trên PipelinesView → "Lấy đầy đủ để chạy tiếp": nếu App
+  // của Feature đang xem cũng đang Chỉ xem, nó phải được nâng cấp TRƯỚC (daemon
+  // từ chối Feature 'work' dưới App 'view' — FEATURE_PULL_APP_VIEW_ONLY), nên
+  // mở PullSharedAppModal 'work' trước rồi mới dây sang PullSharedFeaturesModal
+  // 'work' cho đúng Feature qua onApplied. App đã 'work' thì mở thẳng Feature.
+  const openFullPull = useCallback((featureId: string) => {
+    const feature = nav.projects.find((project) => project.id === featureId);
+    const appId = feature?.app?.id?.trim() || null;
+    const featureStatus = syncStatusByFeatureId.get(featureId);
+    const remoteFeatureOriginId = featureStatus?.mappingValid
+      && featureStatus.origin?.kind === 'feature'
+      && featureStatus.origin.visibility === 'visible'
+      ? featureStatus.origin.originId
+      : null;
+    const appStatus = appId ? syncStatusByAppId.get(appId) : undefined;
+    const remoteAppOriginId = appStatus?.mappingValid
+      && appStatus.origin?.kind === 'app'
+      && appStatus.origin.visibility === 'visible'
+      ? appStatus.origin.originId
+      : null;
+    if (!appId || !remoteAppOriginId || !remoteFeatureOriginId) {
+      setSyncToast({ message: 'Không tìm thấy bản trong kho chung để lấy đầy đủ.', error: true });
+      return;
+    }
+    if (appStatus?.pullMode === 'view') {
+      setPullAppDialog({
+        scope: { kind: 'app', projectId: appId },
+        subjectName: feature?.app?.name ?? 'Dự án',
+        pullMode: 'work',
+        thenOpenFeaturePull: { remoteAppOriginId, preselectedOriginIds: [remoteFeatureOriginId] },
+      });
+      return;
+    }
+    setPullSharedFeatures({
+      localAppId: appId,
+      remoteAppOriginId,
+      existingFeatureMappings: new Map([[remoteFeatureOriginId, featureId]]),
+      preselectedOriginIds: [remoteFeatureOriginId],
+      pullMode: 'work',
+      appPullMode: 'work',
+    });
+  }, [nav.projects, syncStatusByAppId, syncStatusByFeatureId]);
+
   let page: JSX.Element;
   if (route.kind === 'pipelines-app') {
     const appSyncStatus = syncStatusByAppId.get(route.appId);
@@ -510,13 +566,15 @@ export function PipelinesRoute() {
         existingFeatureMappings.set(status.origin.originId, localFeatureId);
       }
     }
-    const openFeaturePull = (preselectedOriginIds: string[] = []) => {
+    const openFeaturePull = (preselectedOriginIds: string[] = [], pullMode?: ProjectSyncPullMode) => {
       if (!remoteAppOriginId) return;
       setPullSharedFeatures({
         localAppId: route.appId,
         remoteAppOriginId,
         existingFeatureMappings,
         preselectedOriginIds,
+        pullMode,
+        appPullMode: appSyncStatus?.pullMode ?? 'work',
       });
     };
     page = <PipelinesFeaturesView
@@ -536,7 +594,7 @@ export function PipelinesRoute() {
               && status.origin.appId === remoteAppOriginId
               ? status.origin.originId
               : null;
-            if (remoteFeatureOriginId) openFeaturePull([remoteFeatureOriginId]);
+            if (remoteFeatureOriginId) openFeaturePull([remoteFeatureOriginId], status?.pullMode);
           }}
           onPushFeature={(feature) => setShareDialog({
             initialFeatureIds: [feature.id],
@@ -553,7 +611,7 @@ export function PipelinesRoute() {
   // Màn Chạy + route Quick result cũ (/pipelines/:projectId/result/:pipelineId)
   // đều do PipelinesView dựng — nó là nơi duy nhất giữ danh sách bước đã nạp.
   } else if (route.kind === 'pipelines-run' || route.kind === 'pipeline-result') {
-    page = <PipelinesView />;
+    page = <PipelinesView onRequestFullPull={openFullPull} />;
   } else {
     page = (
       <PipelinesAppsView
@@ -570,6 +628,7 @@ export function PipelinesRoute() {
           onPullApp={(app) => setPullAppDialog({
             scope: { kind: 'app', projectId: app.id },
             subjectName: app.name,
+            pullMode: syncStatusByAppId.get(app.id)?.pullMode ?? 'work',
           })}
           onPushApp={(app) => setShareDialog({
             initialFeatureIds: [],
@@ -590,11 +649,23 @@ export function PipelinesRoute() {
         <PullSharedAppModal
           scope={pullAppDialog.scope}
           subjectName={pullAppDialog.subjectName}
+          pullMode={pullAppDialog.pullMode}
           onClose={() => setPullAppDialog(null)}
           onApplied={() => {
             void nav.reload();
             setSyncStatusReloadTick((tick) => tick + 1);
             setSyncToast({ message: 'Đã áp dụng đồng bộ với kho chung. Danh sách bản trên máy đang được làm mới.' });
+            const chain = pullAppDialog.thenOpenFeaturePull;
+            if (chain) {
+              setPullSharedFeatures({
+                localAppId: pullAppDialog.scope.projectId,
+                remoteAppOriginId: chain.remoteAppOriginId,
+                existingFeatureMappings: new Map(),
+                preselectedOriginIds: chain.preselectedOriginIds,
+                pullMode: 'work',
+                appPullMode: 'work',
+              });
+            }
           }}
         />
       ) : null}
@@ -622,6 +693,8 @@ export function PipelinesRoute() {
           remoteAppOriginId={pullSharedFeatures.remoteAppOriginId}
           existingFeatureMappings={pullSharedFeatures.existingFeatureMappings}
           preselectedOriginIds={pullSharedFeatures.preselectedOriginIds}
+          pullMode={pullSharedFeatures.pullMode}
+          appPullMode={pullSharedFeatures.appPullMode}
           onClose={() => setPullSharedFeatures(null)}
           onCompleted={() => {
             void nav.reload();

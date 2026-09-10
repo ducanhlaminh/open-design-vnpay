@@ -21,6 +21,20 @@ import {
   type ProjectSyncScopeStatus,
 } from '@open-design/contracts';
 
+/** Push while the mapping is Chỉ xem (view-only): the daemon refuses the plan
+ *  (409) because that machine never pulled the Context needed to push a
+ *  trustworthy diff. Contract constant lives daemon-side for now; mirrored
+ *  here verbatim, same pattern as `ERR_PROJECT_SYNC_STAGE_RUNNING`. */
+export const ERR_PROJECT_SYNC_VIEW_ONLY = 'PROJECT_SYNC_VIEW_ONLY';
+
+export class ProjectSyncViewOnlyError extends Error {
+  readonly code = ERR_PROJECT_SYNC_VIEW_ONLY;
+  constructor(message = 'Dự án này được lấy về ở chế độ Chỉ xem — không đẩy lên kho chung được. Lấy đầy đủ (Để chạy tiếp) rồi đẩy lại.') {
+    super(message);
+    this.name = 'ProjectSyncViewOnlyError';
+  }
+}
+
 export class ProjectSyncPlanExpiredError extends Error {
   constructor(message = 'Kế hoạch đồng bộ đã hết hạn. Hãy tải lại phần xem trước.') {
     super(message);
@@ -194,6 +208,9 @@ export async function planProjectSync(request: ProjectSyncPlanRequest): Promise<
   const body = await json(response);
   if (response.status === 409 && errorCodeOf(body) === ERR_PROJECT_SYNC_STAGE_RUNNING) {
     throw new ProjectSyncStageRunningError(messageFrom(body, 'Bước đang chạy — đợi xong rồi chia sẻ.'));
+  }
+  if (response.status === 409 && errorCodeOf(body) === ERR_PROJECT_SYNC_VIEW_ONLY) {
+    throw new ProjectSyncViewOnlyError(messageFrom(body, new ProjectSyncViewOnlyError().message));
   }
   if (!response.ok) throw new Error(messageFrom(body, 'Không thể lập kế hoạch đồng bộ.'));
   const plan = (body as { data?: ProjectSyncPlan }).data;

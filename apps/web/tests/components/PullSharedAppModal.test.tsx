@@ -112,6 +112,7 @@ describe('PullSharedAppModal', () => {
       scope: { kind: 'app', projectId: 'ke-toan' },
       origin: { mode: 'existing', originId: 'remote-accounting' },
       includeDeleted: true,
+      pullMode: 'view',
     }));
     // Apply với resolution mặc định của plan — không gửi lựa chọn từng file.
     await waitFor(() => expect(createMock).toHaveBeenCalledWith({ planId: 'plan-1' }));
@@ -182,6 +183,7 @@ describe('PullSharedAppModal', () => {
       direction: 'pull',
       scope: { kind: 'app', projectId: 'retail' },
       includeDeleted: true,
+      pullMode: 'work',
     }));
     expect(listMock).not.toHaveBeenCalled();
     await waitFor(() => expect(onApplied).toHaveBeenCalledTimes(1));

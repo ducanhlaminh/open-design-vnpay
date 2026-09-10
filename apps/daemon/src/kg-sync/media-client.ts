@@ -241,6 +241,36 @@ export class MediaClient {
     return files.map((f) => ({ path: f.path, stage: f.stage, checksum: f.checksum, id: f.id, mime: f.mime }));
   }
 
+  /** Resolve a single file by its exact `path:` tag WITHOUT ever listing the
+   *  whole folder — for an App with a large Context history (tens of
+   *  thousands of rows) a `listAllFiles` just to filter one row (e.g.
+   *  `app.json`, or one ticked docs page) is wasted work AND the exact
+   *  "list the origin App's folder" call `amend_view_mode_no_listing`
+   *  forbids for Chỉ xem pulls. Uses the server-side tag search
+   *  (`tags @> ["path:<p>"]`, app-wide — the same tag can exist under many
+   *  projects' folders) PAGINATED by offset, and stops the moment a row's
+   *  `folder_id` matches this project — never falls back to `listAllFiles`.
+   *  Never creates the folder; absent folder or no match → null (not an
+   *  error). */
+  async findFileByPath(projectId: string, filePath: string): Promise<MediaFile | null> {
+    const folderId = await this.findFolderId(projectId);
+    if (!folderId) return null;
+    const limit = PAGE_SIZE * 2;
+    for (let offset = 0; ; ) {
+      const res = await fetch(
+        this.url(`/api/v1/files/search?tags=${encodeURIComponent(`${PATH_TAG}${filePath}`)}&limit=${limit}&offset=${offset}`),
+        { headers: this.headers() },
+      );
+      await this.assertOk(res, 'searchFiles');
+      const body = (await res.json()) as { items?: RawFile[]; total?: number };
+      const items = body.items ?? [];
+      const match = items.find((f) => f.folder_id === folderId);
+      if (match) return this.toMediaFile(match);
+      offset += items.length;
+      if (items.length === 0 || offset >= (body.total ?? offset)) return null;
+    }
+  }
+
   /** One-shot: resolve folder + list + download. For N files on the same
    *  project open a MediaFolderSession instead (lists once). */
   async downloadFile(projectId: string, filePath: string): Promise<Buffer> {

@@ -18,7 +18,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { AppPoolResponse, DesignSystemSummary, PipelineProject, PipelineWorkflowSummary, ProjectSyncScopeStatus } from '@open-design/contracts';
 
 import { Icon } from '../Icon';
-import { projectSyncUserStatusOf, SyncStatusBadge } from '../project-sync';
+import { projectSyncUserStatusOf, PullModeChip, SyncStatusBadge } from '../project-sync';
 import { navigate } from '../../router';
 import { AppImportBanner } from './AppImportBanner';
 import { AppPoolSection } from './AppPoolSection';
@@ -534,6 +534,7 @@ export function PipelinesFeaturesView({
                             reason={syncStatus.reason}
                             tooltipId={syncTooltipId}
                           />
+                          <PullModeChip pullMode={syncStatus.pullMode} />
                         </span>
                       ) : null}
                     </span>

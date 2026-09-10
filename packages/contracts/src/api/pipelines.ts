@@ -1,5 +1,6 @@
 import type { OkResponse } from '../common.js';
 import type { AppContextManifest, FeatureContextBinding } from './app-context-version.js';
+import type { ProjectSyncPullMode } from './project-sync.js';
 
 // Pipelines: a per-project, dependency-gated chain of skill-driven agent runs
 // (the docs→UI flow). Each pipeline is a fixed skill; pressing "run" seeds a new
@@ -504,6 +505,10 @@ export interface PipelineProject {
    *  Row feature xổ ra dùng mảng này. Optional: client cũ / server cũ vẫn phải
    *  chạy được, nên nơi đọc phải fallback về các field ở trên khi nó vắng. */
   workflows?: PipelineWorkflowSummary[];
+  /** Mirrors `metadata.studioConfig.projectSyncMapping.pullMode` when this
+   * Feature has a project-sync mapping. Absent when there is no mapping at
+   * all (never shared/pulled); a mapping without the field reads as `'work'`. */
+  syncPullMode?: ProjectSyncPullMode;
 }
 
 export interface PipelineProjectsResponse {

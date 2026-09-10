@@ -13,5 +13,6 @@ export {
   SyncStatusBadge,
   PROJECT_SYNC_STATUS_COPY,
   projectSyncUserStatusOf,
+  PullModeChip,
   type SyncStatusBadgeProps,
 } from './SyncStatusBadge';

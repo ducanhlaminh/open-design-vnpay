@@ -6,6 +6,7 @@ import type {
   ProjectSyncFeaturePullBatchResult,
   ProjectSyncOperationPhase,
   ProjectSyncOrigin,
+  ProjectSyncPullMode,
 } from '@open-design/contracts';
 
 import {
@@ -103,6 +104,11 @@ export interface PullSharedFeaturesModalProps {
   /** Reverse mapping from shared origin id to the local Feature id. */
   existingFeatureMappings?: ReadonlyMap<string, string>;
   preselectedOriginIds?: readonly string[];
+  /** Default pull mode for a fresh plan. Missing ⇒ `'view'` (Chỉ xem). */
+  pullMode?: ProjectSyncPullMode;
+  /** App cha đang ở chế độ nào — 'view' khoá lựa chọn "Để chạy tiếp" vì App
+   *  chưa có pool docs/ cho dr-docs. */
+  appPullMode?: ProjectSyncPullMode;
   onClose: () => void;
   onCompleted: (result: ProjectSyncFeaturePullBatchResult) => void;
 }
@@ -120,11 +126,15 @@ export function PullSharedFeaturesModal({
   remoteAppOriginId,
   existingFeatureMappings = new Map(),
   preselectedOriginIds = [],
+  pullMode: pullModeProp,
+  appPullMode,
   onClose,
   onCompleted,
 }: PullSharedFeaturesModalProps) {
   const [origins, setOrigins] = useState<ProjectSyncOrigin[] | null>(null);
   const [selected, setSelected] = useState(() => new Set(preselectedOriginIds));
+  const [pullMode, setPullMode] = useState<ProjectSyncPullMode>(pullModeProp ?? 'view');
+  const workDisabled = appPullMode === 'view';
   const [plan, setPlan] = useState<ProjectSyncFeaturePullBatchPlan | null>(null);
   const [operation, setOperation] = useState<ProjectSyncFeaturePullBatchOperation | null>(null);
   const [loadingPlan, setLoadingPlan] = useState(false);
@@ -236,6 +246,14 @@ export function PullSharedFeaturesModal({
     };
   }, [operation?.operationId]);
 
+  const changePullMode = useCallback((mode: ProjectSyncPullMode) => {
+    if (busy || operation?.state === 'succeeded') return;
+    setPullMode(mode);
+    setPlan(null);
+    setError(null);
+    resetPreflight();
+  }, [busy, operation?.state, resetPreflight]);
+
   const toggle = useCallback((originId: string) => {
     if (busy || operation?.state === 'succeeded') return;
     setSelected((current) => {
@@ -281,6 +299,7 @@ export function PullSharedFeaturesModal({
         localAppId,
         originAppId: remoteAppOriginId,
         originFeatureIds: selectedIds,
+        pullMode,
       });
     } catch (cause) {
       if (generation !== pullGeneration.current) return;
@@ -414,6 +433,39 @@ export function PullSharedFeaturesModal({
             {currentLine ? <p className={styles.current}>{currentLine}</p> : null}
             {confluenceSummary ? <p className={styles.summaryLine} data-testid="feature-pull-confluence-summary">{confluenceSummary}</p> : null}
           </section>
+        ) : null}
+
+        {!terminalResult ? (
+          <fieldset className={styles.modeGroup} disabled={busy}>
+            <label className={styles.modeOption}>
+              <input
+                type="radio"
+                name="feature-pull-mode"
+                checked={pullMode === 'view'}
+                onChange={() => changePullMode('view')}
+              />
+              <span>
+                <strong>Chỉ xem</strong>
+                <small>Đủ để mở Quick result và Xác nhận hoàn tất, nhẹ, không cần PAT Confluence.</small>
+              </span>
+            </label>
+            <label
+              className={styles.modeOption}
+              title={workDisabled ? 'Lấy App đầy đủ trước' : undefined}
+            >
+              <input
+                type="radio"
+                name="feature-pull-mode"
+                checked={pullMode === 'work'}
+                disabled={workDisabled}
+                onChange={() => changePullMode('work')}
+              />
+              <span>
+                <strong>Để chạy tiếp</strong>
+                <small>Kéo cả Context để chạy các bước.</small>
+              </span>
+            </label>
+          </fieldset>
         ) : null}
 
         <section className={styles.picker} aria-label="Danh sách tính năng trong kho chung">

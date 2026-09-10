@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import type {
   ProjectSyncChange,
+  ProjectSyncPullMode,
   ProjectSyncScopeStatus,
   ProjectSyncStatusReason,
   ProjectSyncUserStatus,
@@ -128,4 +129,12 @@ export function SyncStatusBadge({ status, reason, tooltipId: tooltipIdProp }: Sy
       </span>
     </span>
   );
+}
+
+/** Small chip shown next to `SyncStatusBadge` when an App/Feature was pulled
+ * in "Chỉ xem" mode — makes the pull-view restriction visible in the list,
+ * not only inside the pull modals. Renders nothing for `'work'`/missing. */
+export function PullModeChip({ pullMode }: { pullMode: ProjectSyncPullMode | undefined }) {
+  if (pullMode !== 'view') return null;
+  return <span className={styles.pullModeChip}>Chỉ xem</span>;
 }

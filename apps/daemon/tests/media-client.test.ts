@@ -30,7 +30,7 @@ interface StoredFile {
 // Minimal in-memory media-service. `db` is reset between tests.
 const db = { folders: new Map<string, { id: string; name: string }>(), files: new Map<string, StoredFile>() };
 // Request counters (reset between tests) — the session tests assert on them.
-const hits = { listFiles: 0, download: 0, upload: 0, del: 0 };
+const hits = { listFiles: 0, search: 0, download: 0, upload: 0, del: 0 };
 let seq = 0;
 const nextId = () => `obj-${++seq}`;
 
@@ -66,6 +66,27 @@ function buildMockMediaService() {
       tags: f.tags,
       mime_type: f.mime_type,
       size: f.size,
+    }));
+    res.json({ items: page, total: all.length, limit, offset });
+  });
+  // Tag-search (`findFileByPath`): app-wide, AND-semantics filter on
+  // `tags @> [<tag>]`, genuinely paginated by offset — the client walks pages
+  // until it finds a row in its own folder or runs out, so the mock must not
+  // silently return everything on page 1.
+  app.get('/api/v1/files/search', (req, res) => {
+    hits.search += 1;
+    const tag = String(req.query.tags ?? '');
+    const limit = Number(req.query.limit ?? 20);
+    const offset = Number(req.query.offset ?? 0);
+    const all = [...db.files.values()].filter((f) => f.tags.includes(tag));
+    const page = all.slice(offset, offset + limit).map((f) => ({
+      id: f.id,
+      name: f.name,
+      checksum: f.checksum,
+      tags: f.tags,
+      mime_type: f.mime_type,
+      size: f.size,
+      folder_id: f.folder_id,
     }));
     res.json({ items: page, total: all.length, limit, offset });
   });
@@ -121,7 +142,7 @@ afterAll(async () => {
 afterEach(() => {
   db.folders.clear();
   db.files.clear();
-  hits.listFiles = 0; hits.download = 0; hits.upload = 0; hits.del = 0;
+  hits.listFiles = 0; hits.search = 0; hits.download = 0; hits.upload = 0; hits.del = 0;
 });
 
 const lf = (path: string, content: string, stage = 'ux-spec') => ({
@@ -174,6 +195,88 @@ describe('MediaClient', () => {
     await client.syncProjectFiles('XPOS', [lf('ux/spec.json', 'payload')]);
     const buf = await client.downloadFile('XPOS', 'ux/spec.json');
     expect(buf.toString('utf8')).toBe('payload');
+  });
+
+  it('findFileByPath resolves a single row via tag search without listing the folder', async () => {
+    await client.syncProjectFiles('XPOS', [lf('app.json', 'shell'), lf('other.json', 'x')]);
+    hits.listFiles = 0;
+    const file = await client.findFileByPath('XPOS', 'app.json');
+    expect(file?.path).toBe('app.json');
+    expect(file?.checksum).toBe(sha(Buffer.from('shell')));
+    expect(hits.listFiles).toBe(0);
+    expect(hits.search).toBe(1);
+  });
+
+  it('findFileByPath returns null when the file or the folder is absent, and creates nothing', async () => {
+    await client.syncProjectFiles('XPOS', [lf('app.json', 'shell')]);
+    expect(await client.findFileByPath('XPOS', 'missing.json')).toBeNull();
+    const before = db.folders.size;
+    expect(await client.findFileByPath('never-pushed', 'app.json')).toBeNull();
+    expect(db.folders.size).toBe(before);
+  });
+
+  // amend_view_mode_no_listing: the same relative path (e.g. a Bound Context
+  // docs page under `context/versions/<v>/files/docs/<p>`) can exist under
+  // many OTHER Apps' folders too — the tag search is app-wide. findFileByPath
+  // must page through those rows by offset until it finds the one whose
+  // `folder_id` is THIS project's, and must never fall back to listAllFiles
+  // (`GET /api/v1/files?folder_id=`, tracked by `hits.listFiles`) to do it.
+  it('findFileByPath pages through the tag search (page 1 no match, page 2 matches) without listing the folder', async () => {
+    const folderId = await client.ensureFolder('XPOS');
+    const rel = 'context/versions/v1/files/docs/guide/page.md';
+    // 250 rows tagged with the same path but living in OTHER projects'
+    // folders — bigger than one search page (limit=200) so the match below
+    // only surfaces on the second page.
+    for (let i = 0; i < 250; i += 1) {
+      const content = Buffer.from(`other-${i}`);
+      db.files.set(`other-${i}`, {
+        id: `other-${i}`,
+        name: 'page.md',
+        folder_id: 'other-folder',
+        checksum: `sha256:${sha(content)}`,
+        tags: [`path:${rel}`],
+        content,
+        size: content.length,
+        mime_type: 'text/markdown',
+      });
+    }
+    const content = Buffer.from('# Trang 1');
+    db.files.set('target-1', {
+      id: 'target-1',
+      name: 'page.md',
+      folder_id: folderId,
+      checksum: `sha256:${sha(content)}`,
+      tags: [`path:${rel}`],
+      content,
+      size: content.length,
+      mime_type: 'text/markdown',
+    });
+
+    const file = await client.findFileByPath('XPOS', rel);
+    expect(file?.id).toBe('target-1');
+    expect(file?.checksum).toBe(sha(content));
+    expect(hits.search).toBeGreaterThan(1); // walked past page 1 to find it
+    expect(hits.listFiles).toBe(0); // never listed the folder to get there
+  });
+
+  it('findFileByPath returns null after exhausting every search page with no folder match', async () => {
+    await client.ensureFolder('XPOS');
+    const rel = 'context/versions/v1/files/docs/guide/page.md';
+    for (let i = 0; i < 5; i += 1) {
+      const content = Buffer.from(`other-${i}`);
+      db.files.set(`other-${i}`, {
+        id: `other-${i}`,
+        name: 'page.md',
+        folder_id: 'other-folder',
+        checksum: `sha256:${sha(content)}`,
+        tags: [`path:${rel}`],
+        content,
+        size: content.length,
+        mime_type: 'text/markdown',
+      });
+    }
+    expect(await client.findFileByPath('XPOS', rel)).toBeNull();
+    expect(hits.listFiles).toBe(0);
   });
 
   it('listFolders returns every app folder (one per project)', async () => {

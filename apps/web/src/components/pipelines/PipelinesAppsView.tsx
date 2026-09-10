@@ -7,7 +7,7 @@
 import { useMemo, useState } from 'react';
 
 import { Icon } from '../Icon';
-import { projectSyncUserStatusOf, SyncStatusBadge } from '../project-sync';
+import { projectSyncUserStatusOf, PullModeChip, SyncStatusBadge } from '../project-sync';
 import { navigate } from '../../router';
 import { RowActionsMenu } from './RowActionsMenu';
 import { isFeatureDone } from './usePipelineNav';
@@ -363,6 +363,7 @@ export function PipelinesAppsView({
                               reason={syncStatus.reason}
                               tooltipId={syncTooltipId}
                             />
+                            <PullModeChip pullMode={syncStatus.pullMode} />
                           </span>
                         ) : null}
                       </span>
