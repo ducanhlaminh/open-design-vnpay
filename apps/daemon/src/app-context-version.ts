@@ -308,6 +308,93 @@ export async function listAppContextVersions(projectsDir: string, appId: string)
     .sort((a, b) => Number(b.contextVersion.slice(1)) - Number(a.contextVersion.slice(1)));
 }
 
+export interface MaterializeDocsReviewResult {
+  /** Files written under `<targetWorkflowDir>/docs-app/`. */
+  docsApp: number;
+  /** Files written under `<targetWorkflowDir>/docs-feature/` (0 when `featurePoolPaths` is `null` or an empty array). */
+  docsFeature: number;
+  /** Manifest paths whose bytes were missing on disk (best-effort skip, not a failure). */
+  skipped: string[];
+}
+
+/**
+ * WP hotfix-sync (2026-09): rebuilds the docs-review workflow's two
+ * DETERMINISTIC pool-copy folders — `docs-app/` (every `docs/*.md` page minus
+ * `_overview.md`/`_branches/`, mirroring `stageAppDocsPool`) and
+ * `docs-feature/` (each ticked page plus every `docs/attachments/**`,
+ * mirroring `runDocsFromAppPool`'s first step) — from ONE immutable App
+ * Context version's package. This is the read side of the `dr-docs`
+ * `syncExclude` in pipelines.ts: since Push/Pull no longer move these pool
+ * copies as raw sync entries, a Feature pull calls this to reconstruct them
+ * locally instead.
+ *
+ * `featurePoolPaths` distinguishes "unknown" from "empty": `null` means the
+ * origin carried no `appPool` signal at all (an older origin that has not
+ * been reseeded) — `docs-feature/` is left untouched. A (possibly empty)
+ * array means the origin DID report a tick list — `docs-feature/` is always
+ * wiped first so a Feature whose tick list was cleared to nothing does not
+ * keep serving a stale prior pool copy that can no longer be corrected from
+ * the origin, and repopulated only when the list is non-empty. `docs-app/`
+ * is always wiped and repopulated regardless. A manifest file whose bytes
+ * are not yet on disk (e.g. an unfetched Confluence attachment) is reported
+ * in `skipped` rather than thrown — materialize is best-effort and must
+ * never fail the whole pull.
+ */
+export async function materializeDocsReviewFromAppContext(
+  projectsDir: string,
+  appId: string,
+  contextVersion: `v${number}`,
+  targetWorkflowDir: string,
+  featurePoolPaths: readonly string[] | null,
+): Promise<MaterializeDocsReviewResult> {
+  const result: MaterializeDocsReviewResult = { docsApp: 0, docsFeature: 0, skipped: [] };
+  const manifest = await readAppContextManifest(projectsDir, appId, contextVersion);
+  if (!manifest) return result;
+  const versionRoot = appContextVersionDir(projectsDir, appId, contextVersion);
+  const readSource = async (manifestPath: string): Promise<Buffer | null> => {
+    try {
+      return await fs.promises.readFile(path.join(versionRoot, VERSION_FILES_DIR, ...manifestPath.split('/')));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw error;
+    }
+  };
+  const writeUnder = async (dir: string, rel: string, manifestPath: string, counter: 'docsApp' | 'docsFeature'): Promise<void> => {
+    const content = await readSource(manifestPath);
+    if (!content) { result.skipped.push(manifestPath); return; }
+    const target = path.join(dir, ...rel.split('/'));
+    await fs.promises.mkdir(path.dirname(target), { recursive: true });
+    await fs.promises.writeFile(target, content);
+    result[counter] += 1;
+  };
+
+  const docsAppDir = path.join(targetWorkflowDir, 'docs-app');
+  await fs.promises.rm(docsAppDir, { recursive: true, force: true });
+  for (const file of manifest.files) {
+    if (file.source !== 'docs' || !file.path.endsWith('.md')) continue;
+    if (file.path === 'docs/_overview.md' || file.path.startsWith('docs/_branches/')) continue;
+    await writeUnder(docsAppDir, file.path.slice('docs/'.length), file.path, 'docsApp');
+  }
+
+  if (Array.isArray(featurePoolPaths)) {
+    // A reported tick list (even an empty one) always wins over whatever is
+    // on disk: `docs-feature/` is no longer a raw sync entry the origin can
+    // correct directly, so a stale prior pool copy must not survive a pull
+    // that reports "nothing ticked".
+    const docsFeatureDir = path.join(targetWorkflowDir, 'docs-feature');
+    await fs.promises.rm(docsFeatureDir, { recursive: true, force: true });
+    if (featurePoolPaths.length > 0) {
+      const ticked = new Set(featurePoolPaths.map((p) => `docs/${p}`));
+      for (const file of manifest.files) {
+        if (file.source !== 'docs') continue;
+        if (!ticked.has(file.path) && !file.path.startsWith('docs/attachments/')) continue;
+        await writeUnder(docsFeatureDir, file.path.slice('docs/'.length), file.path, 'docsFeature');
+      }
+    }
+  }
+  return result;
+}
+
 async function collectTree(root: string, prefix: string, source: AppContextFileSource): Promise<CollectedFile[]> {
   const files: CollectedFile[] = [];
   const walk = async (dir: string, rel = ''): Promise<void> => {

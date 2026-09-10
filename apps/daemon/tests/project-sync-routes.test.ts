@@ -8,6 +8,7 @@ const state = vi.hoisted(() => ({
   origins: [] as any[],
   mediaFiles: {} as Record<string, any[]>,
   uploads: [] as Array<{ projectId: string; path: string; content: Buffer }>,
+  deletes: [] as Array<{ projectId: string; path: string }>,
   appUpserts: [] as Array<{ id: string; name: string }>,
   pipelineApps: [] as Array<{ id: string; name: string }>,
   failDownloads: new Set<string>(),
@@ -87,7 +88,7 @@ vi.mock('../src/kg-sync/media-client.js', () => ({
         listFiles: () => rows(),
         download: (filePath: string) => this.downloadFile(projectId, filePath),
         upload: (filePath: string, stage: string, mime: string, content: Buffer) => this.uploadFile(projectId, stage, filePath, mime, content),
-        deleteByPath: async () => 0,
+        deleteByPath: async (filePath: string) => { state.deletes.push({ projectId, path: filePath }); return 1; },
       };
     }
   },
@@ -152,7 +153,7 @@ async function pollFeaturePullOperation(table: Map<string, Handler>, operationId
 }
 
 describe('project-sync route contract', () => {
-  beforeEach(() => { state.projects = []; state.origins = []; state.mediaFiles = {}; state.uploads = []; state.appUpserts = []; state.pipelineApps = []; state.failDownloads = new Set(); state.downloads = []; state.sessionOpens = []; state.failAppUpsert = false; state.history = []; state.confluenceCreds = null; state.confluenceFetch = null; state.confluenceRequests = []; });
+  beforeEach(() => { state.projects = []; state.origins = []; state.mediaFiles = {}; state.uploads = []; state.deletes = []; state.appUpserts = []; state.pipelineApps = []; state.failDownloads = new Set(); state.downloads = []; state.sessionOpens = []; state.failAppUpsert = false; state.history = []; state.confluenceCreds = null; state.confluenceFetch = null; state.confluenceRequests = []; });
 
   it('filters origins to visible rows and supports the Feature App filter', async () => {
     state.origins = [
@@ -725,6 +726,362 @@ describe('project-sync route contract', () => {
     }
   });
 
+  it('excludes docs-review pool copies from Feature push/status and never deletes them on origin (syncExclude pool copies)', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'od-push-pool-exclude-'));
+    try {
+      state.pipelineApps = [{ id: 'local-app', name: 'Local App' }];
+      state.projects = [{
+        id: 'local-feature', name: 'Checkout',
+        metadata: { studioConfig: { appId: 'local-app', projectSyncMapping: { schemaVersion: 1, localId: 'local-feature', originId: 'feature--f', originAppId: 'app--x', mappedAt: 'now' } } },
+      }];
+      state.origins = [
+        { projectId: 'app--x', name: 'X', isApp: true, inMedia: true, visibility: 'visible' },
+        { projectId: 'feature--f', name: 'Checkout', isApp: false, appId: 'app--x', inMedia: true, visibility: 'visible' },
+      ];
+      const remoteControl = JSON.stringify({ name: 'Checkout', appId: 'app--x' });
+      state.mediaFiles = {
+        'app--x': [],
+        'feature--f': [
+          { path: 'project.json', content: remoteControl, checksum: createHash('sha256').update(remoteControl).digest('hex') },
+          { path: 'docs-review/docs-app/old.md', content: 'OLD', checksum: createHash('sha256').update('OLD').digest('hex') },
+        ],
+      };
+      await fs.mkdir(path.join(root, 'local-feature', 'docs-review', 'docs-feature'), { recursive: true });
+      await fs.mkdir(path.join(root, 'local-feature', 'docs-review', 'docs-app'), { recursive: true });
+      await fs.mkdir(path.join(root, 'local-feature', 'docs-review', 'review'), { recursive: true });
+      await fs.writeFile(path.join(root, 'local-feature', 'docs-review', 'docs-feature', 'a.md'), 'A');
+      await fs.writeFile(path.join(root, 'local-feature', 'docs-review', 'docs-app', 'b.md'), 'B');
+      await fs.writeFile(path.join(root, 'local-feature', 'docs-review', 'review', 'r.md'), 'R');
+      await fs.writeFile(path.join(root, 'local-feature', 'project.json'), `${JSON.stringify({ name: 'Checkout', appId: 'local-app' }, null, 2)}\n`);
+      const table = handlers(root);
+      const planned = await call(table.get('POST /api/project-sync/plan')!, {
+        direction: 'push', scope: { kind: 'feature', projectId: 'local-feature', appId: 'local-app' },
+      });
+      expect(planned.status).toBe(200);
+      const paths: string[] = planned.body.data.entries.map((entry: any) => entry.path);
+      expect(paths.some((p) => p.includes('docs-app/'))).toBe(false);
+      expect(paths.some((p) => p.includes('docs-feature/'))).toBe(false);
+      expect(paths).toContain('feature/docs-review/review/r.md');
+      // The pool copy already on origin never surfaces as a plan entry — not
+      // even a `deleted` one — because it is invisible on BOTH sides.
+      expect(planned.body.data.entries.some((entry: any) => entry.path.includes('old.md'))).toBe(false);
+
+      const applied = await call(table.get('POST /api/project-sync/apply')!, { planId: planned.body.data.planId });
+      expect(applied.status).toBe(200);
+      expect(applied.body.data.stale).toEqual([]);
+      expect(state.uploads.some((item) => item.path.includes('docs-app/') || item.path.includes('docs-feature/'))).toBe(false);
+      expect(state.deletes).toEqual([]);
+
+      // Reflect the just-uploaded bytes on origin (same pattern as the
+      // normalize test above) and re-check STATUS: the excluded pool copies
+      // stay invisible on both sides, so nothing but them differs.
+      const uploadedControl = state.uploads.find((item) => item.projectId === 'feature--f' && item.path === 'project.json');
+      const uploadedReview = state.uploads.find((item) => item.projectId === 'feature--f' && item.path === 'docs-review/review/r.md');
+      expect(uploadedControl).toBeTruthy();
+      expect(uploadedReview).toBeTruthy();
+      state.mediaFiles['feature--f'] = [
+        { path: 'project.json', content: uploadedControl!.content.toString('utf8'), checksum: createHash('sha256').update(uploadedControl!.content).digest('hex') },
+        { path: 'docs-review/docs-app/old.md', content: 'OLD', checksum: createHash('sha256').update('OLD').digest('hex') },
+        { path: 'docs-review/review/r.md', content: uploadedReview!.content.toString('utf8'), checksum: createHash('sha256').update(uploadedReview!.content).digest('hex') },
+      ];
+      const status = await call(table.get('POST /api/project-sync/status')!, { scopes: [{ kind: 'feature', projectId: 'local-feature', appId: 'local-app' }] });
+      expect(status.body.data.results[0]).toMatchObject({ status: 'up_to_date' });
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('pushes the Feature tick list in project.json normalized to the origin App id (tick list)', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'od-push-appPool-'));
+    try {
+      state.pipelineApps = [{ id: 'local-app', name: 'Local App' }];
+      state.projects = [{
+        id: 'local-feature', name: 'Checkout',
+        metadata: {
+          studioConfig: { appId: 'local-app', projectSyncMapping: { schemaVersion: 1, localId: 'local-feature', originId: 'feature--f', originAppId: 'app--x', mappedAt: 'now' } },
+          runAllConfig: { appPool: { appId: 'local-app', paths: ['guide/page.md'] } },
+        },
+      }];
+      state.origins = [
+        { projectId: 'app--x', name: 'X', isApp: true, inMedia: true, visibility: 'visible' },
+        { projectId: 'feature--f', name: 'Checkout', isApp: false, appId: 'app--x', inMedia: true, visibility: 'visible' },
+      ];
+      state.mediaFiles = { 'app--x': [], 'feature--f': [] };
+      await fs.mkdir(path.join(root, 'local-feature'), { recursive: true });
+      await fs.writeFile(path.join(root, 'local-feature', 'project.json'), `${JSON.stringify({ name: 'Checkout', appId: 'local-app' }, null, 2)}\n`);
+      const table = handlers(root);
+      const planned = await call(table.get('POST /api/project-sync/plan')!, {
+        direction: 'push', scope: { kind: 'feature', projectId: 'local-feature', appId: 'local-app' },
+      });
+      expect(planned.status).toBe(200);
+      const applied = await call(table.get('POST /api/project-sync/apply')!, { planId: planned.body.data.planId });
+      expect(applied.status).toBe(200);
+      expect(applied.body.data.stale).toEqual([]);
+      const uploaded = state.uploads.find((item) => item.projectId === 'feature--f' && item.path === 'project.json');
+      expect(uploaded).toBeTruthy();
+      expect(JSON.parse(uploaded!.content.toString('utf8'))).toMatchObject({
+        appId: 'app--x',
+        appPool: { appId: 'app--x', paths: ['guide/page.md'] },
+      });
+      // The local file itself keeps the local App id (still local ownership).
+      expect(JSON.parse(await fs.readFile(path.join(root, 'local-feature', 'project.json'), 'utf8')).appId).toBe('local-app');
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('materializes docs-review/docs-feature and docs-app from the bound Context on Feature pull and restores the tick list', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'od-feature-pull-materialize-'));
+    const seed = await fs.mkdtemp(path.join(os.tmpdir(), 'od-feature-pull-materialize-seed-'));
+    try {
+      const { createAppContextVersion } = await import('../src/app-context-version.js');
+      await fs.mkdir(path.join(seed, 'shared-app', 'docs', 'guide'), { recursive: true });
+      await fs.mkdir(path.join(seed, 'shared-app', 'docs', 'attachments'), { recursive: true });
+      await fs.writeFile(path.join(seed, 'shared-app', 'docs', '_manifest.json'), JSON.stringify({ version: 1, pages: [] }));
+      await fs.writeFile(path.join(seed, 'shared-app', 'docs', 'guide', 'page.md'), '# Page\n');
+      await fs.writeFile(path.join(seed, 'shared-app', 'docs', 'guide', 'other.md'), '# Other\n');
+      await fs.writeFile(path.join(seed, 'shared-app', 'docs', '_overview.md'), '# Overview\n');
+      await fs.writeFile(path.join(seed, 'shared-app', 'docs', 'attachments', 'img.png'), Buffer.from([1, 2, 3]));
+      const result = await createAppContextVersion({ projectsDir: seed, appId: 'shared-app', appName: 'Shared App', designSystemId: null });
+      const manifest = (result as { manifest: { contextVersion: string; contentDigest: string } }).manifest;
+      const packaged: Array<{ path: string; checksum: string; content: Buffer }> = [];
+      const walk = async (dir: string, rel: string) => {
+        for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
+          const childRel = rel ? `${rel}/${entry.name}` : entry.name;
+          if (entry.isDirectory()) await walk(path.join(dir, entry.name), childRel);
+          else {
+            const content = await fs.readFile(path.join(dir, entry.name));
+            packaged.push({ path: childRel, checksum: createHash('sha256').update(content).digest('hex'), content });
+          }
+        }
+      };
+      await walk(path.join(seed, 'shared-app', 'context'), 'context');
+
+      state.pipelineApps = [{ id: 'local-app', name: 'Local App' }];
+      state.origins = [
+        { projectId: 'shared-app', name: 'Shared App', isApp: true, inMedia: true, visibility: 'visible' },
+        { projectId: 'shared-feature', name: 'Checkout', isApp: false, appId: 'shared-app', inMedia: true, visibility: 'visible' },
+      ];
+      const featureControl = JSON.stringify({
+        name: 'Checkout', appId: 'shared-app',
+        appContextBinding: { appId: 'shared-app', contextVersion: manifest.contextVersion, contentDigest: manifest.contentDigest },
+        appPool: { appId: 'shared-app', paths: ['guide/page.md'] },
+      });
+      state.mediaFiles = {
+        'shared-app': [{ path: 'app.json', content: JSON.stringify({ name: 'Shared App' }) }, ...packaged],
+        'shared-feature': [{ path: 'project.json', content: featureControl }],
+      };
+      await fs.mkdir(path.join(root, 'local-app', '_studio'), { recursive: true });
+      await fs.writeFile(path.join(root, 'local-app', '_studio', 'project-sync-mapping.json'), JSON.stringify({ schemaVersion: 1, localId: 'local-app', originId: 'shared-app' }));
+      const table = handlers(root);
+      const planned = await call(table.get('POST /api/project-sync/feature-pulls/plan')!, {
+        localAppId: 'local-app', originAppId: 'shared-app', originFeatureIds: ['shared-feature'],
+      });
+      expect(planned.status).toBe(200);
+      const started = await call(table.get('POST /api/project-sync/feature-pulls/operations')!, { planId: planned.body.data.planId });
+      const done = await pollFeaturePullOperation(table, started.body.data.operationId);
+      expect(done.body.data.result).toMatchObject({ state: 'succeeded' });
+
+      const localId = state.projects[0]!.id as string;
+      const dr = path.join(root, localId, 'docs-review');
+      expect(await fs.readFile(path.join(dr, 'docs-feature', 'guide', 'page.md'), 'utf8')).toBe('# Page\n');
+      expect(await fs.readFile(path.join(dr, 'docs-feature', 'attachments', 'img.png'))).toBeInstanceOf(Buffer);
+      expect(await fs.readFile(path.join(dr, 'docs-app', 'guide', 'page.md'), 'utf8')).toBe('# Page\n');
+      expect(await fs.readFile(path.join(dr, 'docs-app', 'guide', 'other.md'), 'utf8')).toBe('# Other\n');
+      await expect(fs.stat(path.join(dr, 'docs-feature', 'guide', 'other.md'))).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(fs.stat(path.join(dr, 'docs-app', '_overview.md'))).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(fs.stat(path.join(dr, 'docs-app', 'attachments', 'img.png'))).rejects.toMatchObject({ code: 'ENOENT' });
+
+      const localControl = JSON.parse(await fs.readFile(path.join(root, localId, 'project.json'), 'utf8'));
+      expect(localControl.appPool).toEqual({ appId: 'local-app', paths: ['guide/page.md'] });
+      expect(state.projects[0]!.metadata.runAllConfig).toMatchObject({ appPool: { appId: 'local-app', paths: ['guide/page.md'] } });
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+      await fs.rm(seed, { recursive: true, force: true });
+    }
+  });
+
+  it('materializes docs-review: an empty origin tick list clears a stale local docs-feature copy while docs-app always rebuilds', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'od-feature-pull-materialize-empty-'));
+    const seed = await fs.mkdtemp(path.join(os.tmpdir(), 'od-feature-pull-materialize-empty-seed-'));
+    try {
+      const { createAppContextVersion } = await import('../src/app-context-version.js');
+      await fs.mkdir(path.join(seed, 'shared-app', 'docs', 'guide'), { recursive: true });
+      await fs.writeFile(path.join(seed, 'shared-app', 'docs', '_manifest.json'), JSON.stringify({ version: 1, pages: [] }));
+      await fs.writeFile(path.join(seed, 'shared-app', 'docs', 'guide', 'page.md'), '# Page\n');
+      const result = await createAppContextVersion({ projectsDir: seed, appId: 'shared-app', appName: 'Shared App', designSystemId: null });
+      const manifest = (result as { manifest: { contextVersion: string; contentDigest: string } }).manifest;
+      const packaged: Array<{ path: string; checksum: string; content: Buffer }> = [];
+      const walk = async (dir: string, rel: string) => {
+        for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
+          const childRel = rel ? `${rel}/${entry.name}` : entry.name;
+          if (entry.isDirectory()) await walk(path.join(dir, entry.name), childRel);
+          else {
+            const content = await fs.readFile(path.join(dir, entry.name));
+            packaged.push({ path: childRel, checksum: createHash('sha256').update(content).digest('hex'), content });
+          }
+        }
+      };
+      await walk(path.join(seed, 'shared-app', 'context'), 'context');
+
+      state.pipelineApps = [{ id: 'local-app', name: 'Local App' }];
+      state.origins = [
+        { projectId: 'shared-app', name: 'Shared App', isApp: true, inMedia: true, visibility: 'visible' },
+        { projectId: 'shared-feature', name: 'Checkout', isApp: false, appId: 'shared-app', inMedia: true, visibility: 'visible' },
+      ];
+      // A previously-pulled Feature already has a docs-feature/ pool copy on
+      // disk (from an earlier non-empty tick list) — the fixture the fix
+      // targets: today's pull ticks nothing, and the stale copy must not survive.
+      state.projects = [{
+        id: 'local-feature', name: 'Checkout',
+        metadata: { studioConfig: { appId: 'local-app', projectSyncMapping: { schemaVersion: 1, localId: 'local-feature', originId: 'shared-feature', originAppId: 'shared-app', mappedAt: 'now' } } },
+      }];
+      await fs.mkdir(path.join(root, 'local-feature', 'docs-review', 'docs-feature', 'guide'), { recursive: true });
+      await fs.writeFile(path.join(root, 'local-feature', 'docs-review', 'docs-feature', 'guide', 'stale.md'), '# Stale\n');
+      const featureControl = JSON.stringify({
+        name: 'Checkout', appId: 'shared-app',
+        appContextBinding: { appId: 'shared-app', contextVersion: manifest.contextVersion, contentDigest: manifest.contentDigest },
+        appPool: { appId: 'shared-app', paths: [] },
+      });
+      state.mediaFiles = {
+        'shared-app': [{ path: 'app.json', content: JSON.stringify({ name: 'Shared App' }) }, ...packaged],
+        'shared-feature': [{ path: 'project.json', content: featureControl }],
+      };
+      await fs.mkdir(path.join(root, 'local-app', '_studio'), { recursive: true });
+      await fs.writeFile(path.join(root, 'local-app', '_studio', 'project-sync-mapping.json'), JSON.stringify({ schemaVersion: 1, localId: 'local-app', originId: 'shared-app' }));
+      const table = handlers(root);
+      const planned = await call(table.get('POST /api/project-sync/feature-pulls/plan')!, {
+        localAppId: 'local-app', originAppId: 'shared-app', originFeatureIds: ['shared-feature'],
+      });
+      expect(planned.status).toBe(200);
+      const started = await call(table.get('POST /api/project-sync/feature-pulls/operations')!, { planId: planned.body.data.planId });
+      const done = await pollFeaturePullOperation(table, started.body.data.operationId);
+      expect(done.body.data.result).toMatchObject({ state: 'succeeded' });
+
+      const localId = state.projects[0]!.id as string;
+      expect(localId).toBe('local-feature');
+      const dr = path.join(root, localId, 'docs-review');
+      await expect(fs.stat(path.join(dr, 'docs-feature', 'guide', 'stale.md'))).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(fs.readdir(path.join(dr, 'docs-feature')).catch(() => [])).resolves.toEqual([]);
+      expect(await fs.readFile(path.join(dr, 'docs-app', 'guide', 'page.md'), 'utf8')).toBe('# Page\n');
+      expect(state.projects[0]!.metadata.runAllConfig).toMatchObject({ appPool: { appId: 'local-app', paths: [] } });
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+      await fs.rm(seed, { recursive: true, force: true });
+    }
+  });
+
+  it('materializes docs-review: no origin appPool signal leaves a stale local docs-feature copy untouched while docs-app always rebuilds', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'od-feature-pull-materialize-unknown-'));
+    const seed = await fs.mkdtemp(path.join(os.tmpdir(), 'od-feature-pull-materialize-unknown-seed-'));
+    try {
+      const { createAppContextVersion } = await import('../src/app-context-version.js');
+      await fs.mkdir(path.join(seed, 'shared-app', 'docs', 'guide'), { recursive: true });
+      await fs.writeFile(path.join(seed, 'shared-app', 'docs', '_manifest.json'), JSON.stringify({ version: 1, pages: [] }));
+      await fs.writeFile(path.join(seed, 'shared-app', 'docs', 'guide', 'page.md'), '# Page\n');
+      const result = await createAppContextVersion({ projectsDir: seed, appId: 'shared-app', appName: 'Shared App', designSystemId: null });
+      const manifest = (result as { manifest: { contextVersion: string; contentDigest: string } }).manifest;
+      const packaged: Array<{ path: string; checksum: string; content: Buffer }> = [];
+      const walk = async (dir: string, rel: string) => {
+        for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
+          const childRel = rel ? `${rel}/${entry.name}` : entry.name;
+          if (entry.isDirectory()) await walk(path.join(dir, entry.name), childRel);
+          else {
+            const content = await fs.readFile(path.join(dir, entry.name));
+            packaged.push({ path: childRel, checksum: createHash('sha256').update(content).digest('hex'), content });
+          }
+        }
+      };
+      await walk(path.join(seed, 'shared-app', 'context'), 'context');
+
+      state.pipelineApps = [{ id: 'local-app', name: 'Local App' }];
+      state.origins = [
+        { projectId: 'shared-app', name: 'Shared App', isApp: true, inMedia: true, visibility: 'visible' },
+        { projectId: 'shared-feature', name: 'Checkout', isApp: false, appId: 'shared-app', inMedia: true, visibility: 'visible' },
+      ];
+      // Same stale-copy fixture as above, but the origin control carries no
+      // `appPool` at all (an older, not-yet-reseeded origin) — "unknown"
+      // must not be treated as "empty".
+      state.projects = [{
+        id: 'local-feature', name: 'Checkout',
+        metadata: { studioConfig: { appId: 'local-app', projectSyncMapping: { schemaVersion: 1, localId: 'local-feature', originId: 'shared-feature', originAppId: 'shared-app', mappedAt: 'now' } } },
+      }];
+      await fs.mkdir(path.join(root, 'local-feature', 'docs-review', 'docs-feature', 'guide'), { recursive: true });
+      await fs.writeFile(path.join(root, 'local-feature', 'docs-review', 'docs-feature', 'guide', 'stale.md'), '# Stale\n');
+      const featureControl = JSON.stringify({
+        name: 'Checkout', appId: 'shared-app',
+        appContextBinding: { appId: 'shared-app', contextVersion: manifest.contextVersion, contentDigest: manifest.contentDigest },
+      });
+      state.mediaFiles = {
+        'shared-app': [{ path: 'app.json', content: JSON.stringify({ name: 'Shared App' }) }, ...packaged],
+        'shared-feature': [{ path: 'project.json', content: featureControl }],
+      };
+      await fs.mkdir(path.join(root, 'local-app', '_studio'), { recursive: true });
+      await fs.writeFile(path.join(root, 'local-app', '_studio', 'project-sync-mapping.json'), JSON.stringify({ schemaVersion: 1, localId: 'local-app', originId: 'shared-app' }));
+      const table = handlers(root);
+      const planned = await call(table.get('POST /api/project-sync/feature-pulls/plan')!, {
+        localAppId: 'local-app', originAppId: 'shared-app', originFeatureIds: ['shared-feature'],
+      });
+      expect(planned.status).toBe(200);
+      const started = await call(table.get('POST /api/project-sync/feature-pulls/operations')!, { planId: planned.body.data.planId });
+      const done = await pollFeaturePullOperation(table, started.body.data.operationId);
+      expect(done.body.data.result).toMatchObject({ state: 'succeeded' });
+
+      const localId = state.projects[0]!.id as string;
+      expect(localId).toBe('local-feature');
+      const dr = path.join(root, localId, 'docs-review');
+      expect(await fs.readFile(path.join(dr, 'docs-feature', 'guide', 'stale.md'), 'utf8')).toBe('# Stale\n');
+      expect(await fs.readFile(path.join(dr, 'docs-app', 'guide', 'page.md'), 'utf8')).toBe('# Page\n');
+      expect((state.projects[0]!.metadata as { runAllConfig?: unknown }).runAllConfig).toBeUndefined();
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+      await fs.rm(seed, { recursive: true, force: true });
+    }
+  });
+
+  it('App push carries only the current and Feature-bound Context versions and leaves other origin versions untouched (Feature-bound Context versions)', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'od-app-push-retain-'));
+    try {
+      state.pipelineApps = [{ id: 'local-app', name: 'Local App' }];
+      state.projects = [{
+        id: 'local-feature', name: 'Checkout',
+        metadata: {
+          studioConfig: { appId: 'local-app' },
+          appContextBinding: { schemaVersion: 1, appId: 'local-app', contextVersion: 'v1', contentDigest: `sha256:${'a'.repeat(64)}`, boundAt: 'now' },
+        },
+      }];
+      state.origins = [
+        { projectId: 'shared-app', name: 'Shared App', isApp: true, inMedia: true, visibility: 'visible' },
+      ];
+      const v2Manifest = '{"contextVersion":"v2"}';
+      state.mediaFiles = {
+        'shared-app': [
+          { path: 'context/versions/v2/manifest.json', content: v2Manifest, checksum: createHash('sha256').update(v2Manifest).digest('hex') },
+          { path: 'context/versions/v2/files/app-context/design.md', content: 'design v2', checksum: createHash('sha256').update('design v2').digest('hex') },
+        ],
+      };
+      await fs.mkdir(path.join(root, 'local-app', '_studio'), { recursive: true });
+      await fs.writeFile(path.join(root, 'local-app', '_studio', 'project-sync-mapping.json'), JSON.stringify({ schemaVersion: 1, localId: 'local-app', originId: 'shared-app' }));
+      await fs.mkdir(path.join(root, 'local-app', 'context'), { recursive: true });
+      await fs.writeFile(path.join(root, 'local-app', 'context', 'current.json'), JSON.stringify({ schemaVersion: 1, appId: 'local-app', contextVersion: 'v3' }));
+      for (const version of ['v1', 'v2', 'v3']) {
+        await fs.mkdir(path.join(root, 'local-app', 'context', 'versions', version), { recursive: true });
+        await fs.writeFile(path.join(root, 'local-app', 'context', 'versions', version, 'manifest.json'), JSON.stringify({ contextVersion: version }));
+      }
+      const table = handlers(root);
+      const planned = await call(table.get('POST /api/project-sync/plan')!, {
+        direction: 'push', scope: { kind: 'app', projectId: 'local-app' },
+      });
+      expect(planned.status).toBe(200);
+      const paths: string[] = planned.body.data.entries.map((entry: any) => entry.path);
+      expect(paths.some((p) => p.startsWith('app/context/versions/v1/'))).toBe(true);
+      expect(paths.some((p) => p.startsWith('app/context/versions/v3/'))).toBe(true);
+      expect(paths.some((p) => p.startsWith('app/context/versions/v2/'))).toBe(false);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('refuses a Push PLAN while a stage is queued/running but keeps STATUS readable', async () => {
     expect(runningStageIdsOf({ pipelines: { 'dr-review': { status: 'running' }, ux: { status: 'succeeded' }, 'ui-html': { status: 'queued' } } })).toEqual(['dr-review', 'ui-html']);
     expect(runningStageIdsOf(null)).toEqual([]);
@@ -1059,7 +1416,12 @@ describe('project-sync route contract', () => {
         mappedFeature();
         const control = JSON.stringify({ name: 'Checkout', appId: 'app--x' });
         state.mediaFiles = { 'app--x': [], 'feature--f': [mediaRow('project.json', control)] };
-        const dir = path.join(root, 'local-feature', 'docs-review', 'docs-feature', 'attachments');
+        // WP hotfix-sync (2026-09): fixture moved off `docs-review/docs-feature/`
+        // — that folder is now a deterministic pool copy excluded from sync
+        // (see pipelines.ts's `dr-docs` syncExclude); this test only cares
+        // about generic ledger/attachment grouping behavior, so any
+        // non-excluded workflow-namespaced folder is equivalent.
+        const dir = path.join(root, 'local-feature', 'docs-review', 'review', 'attachments');
         await fs.mkdir(dir, { recursive: true });
         await fs.writeFile(path.join(root, 'local-feature', 'project.json'), control);
         await fs.writeFile(path.join(dir, 'a.png'), 'AAA');      // listed, older than the ledger → matched by mtime, never read
@@ -1076,7 +1438,7 @@ describe('project-sync route contract', () => {
         readSpy.mockClear();
         const planned = await call(table.get('POST /api/project-sync/plan')!, { direction: 'push', scope: { kind: 'feature', projectId: 'local-feature', appId: 'local-app' } });
         expect(planned.status).toBe(200);
-        const entry = (rel: string) => planned.body.data.entries.find((row: any) => row.path === `feature/docs-review/docs-feature/attachments/${rel}`);
+        const entry = (rel: string) => planned.body.data.entries.find((row: any) => row.path === `feature/docs-review/review/attachments/${rel}`);
         expect(entry('_sources.json')).toMatchObject({ change: 'new', kind: 'output', confluenceGroup: { files: 2, bytes: 6, missing: 0 } });
         expect(entry('_sources.json').confluence).toBeUndefined();
         expect(entry('a.png')).toBeUndefined();
@@ -1096,13 +1458,13 @@ describe('project-sync route contract', () => {
         expect(applied.body.data).toMatchObject({ stale: [], manifested: 2, applied: 5 }); // project.json (normalized) + ledger + b + stale + short
         expect(applied.body.data.confluence).toBeUndefined();
         const uploaded = state.uploads.filter((item) => item.projectId === 'feature--f').map((item) => item.path).sort();
-        expect(uploaded).toEqual(['docs-review/docs-feature/attachments/_sources.json', 'docs-review/docs-feature/attachments/b.png', 'docs-review/docs-feature/attachments/short.png', 'docs-review/docs-feature/attachments/stale.png', 'project.json']);
+        expect(uploaded).toEqual(['docs-review/review/attachments/_sources.json', 'docs-review/review/attachments/b.png', 'docs-review/review/attachments/short.png', 'docs-review/review/attachments/stale.png', 'project.json']);
 
         // Origin now lists the ledger (never a.png / c.png): the re-plan is fully unchanged and still has no per-file entry.
         state.mediaFiles['feature--f'] = [mediaRow('project.json', control), ...state.uploads.filter((item) => item.projectId === 'feature--f').map((item) => mediaRow(item.path, item.content.toString('utf8')))];
         state.uploads = [];
         const replanned = await call(table.get('POST /api/project-sync/plan')!, { direction: 'push', scope: { kind: 'feature', projectId: 'local-feature', appId: 'local-app' } });
-        expect(replanned.body.data.entries.find((row: any) => row.path === 'feature/docs-review/docs-feature/attachments/_sources.json')).toMatchObject({ change: 'unchanged', confluenceGroup: { files: 2, bytes: 6, missing: 0 } });
+        expect(replanned.body.data.entries.find((row: any) => row.path === 'feature/docs-review/review/attachments/_sources.json')).toMatchObject({ change: 'unchanged', confluenceGroup: { files: 2, bytes: 6, missing: 0 } });
         expect(replanned.body.data.entries.some((row: any) => /\/(a|c)\.png$/.test(row.path))).toBe(false);
         expect(replanned.body.data.summary).toEqual({ created: 0, unchanged: 5, changed: 0, deleted: 0, confluence: { files: 2, bytes: 6 } });
         const status = await call(table.get('POST /api/project-sync/status')!, { scopes: [{ kind: 'feature', projectId: 'local-feature', appId: 'local-app' }] });

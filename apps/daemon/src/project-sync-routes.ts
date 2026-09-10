@@ -39,7 +39,7 @@ import {
   setPipelineAppDesignSystem,
   setPipelineAppDocsReviewComponentSource,
 } from './db.js';
-import { featureContextBindingFromMetadata, materializeAppContextVersion, parseManifestComponentSource, readCurrentAppContextManifest } from './app-context-version.js';
+import { featureContextBindingFromMetadata, materializeAppContextVersion, materializeDocsReviewFromAppContext, parseManifestComponentSource, readAppContextManifest, readCurrentAppContextManifest } from './app-context-version.js';
 import { MediaClient, mediaConfigFromEnv, type MediaFile, type MediaFolderSession } from './kg-sync/media-client.js';
 import { loadRemoteProjects, PROJECT_LIFECYCLE_PATH } from './kg-sync/remote-registry.js';
 import { studioConfigOf } from './kg-sync/push-dest.js';
@@ -51,7 +51,7 @@ import {
   isSafeProjectSyncFeatureId,
   planProjectSyncFeaturePullBatch,
 } from './project-sync-feature-pull.js';
-import { stageForOutput } from './pipelines.js';
+import { isSyncExcluded, stageForOutput } from './pipelines.js';
 import { commitHistory } from './project-history.js';
 import { historyActor } from './history-actor.js';
 import { digestProjectSyncSides, evaluateProjectSyncStatus } from './project-sync-status.js';
@@ -490,10 +490,45 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
       };
       const localRels = new Set<string>();
       const localRoot = unit.localId ? path.join(ctx.paths.PROJECTS_DIR, unit.localId) : null;
+      // WP hotfix-sync (2026-09): a full-tree App push only ever needs the
+      // Context version the App CURRENTLY points at plus whatever version any
+      // local Feature of this App is bound to — every other version on disk
+      // (or already sitting on origin from a past push) is "still there but
+      // unused", not something to move again or ever mark deleted. Unreadable
+      // `current.json` AND zero Feature bindings keeps the pre-fix behavior
+      // (every version visible) rather than guessing retention from nothing.
+      const isAppPushUnit = unit.isApp && unit.prefix === 'app' && !unit.contextVersion && !unit.latestAppContextOnly;
+      let retainedContextVersions: Set<string> | null = null;
+      if (isAppPushUnit && unit.localId && localRoot) {
+        const retained = new Set<string>();
+        let sawSignal = false;
+        try {
+          const pointer = JSON.parse(await fs.readFile(path.join(localRoot, 'context', 'current.json'), 'utf8')) as Record<string, unknown>;
+          if (typeof pointer.contextVersion === 'string' && /^v[1-9]\d*$/.test(pointer.contextVersion)) {
+            retained.add(pointer.contextVersion);
+            sawSignal = true;
+          }
+        } catch {
+          // Missing/malformed current.json: fall through to Feature bindings.
+        }
+        for (const project of projects()) {
+          if (appIdOf(project) !== unit.localId) continue;
+          const binding = featureContextBindingFromMetadata(project.metadata);
+          if (binding?.contextVersion) { retained.add(binding.contextVersion); sawSignal = true; }
+        }
+        if (sawSignal) retainedContextVersions = retained;
+      }
+      const versionRetained = (rel: string): boolean => {
+        if (!isAppPushUnit || retainedContextVersions === null || !rel.startsWith('context/versions/')) return true;
+        const version = rel.slice('context/versions/'.length).split('/')[0];
+        return Boolean(version && retainedContextVersions.has(version));
+      };
       if (unit.localId && localRoot) {
         const walked = (await walkFiles(localRoot)).filter((file) => !isControl(file.rel)
           && includeLatestAppContext(file.rel)
-          && (!unit.contextVersion || file.rel.startsWith(`context/versions/${unit.contextVersion}/`)));
+          && (!unit.contextVersion || file.rel.startsWith(`context/versions/${unit.contextVersion}/`))
+          && versionRetained(file.rel)
+          && !(!unit.isApp && isSyncExcluded(file.rel)));
         // A raw wiki attachment matching its sibling ledger is represented by
         // the ledger entry alone (`confluenceGroup`): never read, never listed.
         const ledgers = await groupLocalLedgers(localRoot, walked);
@@ -506,7 +541,16 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
           // origin must always see the origin App id, otherwise a later push
           // re-parents the Feature on the registry (origin_missing for everyone).
           const normalizeAppId = !unit.isApp && unit.featureId && unit.originAppId ? unit.originAppId : null;
-          if (file.rel === controlRel && (unit.overrideName || normalizeAppId)) {
+          // WP hotfix-sync (2026-09): the tick list that drove this Feature's
+          // `docs-feature/` materialization travels as `project.json.appPool`
+          // (a Feature-pull already writes it into `metadata.runAllConfig`, see
+          // the pull APPLY step below) — normalized to the ORIGIN App id like
+          // `appContextBinding`, so a re-pull elsewhere can rebuild the same
+          // pool. Absent local `appPool` writes no key (never `null`).
+          const localAppPool = !unit.isApp && unit.localId
+            ? (projects().find((project) => project.id === unit.localId)?.metadata as { runAllConfig?: { appPool?: { appId: string; paths: string[] } | null } } | undefined)?.runAllConfig?.appPool ?? null
+            : null;
+          if (file.rel === controlRel && (unit.overrideName || normalizeAppId || localAppPool)) {
             try {
               const current = JSON.parse(content.toString('utf8')) as Record<string, unknown>;
               const next: Record<string, unknown> = { ...current, ...(unit.overrideName ? { name: unit.name } : {}) };
@@ -516,6 +560,9 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
                 if (binding && typeof binding === 'object' && !Array.isArray(binding)) {
                   next.appContextBinding = { ...(binding as Record<string, unknown>), appId: normalizeAppId };
                 }
+              }
+              if (localAppPool) {
+                next.appPool = { appId: normalizeAppId ?? unit.originAppId ?? localAppPool.appId, paths: localAppPool.paths };
               }
               content = Buffer.from(`${JSON.stringify(next, null, 2)}\n`);
             } catch {
@@ -533,7 +580,9 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
       }
       const remoteRels: string[] = remoteFiles.map((file) => (typeof file.path === 'string' ? file.path : '')).filter(Boolean);
       const includeRemote = (rel: string): boolean => Boolean(rel) && !isControl(rel) && includeLatestAppContext(rel)
-        && (!unit.contextVersion || rel.startsWith(`context/versions/${unit.contextVersion}/`));
+        && (!unit.contextVersion || rel.startsWith(`context/versions/${unit.contextVersion}/`))
+        && versionRetained(rel)
+        && !(!unit.isApp && isSyncExcluded(rel));
       // Origin ledgers stand in for the attachment bytes that were never
       // uploaded: ONE group per ledger entry, never one entry per file. Pull
       // also stats the local copies so an identical ledger with files missing
@@ -562,6 +611,9 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
           const project = unit.featureId ? projects().find((candidate) => candidate.id === unit.localId) : null;
           const localApp = unit.isApp && !unit.featureId ? getPipelineApp(db, unit.localId) : null;
           const binding = project ? featureContextBindingFromMetadata(project.metadata) : null;
+          const projectAppPool = !unit.isApp
+            ? (project?.metadata as { runAllConfig?: { appPool?: { appId: string; paths: string[] } | null } } | undefined)?.runAllConfig?.appPool ?? null
+            : null;
           const content = Buffer.from(`${JSON.stringify(unit.isApp ? {
             ...existing,
             kind: 'app',
@@ -575,6 +627,7 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
             name: unit.name,
             ...(unit.originAppId ? { appId: unit.originAppId } : {}),
             ...(binding ? { appContextBinding: unit.originAppId && binding.appId !== unit.originAppId ? { ...binding, appId: unit.originAppId } : binding } : {}),
+            ...(projectAppPool ? { appPool: { appId: unit.originAppId ?? projectAppPool.appId, paths: projectAppPool.paths } } : {}),
           }, null, 2)}\n`);
           const entryPath = `${unit.prefix}/${controlRel}`;
           localContentByPath.set(entryPath, content);
@@ -1186,6 +1239,14 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
           completed += 1;
           updateProgress('transferring', feature.originId, task.entryPath);
         }
+        // WP hotfix-sync (2026-09): the tick list travels on the origin
+        // control's `appPool` (see the push-side control writer above) —
+        // normalized to the LOCAL App id here, mirroring `appContextBinding`.
+        const originAppPool = control.appPool && typeof control.appPool === 'object' && !Array.isArray(control.appPool)
+          ? control.appPool as Record<string, unknown> : null;
+        const appPoolPaths = originAppPool && Array.isArray(originAppPool.paths)
+          ? (originAppPool.paths as unknown[]).filter((item): item is string => typeof item === 'string')
+          : null;
         // Local project control always points at local ownership while the
         // explicit mapping below retains remote identity.
         const localControl = {
@@ -1194,6 +1255,7 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
           ...(control.appContextBinding && typeof control.appContextBinding === 'object' && !Array.isArray(control.appContextBinding)
             ? { appContextBinding: { ...(control.appContextBinding as Record<string, unknown>), appId: stored.plan.localAppId } }
             : {}),
+          ...(originAppPool ? { appPool: { ...originAppPool, appId: stored.plan.localAppId } } : {}),
         };
         await fs.writeFile(path.join(stageFeature, 'project.json'), `${JSON.stringify(localControl, null, 2)}\n`);
         updateProgress('finalizing', feature.originId, null);
@@ -1205,6 +1267,28 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
           if (await fs.stat(stagedVersion).then(() => true, () => false)) {
             await fs.mkdir(path.dirname(targetVersion), { recursive: true });
             await fs.cp(stagedVersion, targetVersion, { recursive: true, force: true });
+          }
+          // WP hotfix-sync (2026-09): rebuild the docs-review pool copies
+          // (`docs-app/`, and `docs-feature/` when the tick list is non-empty)
+          // from the just-installed immutable package — these no longer
+          // travel as raw sync entries (see `dr-docs`'s `syncExclude`).
+          // Best-effort: readAppContextManifest returning null (unreadable
+          // package) means "no binding to materialize from", not a failure.
+          if (/^v[1-9]\d*$/.test(feature.contextVersion)) {
+            const version = feature.contextVersion as `v${number}`;
+            const manifest = await readAppContextManifest(ctx.paths.PROJECTS_DIR, stored.plan.localAppId, version);
+            if (manifest) {
+              const materialized = await materializeDocsReviewFromAppContext(
+                ctx.paths.PROJECTS_DIR,
+                stored.plan.localAppId,
+                version,
+                path.join(stageFeature, 'docs-review'),
+                appPoolPaths,
+              );
+              for (const missing of materialized.skipped) {
+                console.warn(`[project-sync] feature pull ${feature.originId}: App Context ${version} file missing, skipped ${missing}`);
+              }
+            }
           }
         }
         if (await fs.stat(destination).then(() => true, () => false)) {
@@ -1220,10 +1304,17 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
           ? { ...(control.appContextBinding as Record<string, unknown>), appId: stored.plan.localAppId } : null;
         const oldStudio = previousMetadata.studioConfig && typeof previousMetadata.studioConfig === 'object' && !Array.isArray(previousMetadata.studioConfig)
           ? previousMetadata.studioConfig as Record<string, unknown> : {};
+        const previousRunAllConfig = previousMetadata.runAllConfig && typeof previousMetadata.runAllConfig === 'object' && !Array.isArray(previousMetadata.runAllConfig)
+          ? previousMetadata.runAllConfig as Record<string, unknown> : undefined;
         const metadata = {
           ...previousMetadata,
           source: 'kg-pull',
           ...(remoteBinding ? { appContextBinding: remoteBinding } : {}),
+          // WP hotfix-sync (2026-09): restore the tick list into the pulled
+          // Feature's own run-all config (local App id) so a re-run of
+          // `dr-docs`'s pool-copy step reproduces the identical materialized
+          // folders — same invariant as `appContextBinding` above.
+          ...(appPoolPaths ? { runAllConfig: { ...previousRunAllConfig, appPool: { appId: stored.plan.localAppId, paths: appPoolPaths } } } : {}),
           studioConfig: {
             ...oldStudio,
             appId: stored.plan.localAppId,
